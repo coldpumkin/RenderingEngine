@@ -111,34 +111,51 @@ bool HasInstanceLayer(const char* name) noexcept {
 
 #endif // LAMBDA_ENABLE_VULKAN_VALIDATION
 
-// 로더 확인 -> 인스턴스 -> 함수 테이블 -> 디버그 메신저. 실패하면 VK_NULL_HANDLE.
+// 인스턴스 층. 셋이 같이 태어나고 같이 죽는다.
 //
-// **out 파라미터가 둘로 늘었다.** instance · table · messenger 셋이 같이 나오고
-// 같이 죽는다. CreateDevice와 똑같은 모양이 됐다 (2단계 증거).
-VkInstance CreateInstance(VolkInstanceTable* outTable,
-                          VkDebugUtilsMessengerEXT* outMessenger) noexcept {
-    *outTable = VolkInstanceTable{};
-    *outMessenger = VK_NULL_HANDLE;
+// **table과 handle을 한 묶음에 두는 이유**: Vulkan 호출은 예외 없이 두 테이블 중
+// 하나로 갈린다(실측: 인스턴스 26곳 / 디바이스 30곳). 우리가 정한 선이 아니라
+// API 자체의 선이고, 핸들과 테이블이 한 곳에서 나와야 섞일 수 없다.
+//
+// 다만 **필요 범위는 서로 다르다.** 테이블은 거의 모든 곳에 필요하지만 핸들은
+// 만들고 부수는 곳에만 필요하다 - 물리 디바이스 조회는 gpu로 디스패치하지
+// 인스턴스로 하지 않기 때문이다. 함께 넘기는 비용은 참조 하나라 묶는 쪽이 낫다.
+//
+// **아직 소멸자가 없다.** 정리는 main() 끝에 모여 있고, 그 순서가 실제로 아플 때
+// RAII로 옮긴다. 그때 이 struct의 모양은 안 바뀐다 - 소멸자만 붙는다.
+struct VulkanInstance {
+    VolkInstanceTable table{};
+    VkInstance handle = VK_NULL_HANDLE;
+    VkDebugUtilsMessengerEXT messenger = VK_NULL_HANDLE;
+};
+
+// 로더 확인 -> 인스턴스 -> 함수 테이블 -> 디버그 메신저.
+// 실패하면 handle이 VK_NULL_HANDLE인 채로 돌아온다.
+//
+// **out 파라미터가 없어졌다.** 셋이 한 묶음이 되니 반환값 하나면 된다 -
+// out 파라미터는 애초에 "이것들은 같이 나온다"는 신호였다.
+VulkanInstance CreateInstance() noexcept {
+    VulkanInstance inst;
 
     // volk: vulkan-1.dll을 런타임에 LoadLibrary로 찾는다. 없는 기계에서도 프로세스가
     // 죽지 않고 여기서 실패를 돌려받는다. (Vulkan::Vulkan을 정적 링크했다면 시작조차 못 했다.)
     if (volkInitialize() != VK_SUCCESS) {
         LOG("[vk] volkInitialize failed (vulkan-1.dll not found?)\n");
-        return VK_NULL_HANDLE;
+        return inst;
     }
 
     // vkEnumerateInstanceVersion은 Vulkan 1.1에서 추가됐다. 1.0 로더에서는 volk가 이
     // 포인터를 못 채우므로, **nullptr이라는 사실 자체가 "이 기계는 1.0"이라는 정보다.**
     if (vkEnumerateInstanceVersion == nullptr) {
         LOG("[vk] Vulkan 1.0 loader; need 1.3\n");
-        return VK_NULL_HANDLE;
+        return inst;
     }
     uint32_t loaderVersion = 0;
     vkEnumerateInstanceVersion(&loaderVersion);
     if (loaderVersion < kRequiredApiVersion) {
         LOG("[vk] loader is %u.%u; need 1.3\n",
             VK_API_VERSION_MAJOR(loaderVersion), VK_API_VERSION_MINOR(loaderVersion));
-        return VK_NULL_HANDLE;
+        return inst;
     }
 
     VkApplicationInfo appInfo{VK_STRUCTURE_TYPE_APPLICATION_INFO};
@@ -176,15 +193,14 @@ VkInstance CreateInstance(VolkInstanceTable* outTable,
     info.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
     info.ppEnabledExtensionNames = extensions.data();
 
-    VkInstance instance = VK_NULL_HANDLE;
-    if (vkCreateInstance(&info, nullptr, &instance) != VK_SUCCESS) {
+    if (vkCreateInstance(&info, nullptr, &inst.handle) != VK_SUCCESS) {
         LOG("[vk] vkCreateInstance failed\n");
-        return VK_NULL_HANDLE;
+        return inst;
     }
 
     // **인스턴스 레벨도 테이블로 받는다.** 디바이스 테이블과 같은 이유다 -
     // 핸들과 함수가 한 곳에서 나와야 섞일 수 없다.
-    volkLoadInstanceTable(outTable, instance);
+    volkLoadInstanceTable(&inst.table, inst.handle);
 
     // **그런데 전역도 같이 채워야 한다.** volkLoadDeviceTable()이 내부에서
     // 전역 vkGetDeviceProcAddr를 쓰기 때문이다 (volk.c:72-75, 224-228).
@@ -194,17 +210,18 @@ VkInstance CreateInstance(VolkInstanceTable* outTable,
     // volkLoadInstance가 아니라 volkLoadInstanceOnly인 것에 주의: 전자는 디바이스 레벨
     // 포인터까지 전역에 채워서, 디바이스 테이블을 안 쓰고 전역으로 불러도 동작하게 된다.
     // 멀티 디바이스에서 그건 틀린 디바이스를 부르는 버그가 되고, 조용해서 안 잡힌다.
-    volkLoadInstanceOnly(instance);
+    volkLoadInstanceOnly(inst.handle);
 
 #if LAMBDA_ENABLE_VULKAN_VALIDATION
     if (validationOn) {
-        outTable->vkCreateDebugUtilsMessengerEXT(instance, &messengerInfo, nullptr, outMessenger);
+        inst.table.vkCreateDebugUtilsMessengerEXT(inst.handle, &messengerInfo, nullptr,
+                                                  &inst.messenger);
     }
 #endif
 
     LOG("[vk] instance created (Vulkan 1.3 requested, loader %u.%u)\n",
         VK_API_VERSION_MAJOR(loaderVersion), VK_API_VERSION_MINOR(loaderVersion));
-    return instance;
+    return inst;
 }
 
 // ============================================================================
@@ -247,15 +264,14 @@ GLFWwindow* CreateAppWindow(int width, int height, const char* title) noexcept {
 
 // glfwCreateWindowSurface()도 있지만 쓰지 않는다. 직접 만들면 **창 라이브러리와
 // Vulkan이 서로를 모르는 상태로 남는다** - GLFW가 VkInstance를 알 필요가 없다.
-VkSurfaceKHR CreateSurface(const VolkInstanceTable& it,
-                           VkInstance instance,
-                           GLFWwindow* window) noexcept {
+VkSurfaceKHR CreateSurface(const VulkanInstance& inst, GLFWwindow* window) noexcept {
     VkWin32SurfaceCreateInfoKHR info{VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR};
     info.hinstance = GetModuleHandleW(nullptr);
     info.hwnd = glfwGetWin32Window(window);
 
     VkSurfaceKHR surface = VK_NULL_HANDLE;
-    if (it.vkCreateWin32SurfaceKHR(instance, &info, nullptr, &surface) != VK_SUCCESS) {
+    if (inst.table.vkCreateWin32SurfaceKHR(inst.handle, &info, nullptr, &surface)
+            != VK_SUCCESS) {
         LOG("[vk] vkCreateWin32SurfaceKHR failed\n");
         return VK_NULL_HANDLE;
     }
@@ -301,15 +317,15 @@ struct QueueFamilies {
 // (VulkanDevice.cpp: "If we didn't find a dedicated Queue, leave it null").
 //
 // 그래픽스 하나만 못 찾으면 실패다. 화면에 못 그리면 이 엔진은 할 일이 없다.
-bool SelectQueueFamilies(const VolkInstanceTable& it,
+bool SelectQueueFamilies(const VulkanInstance& inst,
                          VkPhysicalDevice gpu,
                          QueueFamilies* out) noexcept {
     *out = QueueFamilies{};
 
     uint32_t count = 0;
-    it.vkGetPhysicalDeviceQueueFamilyProperties(gpu, &count, nullptr);
+    inst.table.vkGetPhysicalDeviceQueueFamilyProperties(gpu, &count, nullptr);
     std::vector<VkQueueFamilyProperties> families(count);
-    it.vkGetPhysicalDeviceQueueFamilyProperties(gpu, &count, families.data());
+    inst.table.vkGetPhysicalDeviceQueueFamilyProperties(gpu, &count, families.data());
 
     // (1) 그래픽스 + present. **서피스가 아니라 플랫폼에 묻는다** -
     //     vkGetPhysicalDeviceWin32PresentationSupportKHR은 "이 큐 패밀리가 Win32
@@ -320,7 +336,9 @@ bool SelectQueueFamilies(const VolkInstanceTable& it,
     //      언리얼은 "서피스가 생긴 뒤 확인"하는 2단계 초기화를 쓴다.)
     for (uint32_t i = 0; i < count; ++i) {
         if ((families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) == 0) { continue; }
-        if (it.vkGetPhysicalDeviceWin32PresentationSupportKHR(gpu, i) != VK_TRUE) { continue; }
+        if (inst.table.vkGetPhysicalDeviceWin32PresentationSupportKHR(gpu, i) != VK_TRUE) {
+            continue;
+        }
         out->graphics = i;
         break;
     }
@@ -350,33 +368,39 @@ bool SelectQueueFamilies(const VolkInstanceTable& it,
     return true;
 }
 
-// GPU 고르기. 자격을 통과한 것 중 외장을 선호한다.
+// 고르기의 결과. **수명이 없는 값 타입이다.**
 //
-// **out 파라미터가 둘이다.** gpu와 그 안의 큐 패밀리 번호는 항상 같이 나온다 -
-// 패밀리 번호는 그 GPU 안에서만 의미가 있으니 당연하다 (2단계 증거).
-bool PickPhysicalDevice(const VolkInstanceTable& it,
-                        VkInstance instance,
-                        VkSurfaceKHR surface,
-                        VkPhysicalDevice* outGpu,
-                        QueueFamilies* outFamilies) noexcept {
-    *outGpu = VK_NULL_HANDLE;
-    *outFamilies = QueueFamilies{};
+// vkDestroyPhysicalDevice 같은 함수는 존재하지 않는다 - GPU는 우리가 만든 게 아니라
+// 열거해서 고른 것이라 반납할 게 없다. 그래서 이건 영원히 struct고 클래스가 될 일이 없다.
+//
+// 지나가는 값이다: PickPhysicalDevice가 만들고, CreateDevice가 소비해서
+// **VulkanDevice 안으로 흡수된다.** 그 뒤로 따로 들고 있지 않는다.
+struct PhysicalDeviceSelection {
+    VkPhysicalDevice gpu = VK_NULL_HANDLE;
+    QueueFamilies families;
+};
+
+// GPU 고르기. 자격을 통과한 것 중 외장을 선호한다.
+// 실패하면 gpu가 VK_NULL_HANDLE인 채로 돌아온다.
+PhysicalDeviceSelection PickPhysicalDevice(const VulkanInstance& inst,
+                                           VkSurfaceKHR surface) noexcept {
+    PhysicalDeviceSelection selection;
 
     uint32_t gpuCount = 0;
-    it.vkEnumeratePhysicalDevices(instance, &gpuCount, nullptr);
+    inst.table.vkEnumeratePhysicalDevices(inst.handle, &gpuCount, nullptr);
     if (gpuCount == 0) {
         LOG("[vk] no Vulkan-capable GPU\n");
-        return false;
+        return selection;
     }
     std::vector<VkPhysicalDevice> gpus(gpuCount);
-    it.vkEnumeratePhysicalDevices(instance, &gpuCount, gpus.data());
+    inst.table.vkEnumeratePhysicalDevices(inst.handle, &gpuCount, gpus.data());
 
     VkPhysicalDeviceProperties chosenProps{};
     int bestScore = -1;
 
     for (VkPhysicalDevice candidate : gpus) {
         VkPhysicalDeviceProperties props{};
-        it.vkGetPhysicalDeviceProperties(candidate, &props);
+        inst.table.vkGetPhysicalDeviceProperties(candidate, &props);
 
         // (a) API 버전
         if (props.apiVersion < kRequiredApiVersion) { continue; }
@@ -386,16 +410,16 @@ bool PickPhysicalDevice(const VolkInstanceTable& it,
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
         VkPhysicalDeviceFeatures2 features2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
         features2.pNext = &features13;
-        it.vkGetPhysicalDeviceFeatures2(candidate, &features2);
+        inst.table.vkGetPhysicalDeviceFeatures2(candidate, &features2);
         if (features13.dynamicRendering != VK_TRUE || features13.synchronization2 != VK_TRUE) {
             continue;
         }
 
         // (c) 스왑체인 확장
         uint32_t extCount = 0;
-        it.vkEnumerateDeviceExtensionProperties(candidate, nullptr, &extCount, nullptr);
+        inst.table.vkEnumerateDeviceExtensionProperties(candidate, nullptr, &extCount, nullptr);
         std::vector<VkExtensionProperties> available(extCount);
-        it.vkEnumerateDeviceExtensionProperties(candidate, nullptr, &extCount, available.data());
+        inst.table.vkEnumerateDeviceExtensionProperties(candidate, nullptr, &extCount, available.data());
 
         bool hasAllExtensions = true;
         for (const char* required : kRequiredDeviceExtensions) {
@@ -409,39 +433,40 @@ bool PickPhysicalDevice(const VolkInstanceTable& it,
 
         // (d) 큐 패밀리 - 그래픽스+present가 없으면 탈락. 컴퓨트/전송은 있으면 좋고 없어도 된다.
         QueueFamilies families;
-        if (!SelectQueueFamilies(it, candidate, &families)) { continue; }
+        if (!SelectQueueFamilies(inst, candidate, &families)) { continue; }
 
         const int score = (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) ? 1000 : 0;
         if (score > bestScore) {
             bestScore = score;
-            *outGpu = candidate;
-            *outFamilies = families;
+            selection.gpu = candidate;
+            selection.families = families;
             chosenProps = props;
         }
     }
 
-    if (*outGpu == VK_NULL_HANDLE) {
+    if (selection.gpu == VK_NULL_HANDLE) {
         LOG("[vk] no GPU meets requirements (1.3 + dynamicRendering + sync2 + swapchain)\n");
-        return false;
+        return selection;
     }
 
     // 고른 큐 패밀리가 **이 서피스**에도 present 되는지 확인한다.
     // 위의 Win32 확인은 "플랫폼에 대해"이고 이건 "이 창에 대해"다.
     // 층이 다르고 서로를 대신하지 않는다.
     VkBool32 surfaceSupported = VK_FALSE;
-    it.vkGetPhysicalDeviceSurfaceSupportKHR(*outGpu, outFamilies->graphics,
-                                            surface, &surfaceSupported);
+    inst.table.vkGetPhysicalDeviceSurfaceSupportKHR(selection.gpu, selection.families.graphics,
+                                                    surface, &surfaceSupported);
     if (surfaceSupported != VK_TRUE) {
+        selection.gpu = VK_NULL_HANDLE;   // 실패는 gpu가 비어 있는 것으로 표현한다
         LOG("[vk] chosen queue family cannot present to this surface\n");
-        return false;
+        return selection;
     }
 
     LOG("[vk] GPU: %s\n", chosenProps.deviceName);
     LOG("[vk] queue families: graphics=%u, compute=%s, transfer=%s\n",
-        outFamilies->graphics,
-        outFamilies->HasCompute()  ? std::to_string(outFamilies->compute).c_str()  : "(none, use graphics)",
-        outFamilies->HasTransfer() ? std::to_string(outFamilies->transfer).c_str() : "(none, use graphics)");
-    return true;
+        selection.families.graphics,
+        selection.families.HasCompute()  ? std::to_string(selection.families.compute).c_str()  : "(none, use graphics)",
+        selection.families.HasTransfer() ? std::to_string(selection.families.transfer).c_str() : "(none, use graphics)");
+    return selection;
 }
 
 // ============================================================================
@@ -476,17 +501,40 @@ struct Queues {
     VkQueue TransferOrGraphics() const noexcept { return transfer ? transfer : graphics; }
 };
 
-// **out 파라미터가 둘이고 반환값까지 셋이다. 여기가 코드의 가장 큰 불평이다.**
+// 디바이스 층. **다섯이 한 몸이다.**
 //
-// device · table · queues는 만들 때부터 같이 나오고, 쓰이는 자리마다 같이 간다
-// (스왑체인 생성, 커맨드 풀 생성, 프레임 루프 전부). gpu와 QueueFamilies도
-// 그 뒤로 계속 따라다닌다. **이 다섯이 첫 번째 클래스가 될 자리다** (3단계).
-VkDevice CreateDevice(VkPhysicalDevice gpu,
-                      const QueueFamilies& families,
-                      VolkDeviceTable* outTable,
-                      Queues* outQueues) noexcept {
-    *outTable = VolkDeviceTable{};
-    *outQueues = Queues{};
+// 근거: 디바이스가 생긴 뒤로 gpu · families · queues가 device 없이 쓰이는 곳이
+// 하나도 없다. 반대로 device를 쓰는 곳은 거의 다 table도 같이 쓴다.
+// 그래서 PhysicalDeviceSelection이 여기로 흡수된다 - 선택 결과는 디바이스의 정체다.
+//
+// 인스턴스와 같은 이유로 table과 handle이 같이 있고, 같은 이유로 필요 범위는 다르다:
+// vkCmd*는 커맨드 버퍼로 디스패치하므로 기록 함수는 table만 있으면 되고 handle은 필요 없다.
+//
+// **아직 소멸자가 없다.** 인스턴스와 같다 - 정리 순서가 아플 때 RAII로 옮긴다.
+struct VulkanDevice {
+    VolkDeviceTable table{};
+    VkDevice handle = VK_NULL_HANDLE;
+
+    // 선택 결과가 여기로 흡수됐다. 파괴할 것이 없는 값들이라 소유가 아니다.
+    VkPhysicalDevice gpu = VK_NULL_HANDLE;
+    QueueFamilies families;
+
+    // vkGetDeviceQueue는 **조회**다. vkCreateDevice가 이미 만들었고 파괴 함수도 없다.
+    Queues queues;
+};
+
+// 논리 디바이스 + 함수 테이블 + 큐들.
+// 실패하면 handle이 VK_NULL_HANDLE인 채로 돌아온다.
+//
+// **inst를 받는 이유**: vkCreateDevice는 **인스턴스 레벨 함수**다. 만드는 함수와
+// 파괴하는 함수(vkDestroyDevice, 디바이스 레벨)의 층이 다르다는 Vulkan API의 비대칭이고,
+// 그래서 "이 클래스가 무슨 레벨이냐"가 아니라 "이 호출이 무슨 레벨이냐"로 봐야 한다.
+VulkanDevice CreateDevice(const VulkanInstance& inst,
+                          const PhysicalDeviceSelection& selection) noexcept {
+    VulkanDevice dev;
+    dev.gpu = selection.gpu;
+    dev.families = selection.families;
+    const QueueFamilies& families = dev.families;
 
     // 스펙: pQueueCreateInfos 안의 queueFamilyIndex는 **서로 달라야 한다.**
     // SelectQueueFamilies가 "GRAPHICS 없는 것만 compute", "GRAPHICS/COMPUTE 없는 것만
@@ -517,32 +565,33 @@ VkDevice CreateDevice(VkPhysicalDevice gpu,
     info.enabledExtensionCount = static_cast<uint32_t>(std::size(kRequiredDeviceExtensions));
     info.ppEnabledExtensionNames = kRequiredDeviceExtensions;
 
-    VkDevice device = VK_NULL_HANDLE;
-    if (vkCreateDevice(gpu, &info, nullptr, &device) != VK_SUCCESS) {
+    // **inst.table을 거친다.** 여기가 한동안 전역 vkCreateDevice를 부르고 있었다 -
+    // 동작은 했지만(volkLoadInstanceOnly가 전역을 채워둬서) 테이블 규약 위반이었다.
+    if (inst.table.vkCreateDevice(dev.gpu, &info, nullptr, &dev.handle) != VK_SUCCESS) {
         LOG("[vk] vkCreateDevice failed\n");
-        return VK_NULL_HANDLE;
+        return dev;
     }
 
     // **전역이 아니라 테이블로 받는다.** 전역(volkLoadDevice)은 마지막으로 로드한
     // 디바이스로 덮인다. 디바이스가 둘이 되는 순간 조용히 틀린 디바이스를 부르게 되고,
     // 조용해서 안 잡힌다. 지금 디바이스는 하나지만 **테이블을 쓰면 그 버그가 아예
     // 표현 불가능해진다.**
-    volkLoadDeviceTable(outTable, device);
+    volkLoadDeviceTable(&dev.table, dev.handle);
 
     // vkGetDeviceQueue는 **조회**다. vkCreateDevice가 이미 만들었고, 파괴 함수도 없다.
-    outTable->vkGetDeviceQueue(device, families.graphics, 0, &outQueues->graphics);
+    dev.table.vkGetDeviceQueue(dev.handle, families.graphics, 0, &dev.queues.graphics);
     if (families.HasCompute()) {
-        outTable->vkGetDeviceQueue(device, families.compute, 0, &outQueues->compute);
+        dev.table.vkGetDeviceQueue(dev.handle, families.compute, 0, &dev.queues.compute);
     }
     if (families.HasTransfer()) {
-        outTable->vkGetDeviceQueue(device, families.transfer, 0, &outQueues->transfer);
+        dev.table.vkGetDeviceQueue(dev.handle, families.transfer, 0, &dev.queues.transfer);
     }
 
     // present는 새로 만드는 게 아니라 위에서 만든 것 중 하나를 가리킨다.
     // 그래픽스 패밀리가 present를 지원하는 것은 PickPhysicalDevice가 이미 확인했다.
-    outQueues->present = outQueues->graphics;
+    dev.queues.present = dev.queues.graphics;
 
-    return device;
+    return dev;
 }
 
 // ============================================================================
@@ -599,21 +648,21 @@ VkCompositeAlphaFlagBitsKHR ChooseCompositeAlpha(VkCompositeAlphaFlagsKHR suppor
     return static_cast<VkCompositeAlphaFlagBitsKHR>(0);   // 드라이버가 스펙을 어긴 경우
 }
 
-void DestroySwapchain(const VolkDeviceTable& vk, VkDevice device, Swapchain* sc) noexcept {
+void DestroySwapchain(const VulkanDevice& dev, Swapchain* sc) noexcept {
     if (sc->handle == VK_NULL_HANDLE) { return; }
 
     // GPU가 아직 이 이미지들을 쓰고 있을 수 있다. 스펙상 사용 중인 오브젝트 파괴는 금지다.
-    vk.vkDeviceWaitIdle(device);
+    dev.table.vkDeviceWaitIdle(dev.handle);
 
     for (SwapchainImage& img : sc->images) {
-        vk.vkDestroySemaphore(device, img.renderFinished, nullptr);
-        vk.vkDestroyImageView(device, img.view, nullptr);
+        dev.table.vkDestroySemaphore(dev.handle, img.renderFinished, nullptr);
+        dev.table.vkDestroyImageView(dev.handle, img.view, nullptr);
         // img.image는 파괴하지 않는다 - vkGetSwapchainImagesKHR로 **조회**한 것이고
         // 스왑체인이 소유한다.
     }
     sc->images.clear();
 
-    vk.vkDestroySwapchainKHR(device, sc->handle, nullptr);
+    dev.table.vkDestroySwapchainKHR(dev.handle, sc->handle, nullptr);
     *sc = Swapchain{};
 }
 
@@ -626,17 +675,15 @@ void DestroySwapchain(const VolkDeviceTable& vk, VkDevice device, Swapchain* sc)
 // **인자가 다섯이고 테이블이 둘이다.** 서피스 조회는 인스턴스 레벨(it), 스왑체인 생성은
 // 디바이스 레벨(vk)이라 양쪽이 다 필요하다. 스왑체인이 두 층의 경계에 서 있다는 뜻이고,
 // 클래스가 되면 그 경계가 인자 둘로 줄어든다 (2단계 증거).
-Swapchain CreateSwapchain(const VolkInstanceTable& it,
-                          const VolkDeviceTable& vk,
-                          VkPhysicalDevice physicalDevice,
-                          VkDevice device,
+Swapchain CreateSwapchain(const VulkanInstance& inst,
+                          const VulkanDevice& dev,
                           VkSurfaceKHR surface,
                           VkSwapchainKHR oldSwapchain) noexcept {
     Swapchain sc;
 
     // ---- 서피스에게 "이 창은 무엇을 받나"를 묻는다 ----
     VkSurfaceCapabilitiesKHR caps{};
-    if (it.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, surface, &caps) != VK_SUCCESS) {
+    if (inst.table.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(dev.gpu, surface, &caps) != VK_SUCCESS) {
         LOG("[vk] vkGetPhysicalDeviceSurfaceCapabilitiesKHR failed\n");
         return sc;
     }
@@ -649,13 +696,13 @@ Swapchain CreateSwapchain(const VolkInstanceTable& it,
     }
 
     uint32_t formatCount = 0;
-    it.vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &formatCount, nullptr);
+    inst.table.vkGetPhysicalDeviceSurfaceFormatsKHR(dev.gpu, surface, &formatCount, nullptr);
     if (formatCount == 0) {
         LOG("[vk] surface reports no formats\n");
         return sc;
     }
     std::vector<VkSurfaceFormatKHR> formats(formatCount);
-    it.vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &formatCount, formats.data());
+    inst.table.vkGetPhysicalDeviceSurfaceFormatsKHR(dev.gpu, surface, &formatCount, formats.data());
 
     const VkSurfaceFormatKHR surfaceFormat = ChooseSurfaceFormat(formats);
 
@@ -695,7 +742,7 @@ Swapchain CreateSwapchain(const VolkInstanceTable& it,
     info.clipped = VK_TRUE;
     info.oldSwapchain = oldSwapchain;
 
-    const VkResult created = vk.vkCreateSwapchainKHR(device, &info, nullptr, &sc.handle);
+    const VkResult created = dev.table.vkCreateSwapchainKHR(dev.handle, &info, nullptr, &sc.handle);
     if (created != VK_SUCCESS) {
         LOG("[vk] vkCreateSwapchainKHR failed (%d)\n", created);
         sc.handle = VK_NULL_HANDLE;
@@ -707,9 +754,9 @@ Swapchain CreateSwapchain(const VolkInstanceTable& it,
 
     // ---- 이미지 조회 + 뷰/세마포어 생성 ----
     uint32_t actualCount = 0;
-    vk.vkGetSwapchainImagesKHR(device, sc.handle, &actualCount, nullptr);
+    dev.table.vkGetSwapchainImagesKHR(dev.handle, sc.handle, &actualCount, nullptr);
     std::vector<VkImage> rawImages(actualCount);
-    vk.vkGetSwapchainImagesKHR(device, sc.handle, &actualCount, rawImages.data());
+    dev.table.vkGetSwapchainImagesKHR(dev.handle, sc.handle, &actualCount, rawImages.data());
 
     sc.images.resize(actualCount);
     for (uint32_t i = 0; i < actualCount; ++i) {
@@ -722,12 +769,12 @@ Swapchain CreateSwapchain(const VolkInstanceTable& it,
         viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         viewInfo.subresourceRange.levelCount = 1;
         viewInfo.subresourceRange.layerCount = 1;
-        vk.vkCreateImageView(device, &viewInfo, nullptr, &sc.images[i].view);
+        dev.table.vkCreateImageView(dev.handle, &viewInfo, nullptr, &sc.images[i].view);
 
         // **이미지당 하나인 이유**: present가 이 이미지를 다 썼는지 CPU는 알 수 없다.
         // 프레임당 하나만 두면, 아직 present 중인 이미지의 세마포어를 다시 신호하게 된다.
         VkSemaphoreCreateInfo semInfo{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-        vk.vkCreateSemaphore(device, &semInfo, nullptr, &sc.images[i].renderFinished);
+        dev.table.vkCreateSemaphore(dev.handle, &semInfo, nullptr, &sc.images[i].renderFinished);
     }
 
     LOG("[vk] swapchain %ux%u, %u images, format %d, FIFO\n",
@@ -767,9 +814,7 @@ struct Commands {
     CommandSet transfer;
 };
 
-CommandSet CreateCommandSet(const VolkDeviceTable& vk,
-                            VkDevice device,
-                            uint32_t queueFamily) noexcept {
+CommandSet CreateCommandSet(const VulkanDevice& dev, uint32_t queueFamily) noexcept {
     CommandSet set;
 
     // RESET_COMMAND_BUFFER: 풀 전체가 아니라 버퍼 하나만 개별 리셋할 수 있게 한다.
@@ -779,7 +824,7 @@ CommandSet CreateCommandSet(const VolkDeviceTable& vk,
     poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     poolInfo.queueFamilyIndex = queueFamily;
 
-    if (vk.vkCreateCommandPool(device, &poolInfo, nullptr, &set.pool) != VK_SUCCESS) {
+    if (dev.table.vkCreateCommandPool(dev.handle, &poolInfo, nullptr, &set.pool) != VK_SUCCESS) {
         LOG("[vk] vkCreateCommandPool failed (family %u)\n", queueFamily);
         return CommandSet{};
     }
@@ -789,37 +834,34 @@ CommandSet CreateCommandSet(const VolkDeviceTable& vk,
     allocInfo.commandPool = set.pool;
     allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     allocInfo.commandBufferCount = 1;
-    vk.vkAllocateCommandBuffers(device, &allocInfo, &set.buffer);
+    dev.table.vkAllocateCommandBuffers(dev.handle, &allocInfo, &set.buffer);
 
     return set;
 }
 
 // 있는 패밀리마다 하나씩. 그래픽스는 필수, 나머지는 전용 패밀리가 있을 때만.
-bool CreateCommands(const VolkDeviceTable& vk,
-                    VkDevice device,
-                    const QueueFamilies& families,
-                    Commands* out) noexcept {
+bool CreateCommands(const VulkanDevice& dev, Commands* out) noexcept {
     *out = Commands{};
 
-    out->graphics = CreateCommandSet(vk, device, families.graphics);
+    out->graphics = CreateCommandSet(dev, dev.families.graphics);
     if (out->graphics.pool == VK_NULL_HANDLE) { return false; }
 
-    if (families.HasCompute()) {
-        out->compute = CreateCommandSet(vk, device, families.compute);
+    if (dev.families.HasCompute()) {
+        out->compute = CreateCommandSet(dev, dev.families.compute);
         if (out->compute.pool == VK_NULL_HANDLE) { return false; }
     }
-    if (families.HasTransfer()) {
-        out->transfer = CreateCommandSet(vk, device, families.transfer);
+    if (dev.families.HasTransfer()) {
+        out->transfer = CreateCommandSet(dev, dev.families.transfer);
         if (out->transfer.pool == VK_NULL_HANDLE) { return false; }
     }
     return true;
 }
 
-void DestroyCommands(const VolkDeviceTable& vk, VkDevice device, Commands* c) noexcept {
+void DestroyCommands(const VulkanDevice& dev, Commands* c) noexcept {
     // 버퍼는 따로 반납하지 않는다. 풀을 파괴하면 같이 사라진다.
     for (CommandSet* set : {&c->graphics, &c->compute, &c->transfer}) {
         if (set->pool != VK_NULL_HANDLE) {
-            vk.vkDestroyCommandPool(device, set->pool, nullptr);
+            dev.table.vkDestroyCommandPool(dev.handle, set->pool, nullptr);
         }
     }
     *c = Commands{};
@@ -921,28 +963,25 @@ void RecordFrame(const VolkDeviceTable& vk,
 // ============================================================================
 int main() {
     // ---- 만든다 (위 함수들 순서대로) ----
-    VolkInstanceTable it{};
-    VkDebugUtilsMessengerEXT messenger = VK_NULL_HANDLE;
-    VkInstance instance = CreateInstance(&it, &messenger);
-    if (instance == VK_NULL_HANDLE) { return 1; }
+    //
+    // out 파라미터가 하나도 없다. 묶음이 곧 반환값이다.
+    const VulkanInstance inst = CreateInstance();
+    if (inst.handle == VK_NULL_HANDLE) { return 1; }
 
     GLFWwindow* window = CreateAppWindow(1280, 720, "Lambda Engine");
     if (window == nullptr) { return 1; }
 
-    VkSurfaceKHR surface = CreateSurface(it, instance, window);
+    const VkSurfaceKHR surface = CreateSurface(inst, window);
     if (surface == VK_NULL_HANDLE) { return 1; }
 
-    VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
-    QueueFamilies families;
-    if (!PickPhysicalDevice(it, instance, surface, &physicalDevice, &families)) { return 1; }
+    const PhysicalDeviceSelection selection = PickPhysicalDevice(inst, surface);
+    if (selection.gpu == VK_NULL_HANDLE) { return 1; }
 
-    VolkDeviceTable vk{};
-    Queues queues;
-    VkDevice device = CreateDevice(physicalDevice, families, &vk, &queues);
-    if (device == VK_NULL_HANDLE) { return 1; }
+    // selection은 여기서 dev 안으로 흡수되고 더 이상 쓰이지 않는다.
+    const VulkanDevice dev = CreateDevice(inst, selection);
+    if (dev.handle == VK_NULL_HANDLE) { return 1; }
 
-    Swapchain swapchain =
-        CreateSwapchain(it, vk, physicalDevice, device, surface, VK_NULL_HANDLE);
+    Swapchain swapchain = CreateSwapchain(inst, dev, surface, VK_NULL_HANDLE);
     if (swapchain.handle == VK_NULL_HANDLE) {
         LOG("[vk] initial swapchain creation failed\n");
         return 1;
@@ -951,7 +990,7 @@ int main() {
     // 있는 패밀리마다 풀 하나씩. 컴퓨트/전송 풀은 **아직 아무것도 제출하지 않는다** -
     // 만들어만 두고 실제 작업(업로드, 디스패치)이 생길 때 쓴다.
     Commands commands;
-    if (!CreateCommands(vk, device, families, &commands)) { return 1; }
+    if (!CreateCommands(dev, &commands)) { return 1; }
     const VkCommandBuffer cmd = commands.graphics.buffer;
 
     // ---- 동기화 오브젝트 ----
@@ -968,13 +1007,13 @@ int main() {
     // 지금 frames-in-flight = 1이라 각각 하나씩이다.
     VkSemaphoreCreateInfo semaphoreInfo{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     VkSemaphore imageAvailable = VK_NULL_HANDLE;
-    vk.vkCreateSemaphore(device, &semaphoreInfo, nullptr, &imageAvailable);
+    dev.table.vkCreateSemaphore(dev.handle, &semaphoreInfo, nullptr, &imageAvailable);
 
     // **신호된 상태로 만든다.** 첫 프레임엔 기다릴 이전 프레임이 없다.
     VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
     fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
     VkFence inFlight = VK_NULL_HANDLE;
-    vk.vkCreateFence(device, &fenceInfo, nullptr, &inFlight);
+    dev.table.vkCreateFence(dev.handle, &fenceInfo, nullptr, &inFlight);
 
     // ---- 루프 ----
     LOG("close the window to exit.\n");
@@ -991,13 +1030,13 @@ int main() {
 
         // 0. 그릴 곳 확보
         if (swapchainOutOfDate || swapchain.handle == VK_NULL_HANDLE) {
-            vk.vkDeviceWaitIdle(device);
+            dev.table.vkDeviceWaitIdle(dev.handle);
 
             // 이전 것을 oldSwapchain으로 넘겨 은퇴시키고, 새것을 만든 뒤에 파괴한다.
             // **넘긴 것은 "은퇴시켜라"는 뜻이지 "네가 지워라"가 아니다.**
             Swapchain fresh =
-                CreateSwapchain(it, vk, physicalDevice, device, surface, swapchain.handle);
-            DestroySwapchain(vk, device, &swapchain);
+                CreateSwapchain(inst, dev, surface, swapchain.handle);
+            DestroySwapchain(dev, &swapchain);
 
             swapchain = std::move(fresh);
             swapchainOutOfDate = false;
@@ -1008,12 +1047,12 @@ int main() {
         }
 
         // 1. 이전 프레임이 끝나기를 기다린다 (GPU -> CPU)
-        vk.vkWaitForFences(device, 1, &inFlight, VK_TRUE, UINT64_MAX);
+        dev.table.vkWaitForFences(dev.handle, 1, &inFlight, VK_TRUE, UINT64_MAX);
 
         // 2. 이미지를 하나 빌린다
         uint32_t imageIndex = 0;
-        const VkResult acquired = vk.vkAcquireNextImageKHR(
-            device, swapchain.handle, UINT64_MAX, imageAvailable, VK_NULL_HANDLE, &imageIndex);
+        const VkResult acquired = dev.table.vkAcquireNextImageKHR(
+            dev.handle, swapchain.handle, UINT64_MAX, imageAvailable, VK_NULL_HANDLE, &imageIndex);
 
         if (acquired == VK_ERROR_OUT_OF_DATE_KHR) {
             swapchainOutOfDate = true;
@@ -1029,10 +1068,10 @@ int main() {
         // 3. 펜스 리셋 (**acquire가 성공한 뒤에**)
         // 먼저 리셋하면, acquire가 실패해 제출 없이 돌아가는 프레임에서 펜스가 영영
         // 신호되지 않고 다음 WaitForFences가 영원히 걸린다.
-        vk.vkResetFences(device, 1, &inFlight);
+        dev.table.vkResetFences(dev.handle, 1, &inFlight);
 
         // 4~11. 기록
-        RecordFrame(vk, cmd, target, swapchain.extent);
+        RecordFrame(dev.table, cmd, target, swapchain.extent);
 
         // 12. 제출
         // acquire가 끝나야 이미지에 쓸 수 있고(wait), 다 쓰면 present가 알아야 한다(signal).
@@ -1056,7 +1095,7 @@ int main() {
         submit.signalSemaphoreInfoCount = 1;
         submit.pSignalSemaphoreInfos = &signal;
 
-        if (vk.vkQueueSubmit2(queues.graphics, 1, &submit, inFlight) != VK_SUCCESS) {
+        if (dev.table.vkQueueSubmit2(dev.queues.graphics, 1, &submit, inFlight) != VK_SUCCESS) {
             LOG("[vk] vkQueueSubmit2 failed\n");
             break;
         }
@@ -1070,7 +1109,7 @@ int main() {
         present.pImageIndices = &imageIndex;
 
         // SUBOPTIMAL은 에러가 아니다. 그려지긴 했고 다음 프레임에 다시 만들면 된다.
-        const VkResult presented = vk.vkQueuePresentKHR(queues.present, &present);
+        const VkResult presented = dev.table.vkQueuePresentKHR(dev.queues.present, &present);
         if (presented == VK_ERROR_OUT_OF_DATE_KHR || presented == VK_SUBOPTIMAL_KHR) {
             swapchainOutOfDate = true;
         }
@@ -1080,25 +1119,25 @@ int main() {
     //
     // **여기가 통째로 사라지는 것이 클래스로 옮기는 진짜 이유다.** RAII로 가면
     // 이 열 줄이 "선언 순서"로 표현되고, 순서를 틀릴 방법 자체가 없어진다.
-    vk.vkDeviceWaitIdle(device);   // GPU가 아직 작업 중일 수 있다
+    dev.table.vkDeviceWaitIdle(dev.handle);   // GPU가 아직 작업 중일 수 있다
 
-    vk.vkDestroyFence(device, inFlight, nullptr);
-    vk.vkDestroySemaphore(device, imageAvailable, nullptr);
-    DestroyCommands(vk, device, &commands);                  // 커맨드 버퍼도 같이 사라진다
-    DestroySwapchain(vk, device, &swapchain);
-    vk.vkDestroyDevice(device, nullptr);
+    dev.table.vkDestroyFence(dev.handle, inFlight, nullptr);
+    dev.table.vkDestroySemaphore(dev.handle, imageAvailable, nullptr);
+    DestroyCommands(dev, &commands);                  // 커맨드 버퍼도 같이 사라진다
+    DestroySwapchain(dev, &swapchain);
+    dev.table.vkDestroyDevice(dev.handle, nullptr);
 
     // 서피스는 인스턴스가 만들었으므로 인스턴스 레벨 함수로 파괴한다.
     // **창보다 먼저 죽어야 한다** - 죽은 HWND를 참조하게 된다.
-    it.vkDestroySurfaceKHR(instance, surface, nullptr);
+    inst.table.vkDestroySurfaceKHR(inst.handle, surface, nullptr);
 
     glfwDestroyWindow(window);
     glfwTerminate();
 
-    if (messenger != VK_NULL_HANDLE) {
-        it.vkDestroyDebugUtilsMessengerEXT(instance, messenger, nullptr);
+    if (inst.messenger != VK_NULL_HANDLE) {
+        inst.table.vkDestroyDebugUtilsMessengerEXT(inst.handle, inst.messenger, nullptr);
     }
-    it.vkDestroyInstance(instance, nullptr);
+    inst.table.vkDestroyInstance(inst.handle, nullptr);
 
     LOG("[vk] clean shutdown\n");
     return 0;
