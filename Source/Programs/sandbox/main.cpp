@@ -752,12 +752,32 @@ Swapchain CreateSwapchain(const VulkanInstance& inst,
     sc.format = surfaceFormat.format;
     sc.extent = caps.currentExtent;
 
-    // ---- 이미지 조회 + 뷰/세마포어 생성 ----
+    // ---- 이미지 조회 ----
+    // **개수는 요청이 아니라 결과다.** minImageCount는 최소일 뿐이고 드라이버가 더 줄 수
+    // 있다. 만든 뒤에 실제 개수를 다시 물어야 한다.
     uint32_t actualCount = 0;
-    dev.table.vkGetSwapchainImagesKHR(dev.handle, sc.handle, &actualCount, nullptr);
+    if (dev.table.vkGetSwapchainImagesKHR(dev.handle, sc.handle, &actualCount, nullptr)
+            != VK_SUCCESS || actualCount == 0) {
+        LOG("[vk] vkGetSwapchainImagesKHR returned no images\n");
+        DestroySwapchain(dev, &sc);
+        return sc;
+    }
     std::vector<VkImage> rawImages(actualCount);
-    dev.table.vkGetSwapchainImagesKHR(dev.handle, sc.handle, &actualCount, rawImages.data());
+    if (dev.table.vkGetSwapchainImagesKHR(dev.handle, sc.handle, &actualCount, rawImages.data())
+            != VK_SUCCESS) {
+        LOG("[vk] vkGetSwapchainImagesKHR failed\n");
+        DestroySwapchain(dev, &sc);
+        return sc;
+    }
 
+    // ---- 이미지마다 뷰 + 세마포어 ----
+    //
+    // **여기서 실패하면 통째로 버린다.** 반만 만들어진 스왑체인을 성공으로 돌려주면
+    // 호출자는 sc.handle이 유효한 것만 보고 다음 프레임에 null 뷰로 렌더링을 시도한다.
+    // "객체가 존재하면 항상 유효하다"를 지키려면 중간 실패에서 되돌려야 한다.
+    //
+    // 되돌리기는 DestroySwapchain이 그대로 해준다 - vkDestroy~는 VK_NULL_HANDLE에
+    // 대해 no-op이라(스펙 보장) 반쯤 채워진 배열도 안전하게 정리된다.
     sc.images.resize(actualCount);
     for (uint32_t i = 0; i < actualCount; ++i) {
         sc.images[i].image = rawImages[i];
@@ -769,12 +789,36 @@ Swapchain CreateSwapchain(const VulkanInstance& inst,
         viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         viewInfo.subresourceRange.levelCount = 1;
         viewInfo.subresourceRange.layerCount = 1;
-        dev.table.vkCreateImageView(dev.handle, &viewInfo, nullptr, &sc.images[i].view);
 
-        // **이미지당 하나인 이유**: present가 이 이미지를 다 썼는지 CPU는 알 수 없다.
-        // 프레임당 하나만 두면, 아직 present 중인 이미지의 세마포어를 다시 신호하게 된다.
+        const VkResult viewResult =
+            dev.table.vkCreateImageView(dev.handle, &viewInfo, nullptr, &sc.images[i].view);
+        if (viewResult != VK_SUCCESS) {
+            LOG("[vk] vkCreateImageView failed on image %u (%d)\n", i, viewResult);
+            DestroySwapchain(dev, &sc);
+            return sc;
+        }
+
+        // **이미지당 하나인 이유**: 이 세마포어는 present가 기다린다. 그런데 present에는
+        // 완료를 알려주는 것이 없다 - vkQueuePresentKHR은 펜스를 주지 않는다.
+        // "다시 signal해도 된다"는 유일한 단서가 **acquire가 그 이미지를 다시 줬다**는
+        // 사실이고, 그 단서는 이미지 인덱스로만 온다. 그래서 개수도 이미지 수다.
+        //
+        // (반대로 imageAvailable은 acquire를 부르기 전에는 인덱스를 모르므로 이미지당으로
+        //  둘 수 없다. 정확히 반대 방향이고, 이 비대칭이 "스왑체인에 묶인 자원"과
+        //  "프레임에 묶인 자원"을 가르는 선이다.)
+        //
+        // 완전한 해법은 VK_KHR_swapchain_maintenance1의 VkSwapchainPresentFenceInfoKHR다 -
+        // present에 펜스를 붙일 수 있다. **그 확장이 따로 생겼다는 사실 자체가
+        // 원래 present에 완료 신호가 없었다는 증거다.** 지금은 필요 없다.
         VkSemaphoreCreateInfo semInfo{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-        dev.table.vkCreateSemaphore(dev.handle, &semInfo, nullptr, &sc.images[i].renderFinished);
+        const VkResult semResult =
+            dev.table.vkCreateSemaphore(dev.handle, &semInfo, nullptr,
+                                        &sc.images[i].renderFinished);
+        if (semResult != VK_SUCCESS) {
+            LOG("[vk] vkCreateSemaphore failed on image %u (%d)\n", i, semResult);
+            DestroySwapchain(dev, &sc);
+            return sc;
+        }
     }
 
     LOG("[vk] swapchain %ux%u, %u images, format %d, FIFO\n",
@@ -834,7 +878,15 @@ CommandSet CreateCommandSet(const VulkanDevice& dev, uint32_t queueFamily) noexc
     allocInfo.commandPool = set.pool;
     allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     allocInfo.commandBufferCount = 1;
-    dev.table.vkAllocateCommandBuffers(dev.handle, &allocInfo, &set.buffer);
+    // 실패하면 풀만 남고 버퍼는 VK_NULL_HANDLE인 CommandSet이 나간다 - 호출자는
+    // pool만 보고 성공으로 읽으므로, 여기서 되돌려야 "존재하면 유효"가 지켜진다.
+    const VkResult allocResult =
+        dev.table.vkAllocateCommandBuffers(dev.handle, &allocInfo, &set.buffer);
+    if (allocResult != VK_SUCCESS) {
+        LOG("[vk] vkAllocateCommandBuffers failed (%d)\n", allocResult);
+        dev.table.vkDestroyCommandPool(dev.handle, set.pool, nullptr);
+        return CommandSet{};
+    }
 
     return set;
 }
@@ -1007,13 +1059,20 @@ int main() {
     // 지금 frames-in-flight = 1이라 각각 하나씩이다.
     VkSemaphoreCreateInfo semaphoreInfo{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     VkSemaphore imageAvailable = VK_NULL_HANDLE;
-    dev.table.vkCreateSemaphore(dev.handle, &semaphoreInfo, nullptr, &imageAvailable);
+    if (dev.table.vkCreateSemaphore(dev.handle, &semaphoreInfo, nullptr, &imageAvailable)
+            != VK_SUCCESS) {
+        LOG("[vk] vkCreateSemaphore(imageAvailable) failed\n");
+        return 1;
+    }
 
     // **신호된 상태로 만든다.** 첫 프레임엔 기다릴 이전 프레임이 없다.
     VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
     fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
     VkFence inFlight = VK_NULL_HANDLE;
-    dev.table.vkCreateFence(dev.handle, &fenceInfo, nullptr, &inFlight);
+    if (dev.table.vkCreateFence(dev.handle, &fenceInfo, nullptr, &inFlight) != VK_SUCCESS) {
+        LOG("[vk] vkCreateFence(inFlight) failed\n");
+        return 1;
+    }
 
     // ---- 루프 ----
     LOG("close the window to exit.\n");
