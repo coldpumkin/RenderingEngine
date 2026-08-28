@@ -455,6 +455,22 @@ struct Queues {
     VkQueue compute  = VK_NULL_HANDLE;
     VkQueue transfer = VK_NULL_HANDLE;
 
+    // **present는 4번째 큐가 아니라 역할이다.** 위 셋 중 하나를 가리키는 별칭이고,
+    // 기본은 그래픽스다. 언리얼도 같다:
+    //   FVulkanQueue* PresentQueue = nullptr;  // points to an existing queue
+    //   (VulkanDevice.h:718, EVulkanQueueType은 Graphics/AsyncCompute/Transfer 셋뿐)
+    //
+    // 그래픽스가 present를 못 하는 하드웨어는 지원하지 않는다 - 언리얼도 그 경우
+    // 메시지박스를 띄우고 종료한다(VulkanSwapChain.cpp:886 SetupPresentQueue).
+    // 지원하려면 스왑체인을 CONCURRENT로 바꾸거나 소유권 이전을 넣어야 하고,
+    // Win32 단일 GPU에서는 일어나지 않는 경우다.
+    //
+    // **나중에 볼 것**: AMD에서는 컴퓨트 큐로 present하는 빠른 경로가 있다.
+    // 언리얼이 vendor를 AMD로 한정해 cvar 뒤에 두고 있다:
+    //   bPresentOnComputeQueue = (VendorId == EGpuVendorId::Amd);
+    // 제출 구조가 바뀌므로 **지연을 실제로 잴 수 있을 때** 검토한다.
+    VkQueue present = VK_NULL_HANDLE;
+
     // 없으면 그래픽스로 떨어진다. 호출부가 매번 분기하지 않게.
     VkQueue ComputeOrGraphics()  const noexcept { return compute  ? compute  : graphics; }
     VkQueue TransferOrGraphics() const noexcept { return transfer ? transfer : graphics; }
@@ -521,6 +537,10 @@ VkDevice CreateDevice(VkPhysicalDevice gpu,
     if (families.HasTransfer()) {
         outTable->vkGetDeviceQueue(device, families.transfer, 0, &outQueues->transfer);
     }
+
+    // present는 새로 만드는 게 아니라 위에서 만든 것 중 하나를 가리킨다.
+    // 그래픽스 패밀리가 present를 지원하는 것은 PickPhysicalDevice가 이미 확인했다.
+    outQueues->present = outQueues->graphics;
 
     return device;
 }
@@ -716,35 +736,93 @@ Swapchain CreateSwapchain(const VolkInstanceTable& it,
 }
 
 // ============================================================================
-// 6. 커맨드 풀 + 커맨드 버퍼
+// 6. 커맨드 풀 - **큐 패밀리마다 하나**
 // ============================================================================
 //
-// 풀은 **큐 패밀리에 묶인다.** 창도 프레임도 모른다.
-// 여기도 out 파라미터가 하나 있다 - 풀과 버퍼는 같이 태어나고 같이 죽는다
-// (버퍼를 따로 반납하지 않는다. 풀을 파괴하면 같이 사라진다).
-VkCommandPool CreateCommandPool(const VolkDeviceTable& vk,
-                                VkDevice device,
-                                uint32_t queueFamily,
-                                VkCommandBuffer* outCommandBuffer) noexcept {
+// 스펙 제약이라 선택의 여지가 없다: 풀은 queueFamilyIndex로 만들어지고,
+// **그 풀에서 나온 커맨드 버퍼는 같은 패밀리의 큐에만 제출할 수 있다.**
+// 컴퓨트 큐에 뭔가 제출하려면 컴퓨트 패밀리의 풀이 반드시 있어야 한다.
+//
+// **풀의 개수는 세 축의 곱이다:**
+//
+//   큐 패밀리        위 제약. 지금 3 (graphics/compute/transfer)
+//   스레드           풀은 스레드 안전이 아니다(외부 동기화 필요). 지금 1
+//   frames-in-flight 프레임 단위로 통째 리셋하려면 프레임마다 따로. 지금 1
+//
+// 그래서 지금은 3 x 1 x 1 = 3개다. **frames-in-flight를 2로 올리면 6개가 된다** -
+// 이 곱셈이 나중에 "풀을 무엇으로 묶을 것인가"를 정한다.
+
+// 풀 하나와 거기서 뽑은 버퍼 하나. 같이 태어나고 같이 죽는다
+// (버퍼를 따로 반납하지 않는다 - 풀을 파괴하면 같이 사라진다).
+struct CommandSet {
+    VkCommandPool pool = VK_NULL_HANDLE;
+    VkCommandBuffer buffer = VK_NULL_HANDLE;
+};
+
+// 전용 패밀리가 없는 큐의 CommandSet은 비어 있다(pool == VK_NULL_HANDLE).
+// 그때 그 일은 graphics 것으로 한다.
+struct Commands {
+    CommandSet graphics;
+    CommandSet compute;
+    CommandSet transfer;
+};
+
+CommandSet CreateCommandSet(const VolkDeviceTable& vk,
+                            VkDevice device,
+                            uint32_t queueFamily) noexcept {
+    CommandSet set;
+
     // RESET_COMMAND_BUFFER: 풀 전체가 아니라 버퍼 하나만 개별 리셋할 수 있게 한다.
+    // frames-in-flight가 늘어 프레임 단위로 리셋하게 되면 이 플래그를 빼고
+    // vkResetCommandPool을 쓰는 쪽이 빨라진다 - 그때 다시 본다.
     VkCommandPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     poolInfo.queueFamilyIndex = queueFamily;
 
-    VkCommandPool pool = VK_NULL_HANDLE;
-    if (vk.vkCreateCommandPool(device, &poolInfo, nullptr, &pool) != VK_SUCCESS) {
-        LOG("[vk] vkCreateCommandPool failed\n");
-        return VK_NULL_HANDLE;
+    if (vk.vkCreateCommandPool(device, &poolInfo, nullptr, &set.pool) != VK_SUCCESS) {
+        LOG("[vk] vkCreateCommandPool failed (family %u)\n", queueFamily);
+        return CommandSet{};
     }
 
     // PRIMARY: 큐에 직접 제출할 수 있다. SECONDARY는 다른 버퍼 안에서만 실행된다.
     VkCommandBufferAllocateInfo allocInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-    allocInfo.commandPool = pool;
+    allocInfo.commandPool = set.pool;
     allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     allocInfo.commandBufferCount = 1;
-    vk.vkAllocateCommandBuffers(device, &allocInfo, outCommandBuffer);
+    vk.vkAllocateCommandBuffers(device, &allocInfo, &set.buffer);
 
-    return pool;
+    return set;
+}
+
+// 있는 패밀리마다 하나씩. 그래픽스는 필수, 나머지는 전용 패밀리가 있을 때만.
+bool CreateCommands(const VolkDeviceTable& vk,
+                    VkDevice device,
+                    const QueueFamilies& families,
+                    Commands* out) noexcept {
+    *out = Commands{};
+
+    out->graphics = CreateCommandSet(vk, device, families.graphics);
+    if (out->graphics.pool == VK_NULL_HANDLE) { return false; }
+
+    if (families.HasCompute()) {
+        out->compute = CreateCommandSet(vk, device, families.compute);
+        if (out->compute.pool == VK_NULL_HANDLE) { return false; }
+    }
+    if (families.HasTransfer()) {
+        out->transfer = CreateCommandSet(vk, device, families.transfer);
+        if (out->transfer.pool == VK_NULL_HANDLE) { return false; }
+    }
+    return true;
+}
+
+void DestroyCommands(const VolkDeviceTable& vk, VkDevice device, Commands* c) noexcept {
+    // 버퍼는 따로 반납하지 않는다. 풀을 파괴하면 같이 사라진다.
+    for (CommandSet* set : {&c->graphics, &c->compute, &c->transfer}) {
+        if (set->pool != VK_NULL_HANDLE) {
+            vk.vkDestroyCommandPool(device, set->pool, nullptr);
+        }
+    }
+    *c = Commands{};
 }
 
 // ============================================================================
@@ -870,12 +948,11 @@ int main() {
         return 1;
     }
 
-    // 커맨드 풀은 **큐 패밀리마다 하나**여야 한다 (풀이 패밀리에 묶인다).
-    // 지금은 그래픽스에만 그리므로 하나면 된다. 컴퓨트/전송에 실제로 제출하게 되면
-    // 그때 그 패밀리의 풀을 만든다 - **쓰지도 않을 풀을 미리 만들지 않는다.**
-    VkCommandBuffer cmd = VK_NULL_HANDLE;
-    VkCommandPool commandPool = CreateCommandPool(vk, device, families.graphics, &cmd);
-    if (commandPool == VK_NULL_HANDLE) { return 1; }
+    // 있는 패밀리마다 풀 하나씩. 컴퓨트/전송 풀은 **아직 아무것도 제출하지 않는다** -
+    // 만들어만 두고 실제 작업(업로드, 디스패치)이 생길 때 쓴다.
+    Commands commands;
+    if (!CreateCommands(vk, device, families, &commands)) { return 1; }
+    const VkCommandBuffer cmd = commands.graphics.buffer;
 
     // ---- 동기화 오브젝트 ----
     //
@@ -993,7 +1070,7 @@ int main() {
         present.pImageIndices = &imageIndex;
 
         // SUBOPTIMAL은 에러가 아니다. 그려지긴 했고 다음 프레임에 다시 만들면 된다.
-        const VkResult presented = vk.vkQueuePresentKHR(queues.graphics, &present);
+        const VkResult presented = vk.vkQueuePresentKHR(queues.present, &present);
         if (presented == VK_ERROR_OUT_OF_DATE_KHR || presented == VK_SUBOPTIMAL_KHR) {
             swapchainOutOfDate = true;
         }
@@ -1007,7 +1084,7 @@ int main() {
 
     vk.vkDestroyFence(device, inFlight, nullptr);
     vk.vkDestroySemaphore(device, imageAvailable, nullptr);
-    vk.vkDestroyCommandPool(device, commandPool, nullptr);   // 커맨드 버퍼도 같이 사라진다
+    DestroyCommands(vk, device, &commands);                  // 커맨드 버퍼도 같이 사라진다
     DestroySwapchain(vk, device, &swapchain);
     vk.vkDestroyDevice(device, nullptr);
 
