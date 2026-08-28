@@ -37,8 +37,15 @@ message(STATUS "Vulkan validation layers: ${LAMBDA_ENABLE_VULKAN_VALIDATION}")
 add_subdirectory(Source/ThirdParty/volk)
 add_subdirectory(Source/ThirdParty/glfw)
 
-add_subdirectory(Source/Runtime/RHI)
-add_subdirectory(Source/Runtime/Engine)
+# 모듈이 없다. sandbox 하나에 평평하게 쓴다.
+#
+# 한때 Runtime/RHI와 Runtime/Engine이 있었다. 지웠는데 이유는 이렇다:
+# Vulkan 객체마다 래퍼 클래스를 먼저 만드는 바람에 **전체 흐름을 한 번도 raw로 본 적이
+# 없었다.** CLAUDE.md의 Private-first("구체적으로 먼저 쓰고 돌아가면 승격")를 지킨다면서
+# 실제로는 1단계를 건너뛴 것이다.
+#
+# 묶음의 근거는 흐름에서 나와야 한다 - 같이 만들어지고, 같이 죽고, 같이 바뀌는 것.
+# 그걸 보려면 먼저 펼쳐야 한다. (옛 구조는 git master 브랜치에 있다)
 add_subdirectory(Source/Programs/sandbox)
 
 set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT sandbox)
