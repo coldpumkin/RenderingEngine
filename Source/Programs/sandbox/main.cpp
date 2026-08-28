@@ -24,6 +24,7 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <utility>
 #include <vector>
 
 #define LOG(...)  std::fprintf(stderr, __VA_ARGS__)
@@ -225,8 +226,93 @@ VulkanInstance CreateInstance() noexcept {
 }
 
 // ============================================================================
-// 2. 창 + 서피스
+// 2. 창 시스템 (프로세스 하나당) + 창 (창마다)
 // ============================================================================
+//
+// 둘을 나눈 이유: **glfwInit/glfwTerminate는 창이 아니라 프로세스 단위다.**
+// 창이 둘이 돼도 초기화는 한 번이고, glfwTerminate는 **모든** 창을 부순다.
+// 한 함수에 섞여 있으면 창이 둘 될 때 바로 어긋난다.
+
+void OnGlfwError(int code, const char* description) {
+    LOG("[glfw] error %d: %s\n", code, description);
+}
+
+bool InitWindowSystem() noexcept {
+    // 에러 콜백을 glfwInit보다 먼저 건다. glfwInit 자체의 실패 이유도 받으려면 그래야 한다
+    // (GLFW 문서가 명시하는, 초기화 전에 부를 수 있는 예외 함수).
+    glfwSetErrorCallback(OnGlfwError);
+    if (glfwInit() != GLFW_TRUE) {
+        LOG("[glfw] glfwInit failed\n");
+        return false;
+    }
+    return true;
+}
+
+void ShutdownWindowSystem() noexcept {
+    glfwTerminate();
+}
+
+// ---------------------------------------------------------------------------
+// 스왑체인 자료구조 - **Window가 값으로 들기 때문에 여기서 먼저 정의한다.**
+// 만들고 부수는 함수는 5절(디바이스가 생긴 뒤)에 흐름 순서대로 있다.
+// ---------------------------------------------------------------------------
+
+// 이미지 한 장에 딸린 것 전부. 인덱스 하나로 함께 지목되므로 한 몸으로 둔다
+// (셋을 병렬 vector로 들면 개수가 어긋나도 컴파일된다).
+struct SwapchainImage {
+    VkImage image = VK_NULL_HANDLE;               // 스왑체인이 소유. 우리가 파괴하지 않는다
+    VkImageView view = VK_NULL_HANDLE;            // 우리가 만들었다 -> 우리가 파괴한다
+    VkSemaphore renderFinished = VK_NULL_HANDLE;  // 우리가 만들었다. **이미지당 하나**
+};
+
+struct Swapchain {
+    VkSwapchainKHR handle = VK_NULL_HANDLE;
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    VkExtent2D extent{};
+    std::vector<SwapchainImage> images;
+};
+
+// ============================================================================
+// 창 하나에 묶인 것 전부
+// ============================================================================
+//
+// **셋의 관계가 중첩이다:**
+//
+//   handle    ⊃  surface        ⊃  swapchain
+//   (GLFW)       (인스턴스 레벨)     (디바이스 레벨)
+//
+// 파괴 순서가 그 중첩을 그대로 따른다. 그런데 **수명은 안쪽 하나만 다르다** -
+// handle과 surface는 창이 사는 동안 그대로인데 swapchain만 리사이즈·최소화마다 갈린다.
+//
+// ---------------------------------------------------------------------------
+// **서피스가 여기 있고 Swapchain 안에 없는 이유** (근거 셋)
+//
+//   1. 서피스는 **디바이스보다 먼저 존재한다.** PickPhysicalDevice가 "이 큐 패밀리가
+//      이 창에 present 되나"를 물을 때 이미 필요하다. 그 시점엔 스왑체인은커녕
+//      디바이스도 없다. 스왑체인의 부품이라면 있을 수 없는 일이다.
+//   2. **레벨이 다르다.** 서피스는 인스턴스 레벨, 스왑체인은 디바이스 레벨이다.
+//   3. **1:N이다.** 한 서피스에 스왑체인이 시간에 걸쳐 여럿 생긴다(동시엔 하나).
+//
+// 언리얼은 반대로 FVulkanSwapChain이 Surface를 멤버로 든다. 그랬더니 스왑체인이
+// 죽을 때마다 서피스를 밖으로 빼내는 구조체가 따로 필요해졌다:
+//   struct FVulkanSwapChainRecreateInfo { VkSwapchainKHR SwapChain; VkSurfaceKHR Surface; };
+// **부품인데 부모보다 오래 살아야 한다는 건 부품이 아니라는 뜻이다.**
+// 최종 파괴도 결국 FVulkanViewport(창을 대표하는 객체)가 한다.
+// ---------------------------------------------------------------------------
+//
+// swapchain이 비어 있는 것은 **오류가 아니라 정상 상태다** (최소화 중). 그래서 이
+// struct를 두 단계로 채우는 것(창+서피스 먼저, 스왑체인은 디바이스가 생긴 뒤)이
+// "생성됐지만 못 쓰는 객체"를 만들지 않는다 - 그 상태가 원래 합법이다.
+struct Window {
+    GLFWwindow* handle = nullptr;
+    VkSurfaceKHR surface = VK_NULL_HANDLE;
+
+    Swapchain swapchain;
+
+    // **창마다 하나여야 한다.** 한동안 전역이었는데, 그러면 창이 둘일 때 어느 창이
+    // 바뀌었는지 구분할 수 없다. 창 하나뿐이라 안 터지고 있었을 뿐이다.
+    bool swapchainOutOfDate = false;
+};
 
 // 창 크기가 바뀌었다는 표시만 한다.
 //
@@ -234,48 +320,48 @@ VulkanInstance CreateInstance() noexcept {
 // 여기 오는 값과 다를 수 있다. 그리고 콜백은 아무 때나 오므로 그 자리에서 재생성하면
 // GPU가 프레임 중일 수 있다. **표시만 하고 다음 프레임 시작에 처리한다.**
 //
-// 전역인 이유는 GLFW 콜백이 C 함수 포인터라서다. 창을 클래스로 만들 때
-// glfwSetWindowUserPointer로 옮기게 된다.
-bool g_framebufferResized = false;
-
-void OnFramebufferResized(GLFWwindow* /*window*/, int /*w*/, int /*h*/) {
-    g_framebufferResized = true;
+// user pointer로 **어느 창인지** 찾는다. 이게 전역 플래그를 없앤 자리다.
+void OnFramebufferResized(GLFWwindow* handle, int /*w*/, int /*h*/) {
+    auto* window = static_cast<Window*>(glfwGetWindowUserPointer(handle));
+    if (window != nullptr) {
+        window->swapchainOutOfDate = true;
+    }
 }
 
-// 이름이 CreateWindow가 아닌 이유: windows.h가 `CreateWindow`를 **매크로**로 정의한다
-// (CreateWindowA/W로 펼쳐진다). glfw3native.h가 windows.h를 끌고 오므로 여기서 충돌한다.
-GLFWwindow* CreateAppWindow(int width, int height, const char* title) noexcept {
-    if (glfwInit() != GLFW_TRUE) {
-        LOG("[glfw] glfwInit failed\n");
-        return nullptr;
-    }
+// 창 + 서피스까지 만든다. 스왑체인은 디바이스가 생긴 뒤라 여기서 못 만든다.
+//
+// **out으로 받는 이유**: glfwSetWindowUserPointer에 넣을 주소가 **호출자가 들고 있을
+// 최종 주소**여야 한다. 값으로 반환하면 함수 안의 임시 객체 주소를 넣게 된다.
+bool OpenWindow(const VulkanInstance& inst,
+                int width, int height, const char* title,
+                Window* out) noexcept {
+    *out = Window{};
+
     // GLFW는 기본적으로 OpenGL 컨텍스트를 같이 만든다. Vulkan을 쓰므로 끈다.
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 
-    GLFWwindow* window = glfwCreateWindow(width, height, title, nullptr, nullptr);
-    if (window == nullptr) {
+    out->handle = glfwCreateWindow(width, height, title, nullptr, nullptr);
+    if (out->handle == nullptr) {
         LOG("[glfw] glfwCreateWindow failed\n");
-        glfwTerminate();
-        return nullptr;
+        return false;
     }
-    glfwSetFramebufferSizeCallback(window, OnFramebufferResized);
-    return window;
-}
+    glfwSetWindowUserPointer(out->handle, out);
+    glfwSetFramebufferSizeCallback(out->handle, OnFramebufferResized);
 
-// glfwCreateWindowSurface()도 있지만 쓰지 않는다. 직접 만들면 **창 라이브러리와
-// Vulkan이 서로를 모르는 상태로 남는다** - GLFW가 VkInstance를 알 필요가 없다.
-VkSurfaceKHR CreateSurface(const VulkanInstance& inst, GLFWwindow* window) noexcept {
+    // glfwCreateWindowSurface()도 있지만 쓰지 않는다. 직접 만들면 **창 라이브러리와
+    // Vulkan이 서로를 모르는 상태로 남는다** - GLFW가 VkInstance를 알 필요가 없다.
     VkWin32SurfaceCreateInfoKHR info{VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR};
     info.hinstance = GetModuleHandleW(nullptr);
-    info.hwnd = glfwGetWin32Window(window);
+    info.hwnd = glfwGetWin32Window(out->handle);
 
-    VkSurfaceKHR surface = VK_NULL_HANDLE;
-    if (inst.table.vkCreateWin32SurfaceKHR(inst.handle, &info, nullptr, &surface)
+    if (inst.table.vkCreateWin32SurfaceKHR(inst.handle, &info, nullptr, &out->surface)
             != VK_SUCCESS) {
         LOG("[vk] vkCreateWin32SurfaceKHR failed\n");
-        return VK_NULL_HANDLE;
+        glfwDestroyWindow(out->handle);
+        *out = Window{};
+        return false;
     }
-    return surface;
+    return true;
 }
 
 // ============================================================================
@@ -602,21 +688,6 @@ VulkanDevice CreateDevice(const VulkanInstance& inst,
 // 다시 만든다. **"같이 바뀌는가" 축에서 유일하게 혼자 움직이는 덩어리**라
 // 클래스로 뺄 근거가 이미 가장 뚜렷하다.
 
-// 이미지 한 장에 딸린 것 전부. 인덱스 하나로 함께 지목되므로 한 몸으로 둔다
-// (셋을 병렬 vector로 들면 개수가 어긋나도 컴파일된다).
-struct SwapchainImage {
-    VkImage image = VK_NULL_HANDLE;               // 스왑체인이 소유. 우리가 파괴하지 않는다
-    VkImageView view = VK_NULL_HANDLE;            // 우리가 만들었다 -> 우리가 파괴한다
-    VkSemaphore renderFinished = VK_NULL_HANDLE;  // 우리가 만들었다. **이미지당 하나**
-};
-
-struct Swapchain {
-    VkSwapchainKHR handle = VK_NULL_HANDLE;
-    VkFormat format = VK_FORMAT_UNDEFINED;
-    VkExtent2D extent{};
-    std::vector<SwapchainImage> images;
-};
-
 // SRGB를 우선하는 이유: 모니터는 선형이 아니라 감마 곡선으로 빛을 낸다. 포맷에 _SRGB가
 // 붙어 있으면 GPU가 그 변환을 하드웨어로 해준다. UNORM을 쓰면 셰이더에서 직접 감마
 // 보정을 해야 하고, 안 하면 화면이 어둡게 나온다.
@@ -826,6 +897,54 @@ Swapchain CreateSwapchain(const VulkanInstance& inst,
     return sc;
 }
 
+// ---------------------------------------------------------------------------
+// 창 단위 연산 - 스왑체인이 있어야 성립하므로 여기(5절 끝)에 있다
+// ---------------------------------------------------------------------------
+
+// 그릴 곳을 보장한다. 낡았거나 없으면 다시 만든다.
+// **false는 실패가 아니라 "지금은 그릴 곳이 없다"** (최소화 중)이다.
+//
+// 루프의 0단계가 통째로 여기 들어왔다. 재생성 조건 판단, oldSwapchain 넘기기,
+// 이전 것 파괴가 한 덩어리라 흩어져 있을 이유가 없다.
+bool EnsureSwapchain(const VulkanInstance& inst,
+                     const VulkanDevice& dev,
+                     Window* window) noexcept {
+    if (!window->swapchainOutOfDate && window->swapchain.handle != VK_NULL_HANDLE) {
+        return true;
+    }
+
+    dev.table.vkDeviceWaitIdle(dev.handle);
+
+    // 이전 것을 oldSwapchain으로 넘겨 **은퇴시키고**, 새것을 만든 뒤에 파괴한다.
+    // 넘긴 것은 "은퇴시켜라"는 뜻이지 "네가 지워라"가 아니다 - 파괴는 여전히 우리 몫이다.
+    // (생성이 실패해도 은퇴는 일어나므로, 실패해도 이전 것은 버려야 한다.)
+    Swapchain fresh =
+        CreateSwapchain(inst, dev, window->surface, window->swapchain.handle);
+    DestroySwapchain(dev, &window->swapchain);
+
+    window->swapchain = std::move(fresh);
+    window->swapchainOutOfDate = false;
+
+    return window->swapchain.handle != VK_NULL_HANDLE;
+}
+
+// 중첩의 역순으로 부순다: 스왑체인 -> 서피스 -> 창.
+//
+// **서피스가 창보다 먼저 죽어야 한다** - 죽은 HWND를 참조하게 된다.
+// 이 순서가 한 함수 안에 있는 것이 이 묶음의 값이다. 전에는 main() 끝에
+// 다른 정리들과 섞여 있어서 순서를 틀리기 쉬웠다.
+void CloseWindow(const VulkanInstance& inst, const VulkanDevice& dev, Window* window) noexcept {
+    DestroySwapchain(dev, &window->swapchain);
+
+    if (window->surface != VK_NULL_HANDLE) {
+        inst.table.vkDestroySurfaceKHR(inst.handle, window->surface, nullptr);
+    }
+    if (window->handle != nullptr) {
+        glfwDestroyWindow(window->handle);
+    }
+    *window = Window{};
+}
+
 // ============================================================================
 // 6. 커맨드 풀 - **큐 패밀리마다 하나**
 // ============================================================================
@@ -1020,24 +1139,22 @@ int main() {
     const VulkanInstance inst = CreateInstance();
     if (inst.handle == VK_NULL_HANDLE) { return 1; }
 
-    GLFWwindow* window = CreateAppWindow(1280, 720, "Lambda Engine");
-    if (window == nullptr) { return 1; }
+    if (!InitWindowSystem()) { return 1; }
 
-    const VkSurfaceKHR surface = CreateSurface(inst, window);
-    if (surface == VK_NULL_HANDLE) { return 1; }
+    // 창 + 서피스. 스왑체인은 디바이스가 생긴 뒤라 아직 비어 있다(= 최소화와 같은 정상 상태).
+    Window window;
+    if (!OpenWindow(inst, 1280, 720, "Lambda Engine", &window)) { return 1; }
 
-    const PhysicalDeviceSelection selection = PickPhysicalDevice(inst, surface);
+    const PhysicalDeviceSelection selection = PickPhysicalDevice(inst, window.surface);
     if (selection.gpu == VK_NULL_HANDLE) { return 1; }
 
     // selection은 여기서 dev 안으로 흡수되고 더 이상 쓰이지 않는다.
     const VulkanDevice dev = CreateDevice(inst, selection);
     if (dev.handle == VK_NULL_HANDLE) { return 1; }
 
-    Swapchain swapchain = CreateSwapchain(inst, dev, surface, VK_NULL_HANDLE);
-    if (swapchain.handle == VK_NULL_HANDLE) {
-        LOG("[vk] initial swapchain creation failed\n");
-        return 1;
-    }
+    // 스왑체인은 루프의 EnsureSwapchain이 만든다 - 최초 생성도 재생성과 같은 경로다.
+    // 특별 취급을 없앴다: "지금 그릴 곳이 없다"가 시작 시점에도 정상 상태이기 때문이다
+    // (최소화된 채로 실행할 수 있다).
 
     // 있는 패밀리마다 풀 하나씩. 컴퓨트/전송 풀은 **아직 아무것도 제출하지 않는다** -
     // 만들어만 두고 실제 작업(업로드, 디스패치)이 생길 때 쓴다.
@@ -1077,33 +1194,14 @@ int main() {
     // ---- 루프 ----
     LOG("close the window to exit.\n");
 
-    bool swapchainOutOfDate = false;
-
-    while (glfwWindowShouldClose(window) == 0) {
+    while (glfwWindowShouldClose(window.handle) == 0) {
         glfwPollEvents();
 
-        if (g_framebufferResized) {
-            g_framebufferResized = false;
-            swapchainOutOfDate = true;
-        }
-
-        // 0. 그릴 곳 확보
-        if (swapchainOutOfDate || swapchain.handle == VK_NULL_HANDLE) {
-            dev.table.vkDeviceWaitIdle(dev.handle);
-
-            // 이전 것을 oldSwapchain으로 넘겨 은퇴시키고, 새것을 만든 뒤에 파괴한다.
-            // **넘긴 것은 "은퇴시켜라"는 뜻이지 "네가 지워라"가 아니다.**
-            Swapchain fresh =
-                CreateSwapchain(inst, dev, surface, swapchain.handle);
-            DestroySwapchain(dev, &swapchain);
-
-            swapchain = std::move(fresh);
-            swapchainOutOfDate = false;
-        }
-
-        if (swapchain.handle == VK_NULL_HANDLE) {
+        // 0. 그릴 곳 확보. 리사이즈 통보는 창 콜백이 window에 직접 세워놨다.
+        if (!EnsureSwapchain(inst, dev, &window)) {
             continue;   // 최소화 중. 이번 프레임은 없다
         }
+        Swapchain& swapchain = window.swapchain;
 
         // 1. 이전 프레임이 끝나기를 기다린다 (GPU -> CPU)
         dev.table.vkWaitForFences(dev.handle, 1, &inFlight, VK_TRUE, UINT64_MAX);
@@ -1114,7 +1212,7 @@ int main() {
             dev.handle, swapchain.handle, UINT64_MAX, imageAvailable, VK_NULL_HANDLE, &imageIndex);
 
         if (acquired == VK_ERROR_OUT_OF_DATE_KHR) {
-            swapchainOutOfDate = true;
+            window.swapchainOutOfDate = true;
             continue;
         }
         if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR) {
@@ -1170,7 +1268,7 @@ int main() {
         // SUBOPTIMAL은 에러가 아니다. 그려지긴 했고 다음 프레임에 다시 만들면 된다.
         const VkResult presented = dev.table.vkQueuePresentKHR(dev.queues.present, &present);
         if (presented == VK_ERROR_OUT_OF_DATE_KHR || presented == VK_SUBOPTIMAL_KHR) {
-            swapchainOutOfDate = true;
+            window.swapchainOutOfDate = true;
         }
     }
 
@@ -1183,15 +1281,13 @@ int main() {
     dev.table.vkDestroyFence(dev.handle, inFlight, nullptr);
     dev.table.vkDestroySemaphore(dev.handle, imageAvailable, nullptr);
     DestroyCommands(dev, &commands);                  // 커맨드 버퍼도 같이 사라진다
-    DestroySwapchain(dev, &swapchain);
+
+    // 창에 묶인 셋(스왑체인 -> 서피스 -> 창)을 중첩 역순으로. **디바이스보다 먼저다** -
+    // 스왑체인이 디바이스로 만들어졌기 때문이다.
+    CloseWindow(inst, dev, &window);
+
     dev.table.vkDestroyDevice(dev.handle, nullptr);
-
-    // 서피스는 인스턴스가 만들었으므로 인스턴스 레벨 함수로 파괴한다.
-    // **창보다 먼저 죽어야 한다** - 죽은 HWND를 참조하게 된다.
-    inst.table.vkDestroySurfaceKHR(inst.handle, surface, nullptr);
-
-    glfwDestroyWindow(window);
-    glfwTerminate();
+    ShutdownWindowSystem();
 
     if (inst.messenger != VK_NULL_HANDLE) {
         inst.table.vkDestroyDebugUtilsMessengerEXT(inst.handle, inst.messenger, nullptr);
