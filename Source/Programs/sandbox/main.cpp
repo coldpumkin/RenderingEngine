@@ -23,6 +23,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include <vector>
 
 #define LOG(...)  std::fprintf(stderr, __VA_ARGS__)
@@ -110,8 +111,13 @@ bool HasInstanceLayer(const char* name) noexcept {
 
 #endif // LAMBDA_ENABLE_VULKAN_VALIDATION
 
-// 로더 확인 -> 인스턴스 -> 디버그 메신저. 실패하면 VK_NULL_HANDLE.
-VkInstance CreateInstance(VkDebugUtilsMessengerEXT* outMessenger) noexcept {
+// 로더 확인 -> 인스턴스 -> 함수 테이블 -> 디버그 메신저. 실패하면 VK_NULL_HANDLE.
+//
+// **out 파라미터가 둘로 늘었다.** instance · table · messenger 셋이 같이 나오고
+// 같이 죽는다. CreateDevice와 똑같은 모양이 됐다 (2단계 증거).
+VkInstance CreateInstance(VolkInstanceTable* outTable,
+                          VkDebugUtilsMessengerEXT* outMessenger) noexcept {
+    *outTable = VolkInstanceTable{};
     *outMessenger = VK_NULL_HANDLE;
 
     // volk: vulkan-1.dll을 런타임에 LoadLibrary로 찾는다. 없는 기계에서도 프로세스가
@@ -176,15 +182,23 @@ VkInstance CreateInstance(VkDebugUtilsMessengerEXT* outMessenger) noexcept {
         return VK_NULL_HANDLE;
     }
 
-    // **volkLoadInstance가 아니라 volkLoadInstanceOnly다.**
-    // 전자는 디바이스 레벨 함수 포인터까지 전역에 채워버려서, 디바이스 테이블을 안 쓰고
-    // 전역으로 불러도 조용히 동작한다. 멀티 디바이스에서 그건 틀린 디바이스를 부르는
-    // 버그가 되고, 조용해서 안 잡힌다.
+    // **인스턴스 레벨도 테이블로 받는다.** 디바이스 테이블과 같은 이유다 -
+    // 핸들과 함수가 한 곳에서 나와야 섞일 수 없다.
+    volkLoadInstanceTable(outTable, instance);
+
+    // **그런데 전역도 같이 채워야 한다.** volkLoadDeviceTable()이 내부에서
+    // 전역 vkGetDeviceProcAddr를 쓰기 때문이다 (volk.c:72-75, 224-228).
+    // volk의 한계라 우리가 없앨 수 없다. 그래서 인스턴스 레벨을 테이블로 쓰는 것은
+    // **강제가 아니라 규약**이다 - 실수로 전역을 불러도 조용히 동작한다.
+    //
+    // volkLoadInstance가 아니라 volkLoadInstanceOnly인 것에 주의: 전자는 디바이스 레벨
+    // 포인터까지 전역에 채워서, 디바이스 테이블을 안 쓰고 전역으로 불러도 동작하게 된다.
+    // 멀티 디바이스에서 그건 틀린 디바이스를 부르는 버그가 되고, 조용해서 안 잡힌다.
     volkLoadInstanceOnly(instance);
 
 #if LAMBDA_ENABLE_VULKAN_VALIDATION
     if (validationOn) {
-        vkCreateDebugUtilsMessengerEXT(instance, &messengerInfo, nullptr, outMessenger);
+        outTable->vkCreateDebugUtilsMessengerEXT(instance, &messengerInfo, nullptr, outMessenger);
     }
 #endif
 
@@ -233,13 +247,15 @@ GLFWwindow* CreateAppWindow(int width, int height, const char* title) noexcept {
 
 // glfwCreateWindowSurface()도 있지만 쓰지 않는다. 직접 만들면 **창 라이브러리와
 // Vulkan이 서로를 모르는 상태로 남는다** - GLFW가 VkInstance를 알 필요가 없다.
-VkSurfaceKHR CreateSurface(VkInstance instance, GLFWwindow* window) noexcept {
+VkSurfaceKHR CreateSurface(const VolkInstanceTable& it,
+                           VkInstance instance,
+                           GLFWwindow* window) noexcept {
     VkWin32SurfaceCreateInfoKHR info{VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR};
     info.hinstance = GetModuleHandleW(nullptr);
     info.hwnd = glfwGetWin32Window(window);
 
     VkSurfaceKHR surface = VK_NULL_HANDLE;
-    if (vkCreateWin32SurfaceKHR(instance, &info, nullptr, &surface) != VK_SUCCESS) {
+    if (it.vkCreateWin32SurfaceKHR(instance, &info, nullptr, &surface) != VK_SUCCESS) {
         LOG("[vk] vkCreateWin32SurfaceKHR failed\n");
         return VK_NULL_HANDLE;
     }
@@ -247,48 +263,120 @@ VkSurfaceKHR CreateSurface(VkInstance instance, GLFWwindow* window) noexcept {
 }
 
 // ============================================================================
-// 3. 물리 디바이스 고르기 + 큐 패밀리 찾기
+// 3. 물리 디바이스 고르기 + 큐 패밀리 고르기
 // ============================================================================
 //
 // **큐 패밀리가 뭔가**
 //
 // GPU는 명령을 "큐"에 넣어야 실행한다. 그런데 모든 큐가 모든 일을 하지는 않는다.
-// GPU는 큐를 **패밀리**로 묶어서 "이 그룹은 그래픽스+컴퓨트+전송을 할 수 있고,
-// 저 그룹은 전송만 전담한다"는 식으로 알려준다. 전송 전담 패밀리는 보통 DMA 엔진이라
-// 그래픽스와 **병렬로** 돌 수 있다 - 그게 패밀리를 나눠 놓은 이유다.
+// GPU는 큐를 **패밀리**로 묶어서 "이 그룹은 그래픽스+컴퓨트+전송을 다 하고, 저 그룹은
+// 전송만 전담한다"는 식으로 알려준다. 전송 전담 패밀리는 보통 별도 DMA 엔진이라
+// 그래픽스와 **물리적으로 병렬로** 돈다 - 그게 패밀리를 나눠 놓은 이유다.
 //
-// 우리가 필요한 것 둘:
-//   VK_QUEUE_GRAPHICS_BIT   그리기 명령을 받을 수 있는가
-//   present 지원            그 결과를 화면에 내보낼 수 있는가
+// 스펙상 GRAPHICS나 COMPUTE 비트가 있으면 전송은 **암묵적으로 지원된다**
+// (TRANSFER 비트가 안 켜져 있어도 된다). 그래서 "전송 가능한가"를 물으려고
+// TRANSFER 비트를 보면 안 되고, "**전송만** 하는 전용 패밀리인가"를 물을 때 본다.
 //
-// **둘을 한 패밀리에서 찾는다.** 데스크톱 GPU에서는 사실상 항상 같은 패밀리가 둘 다
-// 한다. 나뉘는 경우를 지원하려면 큐를 둘 만들고 이미지 소유권을 큐 사이에서 넘겨야
-// 하는데, 그건 실제로 나뉜 GPU를 만나면 그때 한다. 지금 만들면 검증할 수 없는 코드다.
+// 데스크톱 GPU의 전형적인 모습:
+//   family 0 : GRAPHICS | COMPUTE | TRANSFER   범용 큐
+//   family 1 : COMPUTE  | TRANSFER             async compute
+//   family 2 : TRANSFER                        DMA 엔진
+struct QueueFamilies {
+    uint32_t graphics = UINT32_MAX;   // **필수.** present도 여기서 한다
+    uint32_t compute  = UINT32_MAX;   // 없을 수 있다
+    uint32_t transfer = UINT32_MAX;   // 없을 수 있다
+
+    bool HasCompute()  const noexcept { return compute  != UINT32_MAX; }
+    bool HasTransfer() const noexcept { return transfer != UINT32_MAX; }
+};
+
+// **전용이 아니면 안 만든다.**
 //
-// **out 파라미터가 둘이다.** physicalDevice와 queueFamily는 항상 같이 나온다 -
-// 큐 패밀리 번호는 그 GPU 안에서만 의미가 있으니 당연하다. 묶일 후보 (2단계 증거).
-bool PickPhysicalDevice(VkInstance instance,
+// 컴퓨트/전송 큐를 따로 두는 목적은 그래픽스와 **동시에** 도는 것이다. 같은 패밀리로
+// 대체하면 그 이득은 없으면서, 큐가 갈리는 순간 생기는 비용은 그대로 낸다:
+// 큐 사이 동기화(세마포어)와 **큐 패밀리 소유권 이전**(release/acquire 배리어 한 쌍).
+//
+// 그래서 전용 패밀리가 없으면 UINT32_MAX로 두고, 그 일은 그래픽스 큐가 한다.
+// 언리얼도 같다 - 전용을 못 찾으면 Queues[AsyncCompute]를 nullptr로 둔다
+// (VulkanDevice.cpp: "If we didn't find a dedicated Queue, leave it null").
+//
+// 그래픽스 하나만 못 찾으면 실패다. 화면에 못 그리면 이 엔진은 할 일이 없다.
+bool SelectQueueFamilies(const VolkInstanceTable& it,
+                         VkPhysicalDevice gpu,
+                         QueueFamilies* out) noexcept {
+    *out = QueueFamilies{};
+
+    uint32_t count = 0;
+    it.vkGetPhysicalDeviceQueueFamilyProperties(gpu, &count, nullptr);
+    std::vector<VkQueueFamilyProperties> families(count);
+    it.vkGetPhysicalDeviceQueueFamilyProperties(gpu, &count, families.data());
+
+    // (1) 그래픽스 + present. **서피스가 아니라 플랫폼에 묻는다** -
+    //     vkGetPhysicalDeviceWin32PresentationSupportKHR은 "이 큐 패밀리가 Win32
+    //     데스크톱에 present 할 수 있는가"를 답하고, 창이 없어도 부를 수 있다.
+    //     VkBool32를 돌려주는 것에 주목 - 실패할 수 있는 조회가 아니라 성질이다.
+    //
+    //     (이 함수는 Win32/Wayland/Xcb/Xlib에만 있다. Android/iOS/macOS엔 없어서
+    //      언리얼은 "서피스가 생긴 뒤 확인"하는 2단계 초기화를 쓴다.)
+    for (uint32_t i = 0; i < count; ++i) {
+        if ((families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) == 0) { continue; }
+        if (it.vkGetPhysicalDeviceWin32PresentationSupportKHR(gpu, i) != VK_TRUE) { continue; }
+        out->graphics = i;
+        break;
+    }
+    if (out->graphics == UINT32_MAX) { return false; }
+
+    // (2) 전용 컴퓨트: COMPUTE는 있고 GRAPHICS는 없는 패밀리.
+    //     GRAPHICS가 없다는 조건 하나로 "그래픽스 패밀리와 다르다"가 자동 보장된다.
+    for (uint32_t i = 0; i < count; ++i) {
+        const VkQueueFlags flags = families[i].queueFlags;
+        if ((flags & VK_QUEUE_COMPUTE_BIT) == 0) { continue; }
+        if ((flags & VK_QUEUE_GRAPHICS_BIT) != 0) { continue; }
+        out->compute = i;
+        break;
+    }
+
+    // (3) 전용 전송: TRANSFER는 있고 GRAPHICS도 COMPUTE도 없는 패밀리.
+    //     **여기서만 TRANSFER 비트를 본다** - "전송을 할 수 있나"가 아니라
+    //     "전송만 하는 전용 엔진인가"를 묻는 것이라서다.
+    for (uint32_t i = 0; i < count; ++i) {
+        const VkQueueFlags flags = families[i].queueFlags;
+        if ((flags & VK_QUEUE_TRANSFER_BIT) == 0) { continue; }
+        if ((flags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) != 0) { continue; }
+        out->transfer = i;
+        break;
+    }
+
+    return true;
+}
+
+// GPU 고르기. 자격을 통과한 것 중 외장을 선호한다.
+//
+// **out 파라미터가 둘이다.** gpu와 그 안의 큐 패밀리 번호는 항상 같이 나온다 -
+// 패밀리 번호는 그 GPU 안에서만 의미가 있으니 당연하다 (2단계 증거).
+bool PickPhysicalDevice(const VolkInstanceTable& it,
+                        VkInstance instance,
                         VkSurfaceKHR surface,
-                        VkPhysicalDevice* outPhysicalDevice,
-                        uint32_t* outQueueFamily) noexcept {
-    *outPhysicalDevice = VK_NULL_HANDLE;
-    *outQueueFamily = UINT32_MAX;
+                        VkPhysicalDevice* outGpu,
+                        QueueFamilies* outFamilies) noexcept {
+    *outGpu = VK_NULL_HANDLE;
+    *outFamilies = QueueFamilies{};
 
     uint32_t gpuCount = 0;
-    vkEnumeratePhysicalDevices(instance, &gpuCount, nullptr);
+    it.vkEnumeratePhysicalDevices(instance, &gpuCount, nullptr);
     if (gpuCount == 0) {
         LOG("[vk] no Vulkan-capable GPU\n");
         return false;
     }
     std::vector<VkPhysicalDevice> gpus(gpuCount);
-    vkEnumeratePhysicalDevices(instance, &gpuCount, gpus.data());
+    it.vkEnumeratePhysicalDevices(instance, &gpuCount, gpus.data());
 
     VkPhysicalDeviceProperties chosenProps{};
     int bestScore = -1;
 
     for (VkPhysicalDevice candidate : gpus) {
         VkPhysicalDeviceProperties props{};
-        vkGetPhysicalDeviceProperties(candidate, &props);
+        it.vkGetPhysicalDeviceProperties(candidate, &props);
 
         // (a) API 버전
         if (props.apiVersion < kRequiredApiVersion) { continue; }
@@ -298,16 +386,16 @@ bool PickPhysicalDevice(VkInstance instance,
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
         VkPhysicalDeviceFeatures2 features2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
         features2.pNext = &features13;
-        vkGetPhysicalDeviceFeatures2(candidate, &features2);
+        it.vkGetPhysicalDeviceFeatures2(candidate, &features2);
         if (features13.dynamicRendering != VK_TRUE || features13.synchronization2 != VK_TRUE) {
             continue;
         }
 
         // (c) 스왑체인 확장
         uint32_t extCount = 0;
-        vkEnumerateDeviceExtensionProperties(candidate, nullptr, &extCount, nullptr);
+        it.vkEnumerateDeviceExtensionProperties(candidate, nullptr, &extCount, nullptr);
         std::vector<VkExtensionProperties> available(extCount);
-        vkEnumerateDeviceExtensionProperties(candidate, nullptr, &extCount, available.data());
+        it.vkEnumerateDeviceExtensionProperties(candidate, nullptr, &extCount, available.data());
 
         bool hasAllExtensions = true;
         for (const char* required : kRequiredDeviceExtensions) {
@@ -319,40 +407,20 @@ bool PickPhysicalDevice(VkInstance instance,
         }
         if (!hasAllExtensions) { continue; }
 
-        // (d) 그래픽스 + present를 둘 다 하는 큐 패밀리
-        uint32_t familyCount = 0;
-        vkGetPhysicalDeviceQueueFamilyProperties(candidate, &familyCount, nullptr);
-        std::vector<VkQueueFamilyProperties> families(familyCount);
-        vkGetPhysicalDeviceQueueFamilyProperties(candidate, &familyCount, families.data());
+        // (d) 큐 패밀리 - 그래픽스+present가 없으면 탈락. 컴퓨트/전송은 있으면 좋고 없어도 된다.
+        QueueFamilies families;
+        if (!SelectQueueFamilies(it, candidate, &families)) { continue; }
 
-        uint32_t found = UINT32_MAX;
-        for (uint32_t i = 0; i < familyCount; ++i) {
-            if ((families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) == 0) { continue; }
-
-            // **서피스가 아니라 플랫폼에 묻는다.** 이 함수는 "이 큐 패밀리가 Win32
-            // 데스크톱에 present 할 수 있는가"를 답하고, 창이 없어도 부를 수 있다.
-            // VkBool32를 돌려주는 것에 주목 - 실패할 수 있는 조회가 아니라 성질이다.
-            //
-            // (이 함수는 Win32/Wayland/Xcb/Xlib에만 있다. Android/iOS/macOS엔 없어서
-            //  언리얼은 "서피스가 생긴 뒤 확인"하는 2단계 초기화를 쓴다.)
-            if (vkGetPhysicalDeviceWin32PresentationSupportKHR(candidate, i) == VK_TRUE) {
-                found = i;
-                break;
-            }
-        }
-        if (found == UINT32_MAX) { continue; }
-
-        // 자격을 통과한 것들 중 외장 GPU를 선호한다.
         const int score = (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) ? 1000 : 0;
         if (score > bestScore) {
             bestScore = score;
-            *outPhysicalDevice = candidate;
-            *outQueueFamily = found;
+            *outGpu = candidate;
+            *outFamilies = families;
             chosenProps = props;
         }
     }
 
-    if (*outPhysicalDevice == VK_NULL_HANDLE) {
+    if (*outGpu == VK_NULL_HANDLE) {
         LOG("[vk] no GPU meets requirements (1.3 + dynamicRendering + sync2 + swapchain)\n");
         return false;
     }
@@ -361,48 +429,80 @@ bool PickPhysicalDevice(VkInstance instance,
     // 위의 Win32 확인은 "플랫폼에 대해"이고 이건 "이 창에 대해"다.
     // 층이 다르고 서로를 대신하지 않는다.
     VkBool32 surfaceSupported = VK_FALSE;
-    vkGetPhysicalDeviceSurfaceSupportKHR(*outPhysicalDevice, *outQueueFamily,
-                                         surface, &surfaceSupported);
+    it.vkGetPhysicalDeviceSurfaceSupportKHR(*outGpu, outFamilies->graphics,
+                                            surface, &surfaceSupported);
     if (surfaceSupported != VK_TRUE) {
         LOG("[vk] chosen queue family cannot present to this surface\n");
         return false;
     }
 
-    LOG("[vk] GPU: %s (queue family %u)\n", chosenProps.deviceName, *outQueueFamily);
+    LOG("[vk] GPU: %s\n", chosenProps.deviceName);
+    LOG("[vk] queue families: graphics=%u, compute=%s, transfer=%s\n",
+        outFamilies->graphics,
+        outFamilies->HasCompute()  ? std::to_string(outFamilies->compute).c_str()  : "(none, use graphics)",
+        outFamilies->HasTransfer() ? std::to_string(outFamilies->transfer).c_str() : "(none, use graphics)");
     return true;
 }
 
 // ============================================================================
-// 4. 논리 디바이스 + 함수 테이블 + 큐
+// 4. 논리 디바이스 + 함수 테이블 + 큐들
 // ============================================================================
-//
+
+// 만든 큐 핸들들. **compute/transfer는 VK_NULL_HANDLE일 수 있다** -
+// 전용 패밀리가 없다는 뜻이고, 그때 그 일은 graphics가 한다.
+struct Queues {
+    VkQueue graphics = VK_NULL_HANDLE;
+    VkQueue compute  = VK_NULL_HANDLE;
+    VkQueue transfer = VK_NULL_HANDLE;
+
+    // 없으면 그래픽스로 떨어진다. 호출부가 매번 분기하지 않게.
+    VkQueue ComputeOrGraphics()  const noexcept { return compute  ? compute  : graphics; }
+    VkQueue TransferOrGraphics() const noexcept { return transfer ? transfer : graphics; }
+};
+
 // **out 파라미터가 둘이고 반환값까지 셋이다. 여기가 코드의 가장 큰 불평이다.**
 //
-// device · table · queue는 만들 때부터 같이 나오고, 쓰이는 자리마다 같이 간다
-// (스왑체인 생성, 커맨드 풀 생성, 프레임 루프 전부). physicalDevice와 queueFamily도
+// device · table · queues는 만들 때부터 같이 나오고, 쓰이는 자리마다 같이 간다
+// (스왑체인 생성, 커맨드 풀 생성, 프레임 루프 전부). gpu와 QueueFamilies도
 // 그 뒤로 계속 따라다닌다. **이 다섯이 첫 번째 클래스가 될 자리다** (3단계).
-VkDevice CreateDevice(VkPhysicalDevice physicalDevice,
-                      uint32_t queueFamily,
+VkDevice CreateDevice(VkPhysicalDevice gpu,
+                      const QueueFamilies& families,
                       VolkDeviceTable* outTable,
-                      VkQueue* outQueue) noexcept {
-    const float queuePriority = 1.0f;
-    VkDeviceQueueCreateInfo queueInfo{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
-    queueInfo.queueFamilyIndex = queueFamily;
-    queueInfo.queueCount = 1;
-    queueInfo.pQueuePriorities = &queuePriority;
+                      Queues* outQueues) noexcept {
+    *outTable = VolkDeviceTable{};
+    *outQueues = Queues{};
+
+    // 스펙: pQueueCreateInfos 안의 queueFamilyIndex는 **서로 달라야 한다.**
+    // SelectQueueFamilies가 "GRAPHICS 없는 것만 compute", "GRAPHICS/COMPUTE 없는 것만
+    // transfer"로 골랐으므로 셋은 자동으로 서로 다르다. 중복 제거가 필요 없다.
+    const float priority = 1.0f;
+    VkDeviceQueueCreateInfo queueInfos[3]{};
+    uint32_t queueInfoCount = 0;
+
+    auto addQueue = [&](uint32_t family) {
+        VkDeviceQueueCreateInfo& q = queueInfos[queueInfoCount++];
+        q.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+        q.queueFamilyIndex = family;
+        q.queueCount = 1;              // 패밀리당 하나면 지금은 충분하다
+        q.pQueuePriorities = &priority;
+    };
+
+    addQueue(families.graphics);
+    if (families.HasCompute())  { addQueue(families.compute); }
+    if (families.HasTransfer()) { addQueue(families.transfer); }
 
     // 지원 여부를 확인만 하는 게 아니라 **켜달라고 요청**해야 쓸 수 있다.
     VkPhysicalDeviceVulkan13Features enable13 = RequiredFeatures13();
 
     VkDeviceCreateInfo info{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     info.pNext = &enable13;
-    info.queueCreateInfoCount = 1;
-    info.pQueueCreateInfos = &queueInfo;
+    info.queueCreateInfoCount = queueInfoCount;
+    info.pQueueCreateInfos = queueInfos;
     info.enabledExtensionCount = static_cast<uint32_t>(std::size(kRequiredDeviceExtensions));
     info.ppEnabledExtensionNames = kRequiredDeviceExtensions;
 
     VkDevice device = VK_NULL_HANDLE;
-    if (vkCreateDevice(physicalDevice, &info, nullptr, &device) != VK_SUCCESS) {
+    if (vkCreateDevice(gpu, &info, nullptr, &device) != VK_SUCCESS) {
         LOG("[vk] vkCreateDevice failed\n");
         return VK_NULL_HANDLE;
     }
@@ -412,7 +512,16 @@ VkDevice CreateDevice(VkPhysicalDevice physicalDevice,
     // 조용해서 안 잡힌다. 지금 디바이스는 하나지만 **테이블을 쓰면 그 버그가 아예
     // 표현 불가능해진다.**
     volkLoadDeviceTable(outTable, device);
-    outTable->vkGetDeviceQueue(device, queueFamily, 0, outQueue);
+
+    // vkGetDeviceQueue는 **조회**다. vkCreateDevice가 이미 만들었고, 파괴 함수도 없다.
+    outTable->vkGetDeviceQueue(device, families.graphics, 0, &outQueues->graphics);
+    if (families.HasCompute()) {
+        outTable->vkGetDeviceQueue(device, families.compute, 0, &outQueues->compute);
+    }
+    if (families.HasTransfer()) {
+        outTable->vkGetDeviceQueue(device, families.transfer, 0, &outQueues->transfer);
+    }
+
     return device;
 }
 
@@ -494,9 +603,11 @@ void DestroySwapchain(const VolkDeviceTable& vk, VkDevice device, Swapchain* sc)
 // 안 넘기면 재생성 자체가 실패한다. 넘기면 그 순간 이전 것은 "은퇴" 상태가 되고,
 // **파괴는 여전히 우리 몫이다.**
 //
-// 인자가 넷인 것에 주목: vk · physicalDevice · device는 4단계의 그 묶음이고,
-// surface는 창 쪽이다. **묶음 하나 + 창 하나** - 클래스가 되면 인자가 둘이 된다.
-Swapchain CreateSwapchain(const VolkDeviceTable& vk,
+// **인자가 다섯이고 테이블이 둘이다.** 서피스 조회는 인스턴스 레벨(it), 스왑체인 생성은
+// 디바이스 레벨(vk)이라 양쪽이 다 필요하다. 스왑체인이 두 층의 경계에 서 있다는 뜻이고,
+// 클래스가 되면 그 경계가 인자 둘로 줄어든다 (2단계 증거).
+Swapchain CreateSwapchain(const VolkInstanceTable& it,
+                          const VolkDeviceTable& vk,
                           VkPhysicalDevice physicalDevice,
                           VkDevice device,
                           VkSurfaceKHR surface,
@@ -505,7 +616,7 @@ Swapchain CreateSwapchain(const VolkDeviceTable& vk,
 
     // ---- 서피스에게 "이 창은 무엇을 받나"를 묻는다 ----
     VkSurfaceCapabilitiesKHR caps{};
-    if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, surface, &caps) != VK_SUCCESS) {
+    if (it.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, surface, &caps) != VK_SUCCESS) {
         LOG("[vk] vkGetPhysicalDeviceSurfaceCapabilitiesKHR failed\n");
         return sc;
     }
@@ -518,13 +629,13 @@ Swapchain CreateSwapchain(const VolkDeviceTable& vk,
     }
 
     uint32_t formatCount = 0;
-    vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &formatCount, nullptr);
+    it.vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &formatCount, nullptr);
     if (formatCount == 0) {
         LOG("[vk] surface reports no formats\n");
         return sc;
     }
     std::vector<VkSurfaceFormatKHR> formats(formatCount);
-    vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &formatCount, formats.data());
+    it.vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &formatCount, formats.data());
 
     const VkSurfaceFormatKHR surfaceFormat = ChooseSurfaceFormat(formats);
 
@@ -552,7 +663,10 @@ Swapchain CreateSwapchain(const VolkDeviceTable& vk,
     // COLOR_ATTACHMENT = "여기에 직접 그린다". 나중에 오프스크린에 그리고 복사만 하게 되면
     // TRANSFER_DST를 추가하게 된다.
     info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-    // 그래픽스와 프레젠트가 같은 큐 패밀리라서 EXCLUSIVE로 충분하다 (3단계 참고).
+    // EXCLUSIVE로 두는 이유: **스왑체인 이미지는 그래픽스 큐만 만진다** (그리고, present한다).
+    // 컴퓨트/전송 큐가 따로 있어도 이 이미지에는 손대지 않는다. 나중에 컴퓨트가 스왑체인
+    // 이미지에 직접 써야 하면 그때 CONCURRENT로 바꾸거나 큐 패밀리 소유권 이전을 넣는다
+    // - **둘 다 비용이 있으니 필요해질 때 고른다.**
     info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
     info.preTransform = caps.currentTransform;
     info.compositeAlpha = compositeAlpha;
@@ -729,34 +843,38 @@ void RecordFrame(const VolkDeviceTable& vk,
 // ============================================================================
 int main() {
     // ---- 만든다 (위 함수들 순서대로) ----
+    VolkInstanceTable it{};
     VkDebugUtilsMessengerEXT messenger = VK_NULL_HANDLE;
-    VkInstance instance = CreateInstance(&messenger);
+    VkInstance instance = CreateInstance(&it, &messenger);
     if (instance == VK_NULL_HANDLE) { return 1; }
 
     GLFWwindow* window = CreateAppWindow(1280, 720, "Lambda Engine");
     if (window == nullptr) { return 1; }
 
-    VkSurfaceKHR surface = CreateSurface(instance, window);
+    VkSurfaceKHR surface = CreateSurface(it, instance, window);
     if (surface == VK_NULL_HANDLE) { return 1; }
 
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
-    uint32_t queueFamily = UINT32_MAX;
-    if (!PickPhysicalDevice(instance, surface, &physicalDevice, &queueFamily)) { return 1; }
+    QueueFamilies families;
+    if (!PickPhysicalDevice(it, instance, surface, &physicalDevice, &families)) { return 1; }
 
     VolkDeviceTable vk{};
-    VkQueue queue = VK_NULL_HANDLE;
-    VkDevice device = CreateDevice(physicalDevice, queueFamily, &vk, &queue);
+    Queues queues;
+    VkDevice device = CreateDevice(physicalDevice, families, &vk, &queues);
     if (device == VK_NULL_HANDLE) { return 1; }
 
     Swapchain swapchain =
-        CreateSwapchain(vk, physicalDevice, device, surface, VK_NULL_HANDLE);
+        CreateSwapchain(it, vk, physicalDevice, device, surface, VK_NULL_HANDLE);
     if (swapchain.handle == VK_NULL_HANDLE) {
         LOG("[vk] initial swapchain creation failed\n");
         return 1;
     }
 
+    // 커맨드 풀은 **큐 패밀리마다 하나**여야 한다 (풀이 패밀리에 묶인다).
+    // 지금은 그래픽스에만 그리므로 하나면 된다. 컴퓨트/전송에 실제로 제출하게 되면
+    // 그때 그 패밀리의 풀을 만든다 - **쓰지도 않을 풀을 미리 만들지 않는다.**
     VkCommandBuffer cmd = VK_NULL_HANDLE;
-    VkCommandPool commandPool = CreateCommandPool(vk, device, queueFamily, &cmd);
+    VkCommandPool commandPool = CreateCommandPool(vk, device, families.graphics, &cmd);
     if (commandPool == VK_NULL_HANDLE) { return 1; }
 
     // ---- 동기화 오브젝트 ----
@@ -801,7 +919,7 @@ int main() {
             // 이전 것을 oldSwapchain으로 넘겨 은퇴시키고, 새것을 만든 뒤에 파괴한다.
             // **넘긴 것은 "은퇴시켜라"는 뜻이지 "네가 지워라"가 아니다.**
             Swapchain fresh =
-                CreateSwapchain(vk, physicalDevice, device, surface, swapchain.handle);
+                CreateSwapchain(it, vk, physicalDevice, device, surface, swapchain.handle);
             DestroySwapchain(vk, device, &swapchain);
 
             swapchain = std::move(fresh);
@@ -861,7 +979,7 @@ int main() {
         submit.signalSemaphoreInfoCount = 1;
         submit.pSignalSemaphoreInfos = &signal;
 
-        if (vk.vkQueueSubmit2(queue, 1, &submit, inFlight) != VK_SUCCESS) {
+        if (vk.vkQueueSubmit2(queues.graphics, 1, &submit, inFlight) != VK_SUCCESS) {
             LOG("[vk] vkQueueSubmit2 failed\n");
             break;
         }
@@ -875,7 +993,7 @@ int main() {
         present.pImageIndices = &imageIndex;
 
         // SUBOPTIMAL은 에러가 아니다. 그려지긴 했고 다음 프레임에 다시 만들면 된다.
-        const VkResult presented = vk.vkQueuePresentKHR(queue, &present);
+        const VkResult presented = vk.vkQueuePresentKHR(queues.graphics, &present);
         if (presented == VK_ERROR_OUT_OF_DATE_KHR || presented == VK_SUBOPTIMAL_KHR) {
             swapchainOutOfDate = true;
         }
@@ -895,15 +1013,15 @@ int main() {
 
     // 서피스는 인스턴스가 만들었으므로 인스턴스 레벨 함수로 파괴한다.
     // **창보다 먼저 죽어야 한다** - 죽은 HWND를 참조하게 된다.
-    vkDestroySurfaceKHR(instance, surface, nullptr);
+    it.vkDestroySurfaceKHR(instance, surface, nullptr);
 
     glfwDestroyWindow(window);
     glfwTerminate();
 
     if (messenger != VK_NULL_HANDLE) {
-        vkDestroyDebugUtilsMessengerEXT(instance, messenger, nullptr);
+        it.vkDestroyDebugUtilsMessengerEXT(instance, messenger, nullptr);
     }
-    vkDestroyInstance(instance, nullptr);
+    it.vkDestroyInstance(instance, nullptr);
 
     LOG("[vk] clean shutdown\n");
     return 0;
