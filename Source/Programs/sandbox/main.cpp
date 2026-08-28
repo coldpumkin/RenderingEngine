@@ -946,96 +946,148 @@ void CloseWindow(const VulkanInstance& inst, const VulkanDevice& dev, Window* wi
 }
 
 // ============================================================================
-// 6. 커맨드 풀 - **큐 패밀리마다 하나**
+// 6. 커맨드 풀 (큐 패밀리마다) + 프레임 자원 (frames-in-flight마다)
 // ============================================================================
+//
+// **둘은 수명이 다르다.** 한 덩어리로 두면 개수를 늘릴 때 같이 늘어나 버린다.
+//
+//   풀    큐 패밀리에 묶인다. 디바이스가 사는 동안 그대로
+//   버퍼  매 프레임 리셋해 다시 기록한다. **GPU가 다 쓴 뒤에만** 리셋할 수 있다
+//
+// 언리얼도 같다: FVulkanCommandBufferPool은 **큐당** 하나이고
+// 그 안에서 TArray<FVulkanCommandBuffer*>를 재활용한다.
+
+// ---------------------------------------------------------------------------
+// 커맨드 풀 - 큐 패밀리마다 하나
+// ---------------------------------------------------------------------------
 //
 // 스펙 제약이라 선택의 여지가 없다: 풀은 queueFamilyIndex로 만들어지고,
 // **그 풀에서 나온 커맨드 버퍼는 같은 패밀리의 큐에만 제출할 수 있다.**
-// 컴퓨트 큐에 뭔가 제출하려면 컴퓨트 패밀리의 풀이 반드시 있어야 한다.
 //
-// **풀의 개수는 세 축의 곱이다:**
+// 풀의 개수는 세 축의 곱이다:
+//   큐 패밀리(3) x 스레드(1) x frames-in-flight(1) = 3
 //
-//   큐 패밀리        위 제약. 지금 3 (graphics/compute/transfer)
-//   스레드           풀은 스레드 안전이 아니다(외부 동기화 필요). 지금 1
-//   frames-in-flight 프레임 단위로 통째 리셋하려면 프레임마다 따로. 지금 1
+// 스레드 축: 풀은 **스레드 안전이 아니다**(외부 동기화 필요).
+// frames-in-flight 축: 지금은 버퍼를 개별 리셋하므로(RESET_COMMAND_BUFFER) 풀은 하나면
+// 된다. 프레임 단위로 vkResetCommandPool을 쓰게 되면 그때 프레임마다 풀이 필요해진다.
 //
-// 그래서 지금은 3 x 1 x 1 = 3개다. **frames-in-flight를 2로 올리면 6개가 된다** -
-// 이 곱셈이 나중에 "풀을 무엇으로 묶을 것인가"를 정한다.
-
-// 풀 하나와 거기서 뽑은 버퍼 하나. 같이 태어나고 같이 죽는다
-// (버퍼를 따로 반납하지 않는다 - 풀을 파괴하면 같이 사라진다).
-struct CommandSet {
-    VkCommandPool pool = VK_NULL_HANDLE;
-    VkCommandBuffer buffer = VK_NULL_HANDLE;
-};
-
-// 전용 패밀리가 없는 큐의 CommandSet은 비어 있다(pool == VK_NULL_HANDLE).
-// 그때 그 일은 graphics 것으로 한다.
+// **compute/transfer 풀은 아직 아무것도 제출하지 않는다.** 만들어만 두고,
+// 실제 작업(업로드·디스패치)이 생길 때 그 패밀리의 버퍼를 뽑는다.
+// 전용 패밀리가 없으면 VK_NULL_HANDLE이고, 그 일은 graphics가 한다.
 struct Commands {
-    CommandSet graphics;
-    CommandSet compute;
-    CommandSet transfer;
+    VkCommandPool graphics = VK_NULL_HANDLE;
+    VkCommandPool compute  = VK_NULL_HANDLE;
+    VkCommandPool transfer = VK_NULL_HANDLE;
 };
 
-CommandSet CreateCommandSet(const VulkanDevice& dev, uint32_t queueFamily) noexcept {
-    CommandSet set;
-
+VkCommandPool CreateCommandPool(const VulkanDevice& dev, uint32_t queueFamily) noexcept {
     // RESET_COMMAND_BUFFER: 풀 전체가 아니라 버퍼 하나만 개별 리셋할 수 있게 한다.
-    // frames-in-flight가 늘어 프레임 단위로 리셋하게 되면 이 플래그를 빼고
-    // vkResetCommandPool을 쓰는 쪽이 빨라진다 - 그때 다시 본다.
-    VkCommandPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
-    poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-    poolInfo.queueFamilyIndex = queueFamily;
+    VkCommandPoolCreateInfo info{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+    info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    info.queueFamilyIndex = queueFamily;
 
-    if (dev.table.vkCreateCommandPool(dev.handle, &poolInfo, nullptr, &set.pool) != VK_SUCCESS) {
+    VkCommandPool pool = VK_NULL_HANDLE;
+    if (dev.table.vkCreateCommandPool(dev.handle, &info, nullptr, &pool) != VK_SUCCESS) {
         LOG("[vk] vkCreateCommandPool failed (family %u)\n", queueFamily);
-        return CommandSet{};
+        return VK_NULL_HANDLE;
     }
-
-    // PRIMARY: 큐에 직접 제출할 수 있다. SECONDARY는 다른 버퍼 안에서만 실행된다.
-    VkCommandBufferAllocateInfo allocInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-    allocInfo.commandPool = set.pool;
-    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    allocInfo.commandBufferCount = 1;
-    // 실패하면 풀만 남고 버퍼는 VK_NULL_HANDLE인 CommandSet이 나간다 - 호출자는
-    // pool만 보고 성공으로 읽으므로, 여기서 되돌려야 "존재하면 유효"가 지켜진다.
-    const VkResult allocResult =
-        dev.table.vkAllocateCommandBuffers(dev.handle, &allocInfo, &set.buffer);
-    if (allocResult != VK_SUCCESS) {
-        LOG("[vk] vkAllocateCommandBuffers failed (%d)\n", allocResult);
-        dev.table.vkDestroyCommandPool(dev.handle, set.pool, nullptr);
-        return CommandSet{};
-    }
-
-    return set;
+    return pool;
 }
 
-// 있는 패밀리마다 하나씩. 그래픽스는 필수, 나머지는 전용 패밀리가 있을 때만.
 bool CreateCommands(const VulkanDevice& dev, Commands* out) noexcept {
     *out = Commands{};
 
-    out->graphics = CreateCommandSet(dev, dev.families.graphics);
-    if (out->graphics.pool == VK_NULL_HANDLE) { return false; }
+    out->graphics = CreateCommandPool(dev, dev.families.graphics);
+    if (out->graphics == VK_NULL_HANDLE) { return false; }
 
     if (dev.families.HasCompute()) {
-        out->compute = CreateCommandSet(dev, dev.families.compute);
-        if (out->compute.pool == VK_NULL_HANDLE) { return false; }
+        out->compute = CreateCommandPool(dev, dev.families.compute);
+        if (out->compute == VK_NULL_HANDLE) { return false; }
     }
     if (dev.families.HasTransfer()) {
-        out->transfer = CreateCommandSet(dev, dev.families.transfer);
-        if (out->transfer.pool == VK_NULL_HANDLE) { return false; }
+        out->transfer = CreateCommandPool(dev, dev.families.transfer);
+        if (out->transfer == VK_NULL_HANDLE) { return false; }
     }
     return true;
 }
 
 void DestroyCommands(const VulkanDevice& dev, Commands* c) noexcept {
-    // 버퍼는 따로 반납하지 않는다. 풀을 파괴하면 같이 사라진다.
-    for (CommandSet* set : {&c->graphics, &c->compute, &c->transfer}) {
-        if (set->pool != VK_NULL_HANDLE) {
-            dev.table.vkDestroyCommandPool(dev.handle, set->pool, nullptr);
+    // 풀을 파괴하면 거기서 나온 커맨드 버퍼도 같이 사라진다.
+    for (VkCommandPool pool : {c->graphics, c->compute, c->transfer}) {
+        if (pool != VK_NULL_HANDLE) {
+            dev.table.vkDestroyCommandPool(dev.handle, pool, nullptr);
         }
     }
     *c = Commands{};
+}
+
+// ---------------------------------------------------------------------------
+// 프레임 자원 - frames-in-flight마다 한 벌
+// ---------------------------------------------------------------------------
+//
+// **셋이 같은 신호 하나에 묶인다.** 판별은 이렇다:
+// *"이 자원을 다시 써도 된다는 걸 무엇이 알려주는가?"*
+//
+//   cmd             pending 상태면 리셋할 수 없다      -> inFlight 펜스가 알려준다
+//   imageAvailable  이전 wait(submit)이 끝나야 재signal -> inFlight 펜스가 알려준다
+//   inFlight        그 자신이 신호다
+//
+// 셋 다 답이 같은 펜스 하나다. 그래서 개수도 같고(= frames-in-flight) 한 벌이다.
+//
+// **renderFinished가 여기 없는 이유도 같은 기준이다.** 그건 present가 기다리는데,
+// present에는 완료를 알려주는 것이 없다(vkQueuePresentKHR은 펜스를 주지 않는다).
+// 유일한 단서가 "acquire가 그 이미지를 다시 줬다"이고 그건 이미지 인덱스로만 오므로,
+// 개수가 이미지 수가 되어 Swapchain 안에 산다.
+//
+// 지금 frames-in-flight = 1이라 한 벌이다. 2로 올리면 이 struct가 배열이 되고,
+// 루프는 frames[frameIndex]를 돌려쓰게 된다.
+struct Frame {
+    // graphics 풀에서 나온다. 풀이 죽으면 같이 사라지므로 따로 반납하지 않는다.
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+
+    VkSemaphore imageAvailable = VK_NULL_HANDLE;
+    VkFence inFlight = VK_NULL_HANDLE;
+};
+
+bool CreateFrame(const VulkanDevice& dev, const Commands& commands, Frame* out) noexcept {
+    *out = Frame{};
+
+    // PRIMARY: 큐에 직접 제출할 수 있다. SECONDARY는 다른 버퍼 안에서만 실행된다.
+    VkCommandBufferAllocateInfo allocInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    allocInfo.commandPool = commands.graphics;
+    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocInfo.commandBufferCount = 1;
+    if (dev.table.vkAllocateCommandBuffers(dev.handle, &allocInfo, &out->cmd) != VK_SUCCESS) {
+        LOG("[vk] vkAllocateCommandBuffers failed\n");
+        return false;
+    }
+
+    VkSemaphoreCreateInfo semaphoreInfo{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+    if (dev.table.vkCreateSemaphore(dev.handle, &semaphoreInfo, nullptr, &out->imageAvailable)
+            != VK_SUCCESS) {
+        LOG("[vk] vkCreateSemaphore(imageAvailable) failed\n");
+        return false;
+    }
+
+    // **신호된 상태로 만든다.** 첫 프레임엔 기다릴 이전 프레임이 없다.
+    VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+    if (dev.table.vkCreateFence(dev.handle, &fenceInfo, nullptr, &out->inFlight) != VK_SUCCESS) {
+        LOG("[vk] vkCreateFence(inFlight) failed\n");
+        return false;
+    }
+    return true;
+}
+
+void DestroyFrame(const VulkanDevice& dev, Frame* frame) noexcept {
+    if (frame->inFlight != VK_NULL_HANDLE) {
+        dev.table.vkDestroyFence(dev.handle, frame->inFlight, nullptr);
+    }
+    if (frame->imageAvailable != VK_NULL_HANDLE) {
+        dev.table.vkDestroySemaphore(dev.handle, frame->imageAvailable, nullptr);
+    }
+    // cmd는 따로 반납하지 않는다 - 풀이 파괴될 때 같이 사라진다.
+    *frame = Frame{};
 }
 
 // ============================================================================
@@ -1156,40 +1208,13 @@ int main() {
     // 특별 취급을 없앴다: "지금 그릴 곳이 없다"가 시작 시점에도 정상 상태이기 때문이다
     // (최소화된 채로 실행할 수 있다).
 
-    // 있는 패밀리마다 풀 하나씩. 컴퓨트/전송 풀은 **아직 아무것도 제출하지 않는다** -
-    // 만들어만 두고 실제 작업(업로드, 디스패치)이 생길 때 쓴다.
+    // 큐 패밀리마다 풀 하나. 디바이스 수명이다.
     Commands commands;
     if (!CreateCommands(dev, &commands)) { return 1; }
-    const VkCommandBuffer cmd = commands.graphics.buffer;
 
-    // ---- 동기화 오브젝트 ----
-    //
-    // 셋이 있는데 **개수의 근거가 서로 다르다:**
-    //
-    //   imageAvailable  GPU->GPU  frames-in-flight당 1  acquire를 부르기 **전에는**
-    //                                                   어느 이미지인지 모른다
-    //   renderFinished  GPU->GPU  **이미지당**          Swapchain 안에 있다
-    //   inFlight        GPU->CPU  frames-in-flight당 1  CPU가 다음 프레임을 준비해도 되나
-    //
-    // 첫째와 둘째가 서로 반대인 것이 핵심이다. **이 비대칭이 "프레임에 묶인 자원"과
-    // "스왑체인에 묶인 자원"을 가르는 선**이고, 클래스를 나눌 때 이 선을 따르게 된다.
-    // 지금 frames-in-flight = 1이라 각각 하나씩이다.
-    VkSemaphoreCreateInfo semaphoreInfo{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-    VkSemaphore imageAvailable = VK_NULL_HANDLE;
-    if (dev.table.vkCreateSemaphore(dev.handle, &semaphoreInfo, nullptr, &imageAvailable)
-            != VK_SUCCESS) {
-        LOG("[vk] vkCreateSemaphore(imageAvailable) failed\n");
-        return 1;
-    }
-
-    // **신호된 상태로 만든다.** 첫 프레임엔 기다릴 이전 프레임이 없다.
-    VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-    fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-    VkFence inFlight = VK_NULL_HANDLE;
-    if (dev.table.vkCreateFence(dev.handle, &fenceInfo, nullptr, &inFlight) != VK_SUCCESS) {
-        LOG("[vk] vkCreateFence(inFlight) failed\n");
-        return 1;
-    }
+    // frames-in-flight마다 한 벌. 지금은 1이라 하나다.
+    Frame frame;
+    if (!CreateFrame(dev, commands, &frame)) { return 1; }
 
     // ---- 루프 ----
     LOG("close the window to exit.\n");
@@ -1204,12 +1229,12 @@ int main() {
         Swapchain& swapchain = window.swapchain;
 
         // 1. 이전 프레임이 끝나기를 기다린다 (GPU -> CPU)
-        dev.table.vkWaitForFences(dev.handle, 1, &inFlight, VK_TRUE, UINT64_MAX);
+        dev.table.vkWaitForFences(dev.handle, 1, &frame.inFlight, VK_TRUE, UINT64_MAX);
 
         // 2. 이미지를 하나 빌린다
         uint32_t imageIndex = 0;
         const VkResult acquired = dev.table.vkAcquireNextImageKHR(
-            dev.handle, swapchain.handle, UINT64_MAX, imageAvailable, VK_NULL_HANDLE, &imageIndex);
+            dev.handle, swapchain.handle, UINT64_MAX, frame.imageAvailable, VK_NULL_HANDLE, &imageIndex);
 
         if (acquired == VK_ERROR_OUT_OF_DATE_KHR) {
             window.swapchainOutOfDate = true;
@@ -1225,16 +1250,16 @@ int main() {
         // 3. 펜스 리셋 (**acquire가 성공한 뒤에**)
         // 먼저 리셋하면, acquire가 실패해 제출 없이 돌아가는 프레임에서 펜스가 영영
         // 신호되지 않고 다음 WaitForFences가 영원히 걸린다.
-        dev.table.vkResetFences(dev.handle, 1, &inFlight);
+        dev.table.vkResetFences(dev.handle, 1, &frame.inFlight);
 
         // 4~11. 기록
-        RecordFrame(dev.table, cmd, target, swapchain.extent);
+        RecordFrame(dev.table, frame.cmd, target, swapchain.extent);
 
         // 12. 제출
         // acquire가 끝나야 이미지에 쓸 수 있고(wait), 다 쓰면 present가 알아야 한다(signal).
         // 기다리는 지점을 COLOR_ATTACHMENT_OUTPUT으로 좁히면 그 앞 스테이지는 미리 돈다.
         VkSemaphoreSubmitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
-        wait.semaphore = imageAvailable;
+        wait.semaphore = frame.imageAvailable;
         wait.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
 
         VkSemaphoreSubmitInfo signal{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
@@ -1242,7 +1267,7 @@ int main() {
         signal.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
 
         VkCommandBufferSubmitInfo cmdInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
-        cmdInfo.commandBuffer = cmd;
+        cmdInfo.commandBuffer = frame.cmd;
 
         VkSubmitInfo2 submit{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
         submit.waitSemaphoreInfoCount = 1;
@@ -1252,7 +1277,7 @@ int main() {
         submit.signalSemaphoreInfoCount = 1;
         submit.pSignalSemaphoreInfos = &signal;
 
-        if (dev.table.vkQueueSubmit2(dev.queues.graphics, 1, &submit, inFlight) != VK_SUCCESS) {
+        if (dev.table.vkQueueSubmit2(dev.queues.graphics, 1, &submit, frame.inFlight) != VK_SUCCESS) {
             LOG("[vk] vkQueueSubmit2 failed\n");
             break;
         }
@@ -1278,9 +1303,8 @@ int main() {
     // 이 열 줄이 "선언 순서"로 표현되고, 순서를 틀릴 방법 자체가 없어진다.
     dev.table.vkDeviceWaitIdle(dev.handle);   // GPU가 아직 작업 중일 수 있다
 
-    dev.table.vkDestroyFence(dev.handle, inFlight, nullptr);
-    dev.table.vkDestroySemaphore(dev.handle, imageAvailable, nullptr);
-    DestroyCommands(dev, &commands);                  // 커맨드 버퍼도 같이 사라진다
+    DestroyFrame(dev, &frame);
+    DestroyCommands(dev, &commands);   // 커맨드 버퍼도 풀과 함께 사라진다
 
     // 창에 묶인 셋(스왑체인 -> 서피스 -> 창)을 중첩 역순으로. **디바이스보다 먼저다** -
     // 스왑체인이 디바이스로 만들어졌기 때문이다.
