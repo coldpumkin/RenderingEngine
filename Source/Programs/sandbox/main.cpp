@@ -1091,7 +1091,200 @@ void DestroyFrame(const VulkanDevice& dev, Frame* frame) noexcept {
 }
 
 // ============================================================================
-// 7. 한 프레임 기록하기
+// 7. 그래픽스 파이프라인 - **무엇으로 그리는가**
+// ============================================================================
+//
+// 지금까지는 "어디에 그리는가"(스왑체인 이미지)만 있었다. 파이프라인은 그 반대편이다:
+// 정점을 어떻게 화면 좌표로 바꾸고, 픽셀 색을 어떻게 정하는가.
+//
+// **파이프라인은 스왑체인 포맷에 묶인다.** 아래 pipelineRendering.pColorAttachmentFormats가
+// 그 자리다 - 다이나믹 렌더링에서는 VkRenderPass 대신 여기에 포맷을 미리 적어둔다.
+// 그래서 포맷이 바뀌면 파이프라인도 다시 만들어야 한다. **리사이즈는 포맷을 안 바꾸므로
+// 지금은 재생성이 필요 없다** (크기는 동적 상태로 매 프레임 준다).
+
+// SPIR-V 파일 하나를 읽어 VkShaderModule로.
+//
+// 실행 파일 옆 Shaders/에서 찾는다. CMake가 빌드할 때 거기로 떨군다.
+VkShaderModule LoadShader(const VulkanDevice& dev, const char* path) noexcept {
+    std::FILE* file = std::fopen(path, "rb");
+    if (file == nullptr) {
+        LOG("[vk] cannot open shader: %s\n", path);
+        return VK_NULL_HANDLE;
+    }
+
+    std::fseek(file, 0, SEEK_END);
+    const long size = std::ftell(file);
+    std::fseek(file, 0, SEEK_SET);
+
+    // SPIR-V는 32비트 워드 배열이다. 크기가 4의 배수가 아니면 파일이 깨진 것이다.
+    if (size <= 0 || (size % 4) != 0) {
+        LOG("[vk] bad SPIR-V size %ld: %s\n", size, path);
+        std::fclose(file);
+        return VK_NULL_HANDLE;
+    }
+
+    // uint32_t 벡터로 읽는 이유: pCode가 const uint32_t*이고 **4바이트 정렬을 요구한다.**
+    // char 배열로 읽어 캐스팅하면 정렬이 보장되지 않는다.
+    std::vector<uint32_t> code(static_cast<size_t>(size) / 4);
+    const size_t read = std::fread(code.data(), 1, static_cast<size_t>(size), file);
+    std::fclose(file);
+    if (read != static_cast<size_t>(size)) {
+        LOG("[vk] short read: %s\n", path);
+        return VK_NULL_HANDLE;
+    }
+
+    VkShaderModuleCreateInfo info{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    info.codeSize = static_cast<size_t>(size);   // **바이트 수**다 (워드 수가 아니다)
+    info.pCode = code.data();
+
+    VkShaderModule module = VK_NULL_HANDLE;
+    if (dev.table.vkCreateShaderModule(dev.handle, &info, nullptr, &module) != VK_SUCCESS) {
+        LOG("[vk] vkCreateShaderModule failed: %s\n", path);
+        return VK_NULL_HANDLE;
+    }
+    return module;
+}
+
+// 파이프라인 + 레이아웃. 둘이 같이 태어나고 같이 죽는다.
+struct Pipeline {
+    VkPipelineLayout layout = VK_NULL_HANDLE;
+    VkPipeline handle = VK_NULL_HANDLE;
+};
+
+// colorFormat: 이 파이프라인이 어떤 포맷의 렌더 타겟에 그릴지. 스왑체인에서 온다.
+Pipeline CreateTrianglePipeline(const VulkanDevice& dev, VkFormat colorFormat) noexcept {
+    Pipeline pipeline;
+
+    VkShaderModule vs = LoadShader(dev, "Shaders/triangle.vert.spv");
+    VkShaderModule fs = LoadShader(dev, "Shaders/triangle.frag.spv");
+    if (vs == VK_NULL_HANDLE || fs == VK_NULL_HANDLE) {
+        if (vs != VK_NULL_HANDLE) { dev.table.vkDestroyShaderModule(dev.handle, vs, nullptr); }
+        if (fs != VK_NULL_HANDLE) { dev.table.vkDestroyShaderModule(dev.handle, fs, nullptr); }
+        return pipeline;
+    }
+
+    VkPipelineShaderStageCreateInfo stages[2]{};
+    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vs;
+    stages[0].pName = "main";           // 진입점 함수 이름
+    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = fs;
+    stages[1].pName = "main";
+
+    // 정점 입력이 **비어 있다.** 정점 버퍼를 안 쓰고 셰이더가 gl_VertexIndex로
+    // 상수 배열에서 꺼내기 때문이다.
+    VkPipelineVertexInputStateCreateInfo vertexInput{
+        VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly{
+        VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;   // 정점 3개 = 삼각형 1개
+
+    // **뷰포트와 시저를 동적 상태로 둔다.** 여기 값을 박으면 창 크기가 바뀔 때마다
+    // 파이프라인을 다시 만들어야 한다. 동적으로 두면 매 프레임 vkCmdSetViewport로 준다.
+    //
+    // (여기서 말하는 "뷰포트"는 창이 아니라 **렌더 타겟 안의 사각 영역 + 깊이 범위**다.
+    //  같은 단어의 다른 뜻이다.)
+    VkPipelineViewportStateCreateInfo viewportState{
+        VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+    viewportState.viewportCount = 1;
+    viewportState.scissorCount = 1;
+
+    constexpr VkDynamicState kDynamicStates[] = {
+        VK_DYNAMIC_STATE_VIEWPORT,
+        VK_DYNAMIC_STATE_SCISSOR,
+    };
+    VkPipelineDynamicStateCreateInfo dynamicState{
+        VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+    dynamicState.dynamicStateCount = static_cast<uint32_t>(std::size(kDynamicStates));
+    dynamicState.pDynamicStates = kDynamicStates;
+
+    VkPipelineRasterizationStateCreateInfo rasterization{
+        VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    rasterization.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterization.cullMode = VK_CULL_MODE_NONE;   // 뒷면도 그린다. 삼각형 하나뿐이라 상관없다
+    rasterization.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rasterization.lineWidth = 1.0f;               // **0이면 검증 레이어가 잡는다**
+
+    VkPipelineMultisampleStateCreateInfo multisample{
+        VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+    multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;   // MSAA 없음
+
+    // 블렌딩 없음. 그린 색으로 그대로 덮는다.
+    VkPipelineColorBlendAttachmentState blendAttachment{};
+    blendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT
+                                   | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    blendAttachment.blendEnable = VK_FALSE;
+
+    VkPipelineColorBlendStateCreateInfo colorBlend{
+        VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+    colorBlend.attachmentCount = 1;
+    colorBlend.pAttachments = &blendAttachment;
+
+    // 레이아웃: 셰이더가 받는 외부 자원(유니폼, 푸시 상수)의 모양.
+    // **지금은 비어 있다** - 셰이더가 아무것도 안 받는다. 그래도 만들어야 한다.
+    VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    if (dev.table.vkCreatePipelineLayout(dev.handle, &layoutInfo, nullptr, &pipeline.layout)
+            != VK_SUCCESS) {
+        LOG("[vk] vkCreatePipelineLayout failed\n");
+        dev.table.vkDestroyShaderModule(dev.handle, vs, nullptr);
+        dev.table.vkDestroyShaderModule(dev.handle, fs, nullptr);
+        return pipeline;
+    }
+
+    // **다이나믹 렌더링**: VkRenderPass 객체를 안 만드는 대신, 그릴 대상의 포맷을
+    // 여기에 미리 알려준다. 파이프라인이 스왑체인 포맷에 묶이는 지점이 정확히 여기다.
+    VkPipelineRenderingCreateInfo pipelineRendering{
+        VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+    pipelineRendering.colorAttachmentCount = 1;
+    pipelineRendering.pColorAttachmentFormats = &colorFormat;
+
+    VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+    info.pNext = &pipelineRendering;
+    info.stageCount = 2;
+    info.pStages = stages;
+    info.pVertexInputState = &vertexInput;
+    info.pInputAssemblyState = &inputAssembly;
+    info.pViewportState = &viewportState;
+    info.pRasterizationState = &rasterization;
+    info.pMultisampleState = &multisample;
+    info.pColorBlendState = &colorBlend;
+    info.pDynamicState = &dynamicState;
+    info.layout = pipeline.layout;
+    info.renderPass = VK_NULL_HANDLE;   // 다이나믹 렌더링이라 없다
+
+    const VkResult created = dev.table.vkCreateGraphicsPipelines(
+        dev.handle, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline.handle);
+
+    // **셰이더 모듈은 파이프라인이 만들어지고 나면 필요 없다.** 코드가 파이프라인 안으로
+    // 컴파일돼 들어갔다. 계속 들고 있을 이유가 없다.
+    dev.table.vkDestroyShaderModule(dev.handle, vs, nullptr);
+    dev.table.vkDestroyShaderModule(dev.handle, fs, nullptr);
+
+    if (created != VK_SUCCESS) {
+        LOG("[vk] vkCreateGraphicsPipelines failed (%d)\n", created);
+        dev.table.vkDestroyPipelineLayout(dev.handle, pipeline.layout, nullptr);
+        return Pipeline{};
+    }
+
+    LOG("[vk] triangle pipeline ready\n");
+    return pipeline;
+}
+
+void DestroyPipeline(const VulkanDevice& dev, Pipeline* pipeline) noexcept {
+    if (pipeline->handle != VK_NULL_HANDLE) {
+        dev.table.vkDestroyPipeline(dev.handle, pipeline->handle, nullptr);
+    }
+    if (pipeline->layout != VK_NULL_HANDLE) {
+        dev.table.vkDestroyPipelineLayout(dev.handle, pipeline->layout, nullptr);
+    }
+    *pipeline = Pipeline{};
+}
+
+// ============================================================================
+// 8. 한 프레임 기록하기
 // ============================================================================
 
 // 이미지 레이아웃 전이. 프레임에 두 번 나오는데 방향만 다르다.
@@ -1131,7 +1324,8 @@ void RecordLayoutTransition(const VolkDeviceTable& vk, VkCommandBuffer cmd, VkIm
 void RecordFrame(const VolkDeviceTable& vk,
                  VkCommandBuffer cmd,
                  const SwapchainImage& target,
-                 VkExtent2D extent) noexcept {
+                 VkExtent2D extent,
+                 const Pipeline& pipeline) noexcept {
     vk.vkResetCommandBuffer(cmd, 0);
 
     VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -1166,7 +1360,33 @@ void RecordFrame(const VolkDeviceTable& vk,
 
     vk.vkCmdBeginRendering(cmd, &rendering);
 
-    // ======== 드로우콜이 들어올 자리 ========
+    // ======== 드로우 ========
+    //
+    // 뷰포트와 시저를 여기서 준다. 파이프라인에 박지 않고 동적 상태로 둔 덕에
+    // 창 크기가 바뀌어도 파이프라인을 다시 만들 필요가 없다.
+    //
+    // **y를 뒤집는다**: Vulkan의 클립 좌표는 y가 아래로 향한다(OpenGL과 반대).
+    // height를 음수로 주고 y를 아래에서 시작하면 셰이더 좌표계가 위로 향하게 된다.
+    // (VK_KHR_maintenance1이 1.1에서 코어가 되면서 가능해진 방법이다.)
+    VkViewport viewport{};
+    viewport.x = 0.0f;
+    viewport.y = static_cast<float>(extent.height);
+    viewport.width = static_cast<float>(extent.width);
+    viewport.height = -static_cast<float>(extent.height);
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+    vk.vkCmdSetViewport(cmd, 0, 1, &viewport);
+
+    // 시저: 이 사각형 밖의 픽셀은 버린다. 지금은 화면 전체다.
+    VkRect2D scissor{};
+    scissor.extent = extent;
+    vk.vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+    vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.handle);
+
+    // 정점 3개, 인스턴스 1개. **정점 버퍼를 바인딩하지 않는다** -
+    // 셰이더가 gl_VertexIndex(0,1,2)로 상수 배열에서 꺼낸다.
+    vk.vkCmdDraw(cmd, 3, 1, 0, 0);
 
     vk.vkCmdEndRendering(cmd);
 
@@ -1216,6 +1436,15 @@ int main() {
     Frame frame;
     if (!CreateFrame(dev, commands, &frame)) { return 1; }
 
+    // 파이프라인은 **스왑체인 포맷**에 묶인다. 그래서 스왑체인이 한 번은 있어야 한다.
+    // 크기는 안 묶인다(동적 상태) - 리사이즈로는 다시 만들 필요가 없다.
+    if (!EnsureSwapchain(inst, dev, &window)) {
+        LOG("[vk] cannot create initial swapchain\n");
+        return 1;
+    }
+    Pipeline pipeline = CreateTrianglePipeline(dev, window.swapchain.format);
+    if (pipeline.handle == VK_NULL_HANDLE) { return 1; }
+
     // ---- 루프 ----
     LOG("close the window to exit.\n");
 
@@ -1253,7 +1482,7 @@ int main() {
         dev.table.vkResetFences(dev.handle, 1, &frame.inFlight);
 
         // 4~11. 기록
-        RecordFrame(dev.table, frame.cmd, target, swapchain.extent);
+        RecordFrame(dev.table, frame.cmd, target, swapchain.extent, pipeline);
 
         // 12. 제출
         // acquire가 끝나야 이미지에 쓸 수 있고(wait), 다 쓰면 present가 알아야 한다(signal).
@@ -1303,6 +1532,7 @@ int main() {
     // 이 열 줄이 "선언 순서"로 표현되고, 순서를 틀릴 방법 자체가 없어진다.
     dev.table.vkDeviceWaitIdle(dev.handle);   // GPU가 아직 작업 중일 수 있다
 
+    DestroyPipeline(dev, &pipeline);
     DestroyFrame(dev, &frame);
     DestroyCommands(dev, &commands);   // 커맨드 버퍼도 풀과 함께 사라진다
 
