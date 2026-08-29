@@ -476,6 +476,56 @@ bool CreateDevice(const VulkanInstance& inst,
     // 메모리 타입 목록을 여기서 한 번 물어 담는다 (인스턴스 레벨 조회다).
     inst.table.vkGetPhysicalDeviceMemoryProperties(dev.gpu, &dev.memoryProperties);
 
+    // ---- VMA 할당자 ----
+    //
+    // **함수 포인터를 손으로 채운다.** volk 때문이다: VK_NO_PROTOTYPES라 전역 vk* 심볼이
+    // 아예 없어서 VMA가 스스로 찾을 수가 없다. 우리가 쓰는 것과 **같은 테이블**을
+    // 넘기는 것이 목적이기도 하다 - VMA가 따로 로드하면 멀티 디바이스에서 어긋난다.
+    //
+    // 이게 volk + VMA 조합의 유일한 대가다. 한 번 적으면 끝이다.
+    VmaVulkanFunctions functions{};
+    functions.vkGetInstanceProcAddr = vkGetInstanceProcAddr;
+    functions.vkGetDeviceProcAddr = vkGetDeviceProcAddr;
+    functions.vkGetPhysicalDeviceProperties = inst.table.vkGetPhysicalDeviceProperties;
+    functions.vkGetPhysicalDeviceMemoryProperties = inst.table.vkGetPhysicalDeviceMemoryProperties;
+    functions.vkAllocateMemory = dev.table.vkAllocateMemory;
+    functions.vkFreeMemory = dev.table.vkFreeMemory;
+    functions.vkMapMemory = dev.table.vkMapMemory;
+    functions.vkUnmapMemory = dev.table.vkUnmapMemory;
+    functions.vkFlushMappedMemoryRanges = dev.table.vkFlushMappedMemoryRanges;
+    functions.vkInvalidateMappedMemoryRanges = dev.table.vkInvalidateMappedMemoryRanges;
+    functions.vkBindBufferMemory = dev.table.vkBindBufferMemory;
+    functions.vkBindImageMemory = dev.table.vkBindImageMemory;
+    functions.vkGetBufferMemoryRequirements = dev.table.vkGetBufferMemoryRequirements;
+    functions.vkGetImageMemoryRequirements = dev.table.vkGetImageMemoryRequirements;
+    functions.vkCreateBuffer = dev.table.vkCreateBuffer;
+    functions.vkDestroyBuffer = dev.table.vkDestroyBuffer;
+    functions.vkCreateImage = dev.table.vkCreateImage;
+    functions.vkDestroyImage = dev.table.vkDestroyImage;
+    functions.vkCmdCopyBuffer = dev.table.vkCmdCopyBuffer;
+    // 1.1+ 코어로 올라온 것들. VMA가 있으면 더 나은 경로를 쓴다.
+    functions.vkGetBufferMemoryRequirements2KHR = dev.table.vkGetBufferMemoryRequirements2;
+    functions.vkGetImageMemoryRequirements2KHR = dev.table.vkGetImageMemoryRequirements2;
+    functions.vkBindBufferMemory2KHR = dev.table.vkBindBufferMemory2;
+    functions.vkBindImageMemory2KHR = dev.table.vkBindImageMemory2;
+    functions.vkGetPhysicalDeviceMemoryProperties2KHR =
+        inst.table.vkGetPhysicalDeviceMemoryProperties2;
+    // 1.3 코어. maintenance4의 "버퍼를 안 만들고도 요구사항을 묻는" 경로.
+    functions.vkGetDeviceBufferMemoryRequirements = dev.table.vkGetDeviceBufferMemoryRequirements;
+    functions.vkGetDeviceImageMemoryRequirements = dev.table.vkGetDeviceImageMemoryRequirements;
+
+    VmaAllocatorCreateInfo allocatorInfo{};
+    allocatorInfo.vulkanApiVersion = kRequiredApiVersion;
+    allocatorInfo.physicalDevice = dev.gpu;
+    allocatorInfo.device = dev.handle;
+    allocatorInfo.instance = inst.handle;
+    allocatorInfo.pVulkanFunctions = &functions;
+
+    if (vmaCreateAllocator(&allocatorInfo, &dev.allocator) != VK_SUCCESS) {
+        LOG("[vk] vmaCreateAllocator failed\n");
+        return false;
+    }
+
     return true;
 }
 
@@ -485,6 +535,12 @@ bool CreateDevice(const VulkanInstance& inst,
 VulkanDevice::~VulkanDevice() {
     if (handle == VK_NULL_HANDLE) { return; }
     table.vkDeviceWaitIdle(handle);
+
+    // **디바이스보다 먼저.** 할당자가 이 디바이스로 잡은 메모리를 들고 있다.
+    // (버퍼들은 이보다도 먼저 죽는다 - main()에서 dev보다 뒤에 선언했다.)
+    if (allocator != VK_NULL_HANDLE) {
+        vmaDestroyAllocator(allocator);
+    }
     table.vkDestroyDevice(handle, nullptr);
 }
 
@@ -1069,100 +1125,49 @@ Pipeline::~Pipeline() {
 // 9. 버퍼
 // ============================================================================
 
-uint32_t FindMemoryType(const VulkanDevice& dev,
-                        uint32_t typeBits,
-                        VkMemoryPropertyFlags required) noexcept {
-    // GPU가 가진 메모리 타입 목록. **하드웨어마다 완전히 다르다.**
-    //   외장 GPU: DEVICE_LOCAL(VRAM), HOST_VISIBLE(시스템 RAM),
-    //             둘 다인 것(리사이저블 BAR 구간, 보통 256MB 또는 전체)
-    //   내장 GPU: 대부분 DEVICE_LOCAL | HOST_VISIBLE (메모리를 CPU와 공유하므로)
-    const VkPhysicalDeviceMemoryProperties& memory = dev.memoryProperties;
-
-    for (uint32_t i = 0; i < memory.memoryTypeCount; ++i) {
-        // (a) 이 버퍼가 i번 타입에 놓일 수 있나 - **버퍼가 정한 제약**
-        const bool allowedByBuffer = (typeBits & (1u << i)) != 0;
-
-        // (b) i번 타입이 우리가 원하는 성질을 **전부** 가졌나 - **우리가 정한 요구**
-        const VkMemoryPropertyFlags flags = memory.memoryTypes[i].propertyFlags;
-        const bool hasRequired = (flags & required) == required;
-
-        if (allowedByBuffer && hasRequired) {
-            return i;
-        }
-    }
-
-    LOG("[vk] no memory type for typeBits=0x%x required=0x%x\n", typeBits, required);
-    return UINT32_MAX;
-}
-
 bool CreateBuffer(const VulkanDevice& dev,
                   VkDeviceSize size,
                   VkBufferUsageFlags usage,
-                  VkMemoryPropertyFlags memoryProperties,
+                  VmaMemoryUsage memoryUsage,
+                  VmaAllocationCreateFlags flags,
                   Buffer* out) noexcept {
     Buffer& buffer = *out;
     buffer.dev = &dev;
 
-    VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-    info.size = size;
-    info.usage = usage;
+    VkBufferCreateInfo bufferInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bufferInfo.size = size;
+    bufferInfo.usage = usage;
     // EXCLUSIVE: 한 번에 한 큐 패밀리만 소유한다. 다른 패밀리가 쓰려면 소유권을
     // 명시적으로 넘겨야 한다. 지금은 그래픽스 큐만 만지므로 넘길 일이 없다.
-    info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-    if (dev.table.vkCreateBuffer(dev.handle, &info, nullptr, &buffer.handle) != VK_SUCCESS) {
-        LOG("[vk] vkCreateBuffer failed\n");
+    VmaAllocationCreateInfo allocInfo{};
+    allocInfo.usage = memoryUsage;
+    allocInfo.flags = flags;
+
+    // **한 번에 셋을 다 한다**: 버퍼 생성 + 메모리 타입 선택 + 할당 + 바인딩.
+    // 수동으로는 vkCreateBuffer / vkGetBufferMemoryRequirements / 타입 대조 /
+    // vkAllocateMemory / vkBindBufferMemory 다섯 단계였다.
+    VmaAllocationInfo allocated{};
+    const VkResult created = vmaCreateBuffer(dev.allocator, &bufferInfo, &allocInfo,
+                                             &buffer.handle, &buffer.allocation, &allocated);
+    if (created != VK_SUCCESS) {
+        LOG("[vk] vmaCreateBuffer failed (%d, %llu bytes)\n",
+            created, static_cast<unsigned long long>(size));
         return false;
     }
 
-    // **버퍼를 만들었다고 메모리가 붙은 게 아니다.** 여기서 요구사항을 물어본다:
-    //   size          실제 필요한 크기 (정렬 때문에 요청보다 클 수 있다)
-    //   alignment     시작 주소 정렬
-    //   memoryTypeBits 놓을 수 있는 타입들
-    VkMemoryRequirements requirements{};
-    dev.table.vkGetBufferMemoryRequirements(dev.handle, buffer.handle, &requirements);
-
-    const uint32_t typeIndex =
-        FindMemoryType(dev, requirements.memoryTypeBits, memoryProperties);
-    if (typeIndex == UINT32_MAX) {
-        return false;   // 여기까지 만든 것은 ~Buffer가 정리한다
-    }
-
-    // **실제 할당.** 여기가 VMA가 대신하게 될 자리다 - VMA는 큰 덩어리를 미리 잡아두고
-    // 그 안에서 잘라 쓴다. vkAllocateMemory는 호출 횟수에 상한이 있어서
-    // (maxMemoryAllocationCount, 보통 4096) 버퍼마다 부르면 금방 바닥난다.
-    VkMemoryAllocateInfo allocInfo{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-    allocInfo.allocationSize = requirements.size;
-    allocInfo.memoryTypeIndex = typeIndex;
-
-    if (dev.table.vkAllocateMemory(dev.handle, &allocInfo, nullptr, &buffer.memory)
-            != VK_SUCCESS) {
-        LOG("[vk] vkAllocateMemory failed (%llu bytes)\n",
-            static_cast<unsigned long long>(requirements.size));
-        return false;
-    }
-
-    // 버퍼와 메모리를 잇는다. 이제야 쓸 수 있다.
-    if (dev.table.vkBindBufferMemory(dev.handle, buffer.handle, buffer.memory, 0)
-            != VK_SUCCESS) {
-        LOG("[vk] vkBindBufferMemory failed\n");
-        return false;
-    }
-
+    // MAPPED_BIT을 줬으면 여기 CPU 주소가 들어온다. 아니면 nullptr.
+    buffer.mapped = allocated.pMappedData;
     buffer.size = size;
     return true;
 }
 
 Buffer::~Buffer() {
-    if (dev == nullptr) { return; }
-    // **순서가 있다**: 버퍼를 먼저 부수고 메모리를 반납한다.
-    // 메모리를 먼저 반납하면 버퍼가 없는 메모리를 가리키게 된다.
-    if (handle != VK_NULL_HANDLE) {
-        dev->table.vkDestroyBuffer(dev->handle, handle, nullptr);
-    }
-    if (memory != VK_NULL_HANDLE) {
-        dev->table.vkFreeMemory(dev->handle, memory, nullptr);
-    }
+    if (dev == nullptr || handle == VK_NULL_HANDLE) { return; }
+    // **버퍼와 할당을 한 번에 놓는다.** 수동일 때는 순서(버퍼 먼저, 메모리 나중)를
+    // 지켜야 했는데 그 순서도 VMA 안으로 들어갔다.
+    vmaDestroyBuffer(dev->allocator, handle, allocation);
 }
 
 bool CreateVertexBuffer(const VulkanDevice& dev,
@@ -1172,38 +1177,43 @@ bool CreateVertexBuffer(const VulkanDevice& dev,
                         Buffer* out) noexcept {
     // ---- 1. 스테이징: CPU가 쓸 수 있는 임시 버퍼 ----
     //
-    // HOST_VISIBLE   vkMapMemory로 CPU 주소를 얻을 수 있다
-    // HOST_COHERENT  CPU가 쓴 것이 GPU에게 자동으로 보인다.
-    //                없으면 vkFlushMappedMemoryRanges를 직접 불러야 한다
+    // **무엇을 원하는지만 말한다.** 어떤 메모리 타입인지는 VMA가 고른다:
+    //   AUTO_PREFER_HOST              CPU가 자주 만지니 시스템 RAM 쪽을 선호해라
+    //   HOST_ACCESS_SEQUENTIAL_WRITE  CPU가 순차로 쓰기만 한다 (읽지 않는다)
+    //   MAPPED_BIT                    매핑을 유지해라 -> staging.mapped에 주소가 온다
     //
-    // **지역 변수다.** 어느 경로로 나가든 ~Buffer가 정리한다 - 한때 실패 지점마다
-    // DestroyBuffer(dev, &staging)를 네 번 적어야 했다.
+    // 수동일 때는 HOST_VISIBLE|HOST_COHERENT를 직접 지정하고, vkMapMemory와
+    // vkUnmapMemory를 짝으로 불러야 했다. 그게 전부 위 세 플래그로 대체됐다.
+    //
+    // **지역 변수다.** 어느 경로로 나가든 ~Buffer가 정리한다.
     Buffer staging;
     if (!CreateBuffer(dev, size,
                       VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
-                          | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                      VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+                      VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+                          | VMA_ALLOCATION_CREATE_MAPPED_BIT,
                       &staging)) {
         return false;
     }
-
-    void* mapped = nullptr;
-    if (dev.table.vkMapMemory(dev.handle, staging.memory, 0, size, 0, &mapped) != VK_SUCCESS) {
-        LOG("[vk] vkMapMemory failed\n");
+    if (staging.mapped == nullptr) {
+        LOG("[vk] staging buffer is not mapped\n");
         return false;
     }
-    std::memcpy(mapped, data, static_cast<size_t>(size));
-    dev.table.vkUnmapMemory(dev.handle, staging.memory);
+    std::memcpy(staging.mapped, data, static_cast<size_t>(size));
 
-    // ---- 2. 목적지: GPU 전용 메모리 ----
+    // ---- 2. 목적지: GPU가 빠르게 읽는 메모리 ----
     //
-    // DEVICE_LOCAL은 GPU가 가장 빠르게 읽는 메모리다. 대신 CPU가 매핑할 수 없는 것이
-    // 보통이라(외장 GPU의 VRAM) 스테이징을 거쳐야 한다.
+    // VMA_MEMORY_USAGE_AUTO = "GPU가 주로 쓴다". VMA가 DEVICE_LOCAL을 고른다.
+    // 그 메모리는 보통 CPU가 매핑할 수 없어서(외장 GPU의 VRAM) 스테이징을 거친다.
     // TRANSFER_DST: 복사의 목적지가 될 수 있다고 미리 알려준다.
+    //
+    // **usage 플래그(무엇에 쓰는 버퍼인가)는 여전히 우리가 말한다.** VMA가 대신하는 것은
+    // "어느 메모리에 놓을까"이지 "무엇에 쓸 버퍼인가"가 아니다.
     if (!CreateBuffer(dev, size,
                       VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
                           | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                      VMA_MEMORY_USAGE_AUTO,
+                      0,
                       out)) {
         return false;
     }

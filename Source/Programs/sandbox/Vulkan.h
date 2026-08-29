@@ -30,6 +30,7 @@
 // ---------------------------------------------------------------------------
 
 #include <volk.h>
+#include <vma/vk_mem_alloc.h>
 
 #include <cstdio>
 #include <memory>
@@ -342,6 +343,12 @@ struct VulkanDevice {
     // 대신, 안 변하는 값이니 여기 한 번 담아둔다.
     VkPhysicalDeviceMemoryProperties memoryProperties{};
 
+    // GPU 메모리 할당자. **디바이스가 만들고 디바이스와 함께 죽는다.**
+    //
+    // 한때 여기 있던 FindMemoryType + vkAllocateMemory + vkBindBufferMemory 60여 줄을
+    // 이것이 대신한다. 무엇을 대신하는지는 CreateBuffer 주석 참고.
+    VmaAllocator allocator = VK_NULL_HANDLE;
+
     // 인스턴스와 같다 - vkDeviceWaitIdle과 vkDestroyDevice가 둘 다 디바이스 레벨이라
     // 자기 테이블로 자기를 지운다.
     VulkanDevice() = default;
@@ -476,16 +483,48 @@ bool CreateTrianglePipeline(const VulkanDevice& dev, VkFormat colorFormat,
 // ============================================================================
 //
 // 지금까지 만든 것(인스턴스·디바이스·스왑체인·커맨드 풀)은 전부 드라이버가 메모리를
-// 알아서 잡아줬다. 버퍼부터는 **우리가 어떤 메모리에 놓을지 고른다.**
+// 알아서 잡아줬다. 버퍼부터는 **어떤 메모리에 놓을지 정해야 한다.**
 //
-// 그 고르는 과정이 FindMemoryType이고, VMA가 대신해주게 될 부분이 정확히 거기다.
-// **한 번은 직접 해봐야 VMA가 무엇을 줄여주는지 알 수 있다.**
+// ---------------------------------------------------------------------------
+// **VMA가 무엇을 대신하나** (수동으로 한 번 해보고 바꿨다 - git 4b71b59)
+//
+//   수동                                        VMA
+//   ------------------------------------------  ---------------------------
+//   vkCreateBuffer                              vmaCreateBuffer 하나
+//   vkGetBufferMemoryRequirements                 "이 버퍼를 누가 쓰나"만 말하면
+//   dev.memoryProperties 조회                     타입 선택 · 할당 · 바인딩을
+//   두 비트마스크 대조 -> memoryTypeIndex          전부 안에서 한다
+//   vkAllocateMemory
+//   vkBindBufferMemory
+//
+// 줄어드는 것보다 중요한 것 둘:
+//
+//   1. **vkAllocateMemory는 호출 횟수에 상한이 있다** (maxMemoryAllocationCount,
+//      보통 4096). 버퍼마다 부르면 금방 바닥난다. VMA는 큰 덩어리를 미리 잡고
+//      그 안에서 잘라 주므로 버퍼 수와 할당 수가 분리된다.
+//   2. 타입 선택 정책(어떤 GPU에서 무엇이 빠른가)이 우리 코드에서 사라진다.
+//      VMA가 하드웨어별로 알고 있다.
+//
+// 대가: volk와 같이 쓰려면 VmaVulkanFunctions를 손으로 채워야 한다
+// (VK_NO_PROTOTYPES라 VMA가 전역 심볼을 못 찾는다). CreateDevice에 그 코드가 있다.
+// ---------------------------------------------------------------------------
 
 struct Buffer {
     const VulkanDevice* dev = nullptr;   // 파괴에 필요한 비소유 상태
 
     VkBuffer handle = VK_NULL_HANDLE;
-    VkDeviceMemory memory = VK_NULL_HANDLE;   // **우리가 할당했다.** 우리가 반납한다
+
+    // **VkDeviceMemory가 아니라 VmaAllocation이다.**
+    //
+    // 전에는 버퍼마다 vkAllocateMemory를 불러 VkDeviceMemory를 하나씩 받았다.
+    // VMA는 큰 덩어리를 미리 잡아두고 그 안에서 잘라 주므로, 이 핸들은
+    // "그 덩어리의 어느 구간"을 가리킨다. 그래서 offset도 VMA가 안다.
+    VmaAllocation allocation = VK_NULL_HANDLE;
+
+    // 매핑된 CPU 주소. HOST_VISIBLE로 만들고 MAPPED_BIT을 주면 VMA가 채워준다.
+    // 아니면 nullptr. **vkMapMemory/vkUnmapMemory를 매번 부르지 않아도 된다.**
+    void* mapped = nullptr;
+
     VkDeviceSize size = 0;
     Buffer() = default;
     ~Buffer();
@@ -502,24 +541,20 @@ struct Vertex {
     float color[3];      // vec3 -> VK_FORMAT_R32G32B32_SFLOAT
 };
 
-// 요구 조건을 만족하는 메모리 타입 번호를 찾는다. 없으면 UINT32_MAX.
+// 버퍼 생성 + 메모리 할당 + 바인딩을 vmaCreateBuffer 한 번으로.
 //
-// **typeBits**: vkGetBufferMemoryRequirements가 준 비트마스크. "이 버퍼는 i번 타입에
-//   놓을 수 있다"가 i번 비트로 표현돼 있다. **버퍼가 정하는 제약**이다.
-// **required**: 우리가 원하는 성질 (HOST_VISIBLE = CPU가 매핑 가능, DEVICE_LOCAL = GPU 전용 빠른 메모리).
-//   **우리가 정하는 요구**다.
+// **memoryUsage**: "이 버퍼를 누가 어떻게 쓰나"를 말하면 VMA가 메모리 타입을 고른다.
+//   VMA_MEMORY_USAGE_AUTO                  GPU가 주로 읽는다 -> DEVICE_LOCAL 선호
+//   VMA_MEMORY_USAGE_AUTO_PREFER_HOST      CPU가 자주 쓴다   -> HOST_VISIBLE 선호
+// 전에는 이걸 우리가 VkMemoryPropertyFlags로 직접 말하고 대조까지 했다.
 //
-// 둘을 대조하는 것이 전부다. VMA가 감춰주는 게 이 대조다.
-uint32_t FindMemoryType(const VulkanDevice& dev,
-                        uint32_t typeBits,
-                        VkMemoryPropertyFlags required) noexcept;
-
-// 버퍼 생성 + 메모리 할당 + 바인딩. 셋이 항상 같이 간다.
-// 실패하면 handle이 VK_NULL_HANDLE인 채로 돌아온다.
+// **flags**: HOST_ACCESS_SEQUENTIAL_WRITE_BIT를 주면 "CPU가 순차로 쓴다"는 뜻이고,
+//   MAPPED_BIT까지 주면 VMA가 매핑을 유지해서 out->mapped에 주소가 들어온다.
 bool CreateBuffer(const VulkanDevice& dev,
                   VkDeviceSize size,
                   VkBufferUsageFlags usage,
-                  VkMemoryPropertyFlags memoryProperties,
+                  VmaMemoryUsage memoryUsage,
+                  VmaAllocationCreateFlags flags,
                   Buffer* out) noexcept;
 
 // CPU 데이터를 GPU 전용 메모리에 올린다 (스테이징 경유).
