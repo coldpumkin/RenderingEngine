@@ -142,8 +142,14 @@ bool CreateInstance(VulkanInstance* out) noexcept {
 
 #if LAMBDA_ENABLE_VULKAN_VALIDATION
     if (validationOn) {
-        inst.table.vkCreateDebugUtilsMessengerEXT(inst.handle, &messengerInfo, nullptr,
-                                                  &inst.messenger);
+        // **실패해도 인스턴스 생성은 성공이다** - 검증 메시지를 못 받을 뿐 렌더링은 된다.
+        // 하지만 조용히 넘어가면 안 된다: 검증이 안 도는 줄 모르고 작업하게 되고,
+        // 이 프로젝트에서 검증 레이어는 있으면 좋은 게 아니라 주요 안전망이다.
+        if (inst.table.vkCreateDebugUtilsMessengerEXT(
+                inst.handle, &messengerInfo, nullptr, &inst.messenger) != VK_SUCCESS) {
+            LOG("[vk] 경고: 디버그 메신저를 만들지 못했다 - **검증 메시지가 안 나온다**\n");
+            inst.messenger = VK_NULL_HANDLE;
+        }
     }
 #endif
 

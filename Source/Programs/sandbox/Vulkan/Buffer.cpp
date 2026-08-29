@@ -119,15 +119,30 @@ bool CreateVertexBuffer(const VulkanDevice& dev,
         return false;
     }
 
+    // **여기부터 반환값을 다 본다.** 한때 전부 버렸는데, 그러면 복사가 한 줄도 실행되지
+    // 않아도 아래 "vertex buffer ready" 로그가 찍히고 true가 나간다. 화면에는 쓰레기
+    // 정점이 그려지거나 아무것도 안 나오고, 원인을 어디서도 알 수 없다.
+    //
+    // 실패 경로가 커맨드 버퍼를 반납해야 해서 goto 대신 람다로 묶었다.
+    const auto fail = [&](const char* what) {
+        LOG("[vk] %s failed (vertex upload)\n", what);
+        dev.table.vkFreeCommandBuffers(dev.handle, commands.graphics, 1, &cmd);
+        return false;
+    };
+
     VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    dev.table.vkBeginCommandBuffer(cmd, &beginInfo);
+    if (dev.table.vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS) {
+        return fail("vkBeginCommandBuffer");
+    }
 
     VkBufferCopy region{};
     region.size = size;
     dev.table.vkCmdCopyBuffer(cmd, staging.handle, out->handle, 1, &region);
 
-    dev.table.vkEndCommandBuffer(cmd);
+    if (dev.table.vkEndCommandBuffer(cmd) != VK_SUCCESS) {
+        return fail("vkEndCommandBuffer");
+    }
 
     // 복사가 끝날 때까지 기다린다. **초기화 경로라 기다려도 된다** -
     // 매 프레임이면 펜스로 넘겨받아야 하지만 여기는 한 번뿐이다.
@@ -138,8 +153,15 @@ bool CreateVertexBuffer(const VulkanDevice& dev,
     submit.commandBufferInfoCount = 1;
     submit.pCommandBufferInfos = &cmdInfo;
 
-    dev.table.vkQueueSubmit2(dev.queues.graphics, 1, &submit, VK_NULL_HANDLE);
-    dev.table.vkQueueWaitIdle(dev.queues.graphics);
+    if (dev.table.vkQueueSubmit2(dev.queues.graphics, 1, &submit, VK_NULL_HANDLE)
+            != VK_SUCCESS) {
+        return fail("vkQueueSubmit2");
+    }
+    // **대기가 실패하면 복사가 끝났는지 알 수 없다.** 커맨드 버퍼를 반납하는 것도
+    // 위험하지만(GPU가 아직 읽고 있을 수 있다) 여기서 할 수 있는 최선이다.
+    if (dev.table.vkQueueWaitIdle(dev.queues.graphics) != VK_SUCCESS) {
+        return fail("vkQueueWaitIdle");
+    }
 
     dev.table.vkFreeCommandBuffers(dev.handle, commands.graphics, 1, &cmd);
     // staging은 여기서 스코프를 벗어나며 ~Buffer가 정리한다.

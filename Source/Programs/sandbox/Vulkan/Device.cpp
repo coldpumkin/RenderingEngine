@@ -73,8 +73,14 @@ PhysicalDeviceSelection PickPhysicalDevice(const VulkanInstance& inst,
         LOG("[vk] no Vulkan-capable GPU\n");
         return selection;
     }
+    // **개수 조회는 실패해도 gpuCount가 0으로 남아 위에서 걸린다. 채우기는 다르다** -
+    // 실패하면 벡터가 VK_NULL_HANDLE로 남고, 그걸 아래 루프가 진짜 GPU처럼 넘긴다.
     std::vector<VkPhysicalDevice> gpus(gpuCount);
-    inst.table.vkEnumeratePhysicalDevices(inst.handle, &gpuCount, gpus.data());
+    if (inst.table.vkEnumeratePhysicalDevices(inst.handle, &gpuCount, gpus.data())
+            != VK_SUCCESS) {
+        LOG("[vk] vkEnumeratePhysicalDevices failed\n");
+        return selection;
+    }
 
     VkPhysicalDeviceProperties chosenProps{};
     int bestScore = -1;
@@ -100,7 +106,13 @@ PhysicalDeviceSelection PickPhysicalDevice(const VulkanInstance& inst,
         uint32_t extCount = 0;
         inst.table.vkEnumerateDeviceExtensionProperties(candidate, nullptr, &extCount, nullptr);
         std::vector<VkExtensionProperties> available(extCount);
-        inst.table.vkEnumerateDeviceExtensionProperties(candidate, nullptr, &extCount, available.data());
+        // 채우기가 실패하면 available이 0으로 남아 아래에서 "확장이 없다"로 읽힌다.
+        // 그건 이 후보를 떨어뜨릴 뿐이라 안전한 쪽이지만, 이유를 남긴다.
+        if (inst.table.vkEnumerateDeviceExtensionProperties(
+                candidate, nullptr, &extCount, available.data()) != VK_SUCCESS) {
+            LOG("[vk] vkEnumerateDeviceExtensionProperties failed - 이 GPU를 건너뛴다\n");
+            continue;
+        }
 
         bool hasAllExtensions = true;
         for (const char* required : kRequiredDeviceExtensions) {

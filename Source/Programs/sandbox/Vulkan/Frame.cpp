@@ -148,7 +148,12 @@ bool EndFrame(const VulkanDevice& dev,
     // 신호하는 API가 없다(타임라인 세마포어에만 있다). 그래서 실패하면 false를 돌려
     // 호출자가 루프를 **빠져나가게** 한다. 어차피 OUT_OF_MEMORY / DEVICE_LOST뿐이라
     // 다음 프레임을 시도할 상황이 아니다.
-    dev.table.vkResetFences(dev.handle, 1, &frame.inFlight);
+    // 리셋이 실패하면 펜스가 신호된 채로 남는다. **신호된 펜스로 제출하는 것은 스펙 위반**
+    // (에러로 보고되는 게 아니라 무효 사용이라, 검증 레이어를 끄면 조용히 UB가 된다).
+    if (dev.table.vkResetFences(dev.handle, 1, &frame.inFlight) != VK_SUCCESS) {
+        LOG("[vk] vkResetFences failed\n");
+        return false;
+    }
 
     if (dev.table.vkQueueSubmit2(dev.queues.graphics, 1, &submit, frame.inFlight)
             != VK_SUCCESS) {
