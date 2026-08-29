@@ -3,7 +3,7 @@
 #include "Config.h"
 #include "Vulkan/Device.h"
 
-// 6. 커맨드 풀 (큐 패밀리마다) + 프레임 자원 (frames-in-flight마다)
+// 커맨드 풀 - 큐 패밀리마다 하나
 // ============================================================================
 //
 // **둘은 수명이 다르다.** 한 덩어리로 두면 개수를 늘릴 때 같이 늘어나 버린다.
@@ -44,20 +44,3 @@ struct Commands {
 };
 
 bool CreateCommands(const VulkanDevice& dev, Commands* out) noexcept;
-
-// 개수는 Config.h의 kFramesInFlight가 정한다.
-struct Frame {
-    const VulkanDevice* dev = nullptr;   // 파괴에 필요한 비소유 상태
-
-    // graphics 풀에서 나온다. 풀이 죽으면 같이 사라지므로 따로 반납하지 않는다.
-    VkCommandBuffer cmd = VK_NULL_HANDLE;
-
-    VkSemaphore imageAvailable = VK_NULL_HANDLE;
-    VkFence inFlight = VK_NULL_HANDLE;
-    Frame() = default;
-    ~Frame();
-    Frame(const Frame&) = delete;
-    Frame& operator=(const Frame&) = delete;
-};
-
-bool CreateFrame(const VulkanDevice& dev, const Commands& commands, Frame* out) noexcept;

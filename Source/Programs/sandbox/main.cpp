@@ -4,8 +4,8 @@
 //
 // Vulkan/ 은 **개념당 한 쌍**이다 (언리얼 VulkanRHI와 같은 축):
 //   Core.h       두 함수 테이블 · 요구사항 · RAII 규약
-//   Instance     Window      Swapchain
-//   Device       Commands    Pipeline    Buffer
+//   Instance     Window      Swapchain    Commands
+//   Device       Frame       Pipeline     Buffer
 // 자원이 늘어도 기존 파일이 안 자란다 - 새 쌍이 하나 생길 뿐이다.
 //
 // **초기화와 런타임은 지켜야 할 규칙이 다르다:**
@@ -21,12 +21,11 @@
 #include "Config.h"
 #include "Vulkan/Buffer.h"
 #include "Vulkan/Commands.h"
+#include "Vulkan/Frame.h"
 #include "Vulkan/Pipeline.h"
 #include "Vulkan/Window.h"
 
 #include <GLFW/glfw3.h>
-
-#include <chrono>
 
 // 8. 한 프레임 기록하기
 // ============================================================================
@@ -223,121 +222,34 @@ int main() {
     // 특별 취급이 필요 없다.
 
     // ---- 루프 ----
+    //
+    // **여덟 줄이다.** 동기화(그릴 곳 확보 · 대기 · acquire · 제출 · present)는 전부
+    // BeginFrame/EndFrame 안으로 갔다. 여기 남은 것은 프레임의 **모양**뿐이다.
+    //
+    // 둘을 가른 근거: **바뀌는 이유가 다르다.**
+    //   드로우·텍스처·디스크립터를 추가하면  -> RecordFrame만 바뀐다
+    //   frames-in-flight·present 모드를 바꾸면 -> Frame.cpp만 바뀐다
     LOG("close the window to exit.\n");
 
     // 어느 프레임 자원 한 벌을 쓸 차례인가. 매 프레임 돌아간다.
     uint32_t frameIndex = 0;
 
-    // [임시 계측] "frames-in-flight를 늘리면 뭐가 좋아지나"를 재기 위한 것.
-    // 런타임 경로에 로그가 들어가지만 초당 한 번으로 묶어서 폭주하지 않는다.
-    uint64_t frameCount = 0;
-    double fenceSeconds = 0.0;
-    double acquireSeconds = 0.0;
-    auto reportAt = std::chrono::steady_clock::now() + std::chrono::seconds(1);
-
     while (glfwWindowShouldClose(window.handle) == 0) {
         glfwPollEvents();
 
-        // 0. 그릴 곳 확보. 리사이즈 통보는 창 콜백이 window에 직접 세워놨다.
-        if (!EnsureSwapchain(inst, dev, &window)) {
-            continue;   // 최소화 중. 이번 프레임은 없다
-        }
-        Swapchain& swapchain = *window.swapchain;
+        const Frame& frame = frames[frameIndex];
 
-        Frame& frame = frames[frameIndex];
-
-        // 1. 이전 프레임이 끝나기를 기다린다 (GPU -> CPU)
-        //
-        // **여기가 frames-in-flight의 값어치가 드러나는 자리다.** 1이면 바로 직전
-        // 프레임을 기다리고, 2면 두 프레임 전 것을 기다린다 - 그동안 GPU가 앞선다.
-        const auto waitBegin = std::chrono::steady_clock::now();
-        dev.table.vkWaitForFences(dev.handle, 1, &frame.inFlight, VK_TRUE, UINT64_MAX);
-        fenceSeconds += std::chrono::duration<double>(
-            std::chrono::steady_clock::now() - waitBegin).count();
-
-        // 2. 이미지를 하나 빌린다
-        uint32_t imageIndex = 0;
-        const auto acquireBegin = std::chrono::steady_clock::now();
-        const VkResult acquired = dev.table.vkAcquireNextImageKHR(
-            dev.handle, swapchain.handle, UINT64_MAX, frame.imageAvailable, VK_NULL_HANDLE, &imageIndex);
-        acquireSeconds += std::chrono::duration<double>(
-            std::chrono::steady_clock::now() - acquireBegin).count();
-
-        if (acquired == VK_ERROR_OUT_OF_DATE_KHR) {
-            window.swapchainOutOfDate = true;
-            continue;
-        }
-        if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR) {
-            LOG("[vk] vkAcquireNextImageKHR failed (%d)\n", acquired);
-            break;
+        FrameTarget target;
+        if (!BeginFrame(inst, dev, &window, frame, &target)) {
+            continue;   // 지금 그릴 곳이 없다. 실패가 아니다
         }
 
-        const SwapchainImage& target = swapchain.images[imageIndex];
+        RecordFrame(dev.table, frame.cmd, *target.image, target.extent,
+                    pipeline, vertexBuffer);
 
-        // 3. 펜스 리셋 (**acquire가 성공한 뒤에**)
-        // 먼저 리셋하면, acquire가 실패해 제출 없이 돌아가는 프레임에서 펜스가 영영
-        // 신호되지 않고 다음 WaitForFences가 영원히 걸린다.
-        dev.table.vkResetFences(dev.handle, 1, &frame.inFlight);
+        EndFrame(dev, &window, frame, target);
 
-        // 4~11. 기록
-        RecordFrame(dev.table, frame.cmd, target, swapchain.extent, pipeline, vertexBuffer);
-
-        // 12. 제출
-        // acquire가 끝나야 이미지에 쓸 수 있고(wait), 다 쓰면 present가 알아야 한다(signal).
-        // 기다리는 지점을 COLOR_ATTACHMENT_OUTPUT으로 좁히면 그 앞 스테이지는 미리 돈다.
-        VkSemaphoreSubmitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
-        wait.semaphore = frame.imageAvailable;
-        wait.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-
-        VkSemaphoreSubmitInfo signal{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
-        signal.semaphore = target.renderFinished;
-        signal.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-
-        VkCommandBufferSubmitInfo cmdInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
-        cmdInfo.commandBuffer = frame.cmd;
-
-        VkSubmitInfo2 submit{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
-        submit.waitSemaphoreInfoCount = 1;
-        submit.pWaitSemaphoreInfos = &wait;
-        submit.commandBufferInfoCount = 1;
-        submit.pCommandBufferInfos = &cmdInfo;
-        submit.signalSemaphoreInfoCount = 1;
-        submit.pSignalSemaphoreInfos = &signal;
-
-        if (dev.table.vkQueueSubmit2(dev.queues.graphics, 1, &submit, frame.inFlight) != VK_SUCCESS) {
-            LOG("[vk] vkQueueSubmit2 failed\n");
-            break;
-        }
-
-        // 13. 화면에 내보낸다
-        VkPresentInfoKHR present{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
-        present.waitSemaphoreCount = 1;
-        present.pWaitSemaphores = &target.renderFinished;
-        present.swapchainCount = 1;
-        present.pSwapchains = &swapchain.handle;
-        present.pImageIndices = &imageIndex;
-
-        // SUBOPTIMAL은 에러가 아니다. 그려지긴 했고 다음 프레임에 다시 만들면 된다.
-        const VkResult presented = dev.table.vkQueuePresentKHR(dev.queues.present, &present);
-        if (presented == VK_ERROR_OUT_OF_DATE_KHR || presented == VK_SUBOPTIMAL_KHR) {
-            window.swapchainOutOfDate = true;
-        }
-
-        // 다음 차례. **이 한 줄이 frames-in-flight를 돌리는 전부다.**
         frameIndex = (frameIndex + 1) % kFramesInFlight;
-
-        // [임시 계측] 초당 한 번
-        ++frameCount;
-        const auto now = std::chrono::steady_clock::now();
-        if (now >= reportAt) {
-            LOG("[perf] in-flight=%u | %llu fps | fence %.1f%% | acquire %.1f%%\n",
-                kFramesInFlight, static_cast<unsigned long long>(frameCount),
-                fenceSeconds * 100.0, acquireSeconds * 100.0);
-            frameCount = 0;
-            fenceSeconds = 0.0;
-            acquireSeconds = 0.0;
-            reportAt = now + std::chrono::seconds(1);
-        }
     }
 
     // ---- 정리 ----

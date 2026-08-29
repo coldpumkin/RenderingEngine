@@ -3,8 +3,9 @@
 #
 # 의존은 한 방향으로만 흐른다:
 #   Core <- Instance <- Device <- { Swapchain, Commands, Pipeline, Buffer }
-#                                    ^
-#                                  Window (서피스는 Instance, 스왑체인을 품는다)
+#                                    ^                      ^
+#                                  Window                 Frame (Window + Commands를 쓴다)
+#                          (서피스는 Instance, 스왑체인을 품는다)
 add_executable(sandbox
     Config.h                # 손잡이 (컴파일 상수)
 
@@ -13,7 +14,8 @@ add_executable(sandbox
     Vulkan/Device.h      Vulkan/Device.cpp      # + 큐 패밀리 · 큐 · GPU 선택 · VMA 할당자
     Vulkan/Window.h      Vulkan/Window.cpp      # 창 시스템 · 창 · 서피스
     Vulkan/Swapchain.h   Vulkan/Swapchain.cpp
-    Vulkan/Commands.h    Vulkan/Commands.cpp    # 커맨드 풀(패밀리마다) + Frame(프레임마다)
+    Vulkan/Commands.h    Vulkan/Commands.cpp    # 커맨드 풀 (큐 패밀리마다)
+    Vulkan/Frame.h       Vulkan/Frame.cpp       # 프레임 자원(프레임마다) + 프레임 여닫기
     Vulkan/Pipeline.h    Vulkan/Pipeline.cpp
     Vulkan/Buffer.h      Vulkan/Buffer.cpp
 
