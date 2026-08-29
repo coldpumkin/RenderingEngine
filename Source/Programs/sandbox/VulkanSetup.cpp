@@ -506,9 +506,27 @@ void DestroySwapchain(const VulkanDevice& dev, Swapchain* sc) noexcept {
 // **인자가 다섯이고 테이블이 둘이다.** 서피스 조회는 인스턴스 레벨(it), 스왑체인 생성은
 // 디바이스 레벨(vk)이라 양쪽이 다 필요하다. 스왑체인이 두 층의 경계에 서 있다는 뜻이고,
 // 클래스가 되면 그 경계가 인자 둘로 줄어든다 (2단계 증거).
+bool SelectSurfaceFormat(const VulkanInstance& inst,
+                         const VulkanDevice& dev,
+                         Window* window) noexcept {
+    uint32_t count = 0;
+    inst.table.vkGetPhysicalDeviceSurfaceFormatsKHR(dev.gpu, window->surface, &count, nullptr);
+    if (count == 0) {
+        LOG("[vk] surface reports no formats\n");
+        return false;
+    }
+    std::vector<VkSurfaceFormatKHR> formats(count);
+    inst.table.vkGetPhysicalDeviceSurfaceFormatsKHR(dev.gpu, window->surface, &count,
+                                                    formats.data());
+
+    window->surfaceFormat = ChooseSurfaceFormat(formats);
+    return true;
+}
+
 Swapchain CreateSwapchain(const VulkanInstance& inst,
                           const VulkanDevice& dev,
                           VkSurfaceKHR surface,
+                          VkSurfaceFormatKHR surfaceFormat,
                           VkSwapchainKHR oldSwapchain) noexcept {
     Swapchain sc;
 
@@ -526,16 +544,8 @@ Swapchain CreateSwapchain(const VulkanInstance& inst,
         return sc;
     }
 
-    uint32_t formatCount = 0;
-    inst.table.vkGetPhysicalDeviceSurfaceFormatsKHR(dev.gpu, surface, &formatCount, nullptr);
-    if (formatCount == 0) {
-        LOG("[vk] surface reports no formats\n");
-        return sc;
-    }
-    std::vector<VkSurfaceFormatKHR> formats(formatCount);
-    inst.table.vkGetPhysicalDeviceSurfaceFormatsKHR(dev.gpu, surface, &formatCount, formats.data());
-
-    const VkSurfaceFormatKHR surfaceFormat = ChooseSurfaceFormat(formats);
+    // 포맷은 인자로 받는다 - **여기서 고르지 않는다.** 서피스의 성질이라 창이 들고 있다.
+    // (반면 compositeAlpha와 extent는 caps에서 오고 리사이즈마다 달라질 수 있어서 여기다.)
 
     const VkCompositeAlphaFlagBitsKHR compositeAlpha =
         ChooseCompositeAlpha(caps.supportedCompositeAlpha);
@@ -679,7 +689,8 @@ bool EnsureSwapchain(const VulkanInstance& inst,
     // 넘긴 것은 "은퇴시켜라"는 뜻이지 "네가 지워라"가 아니다 - 파괴는 여전히 우리 몫이다.
     // (생성이 실패해도 은퇴는 일어나므로, 실패해도 이전 것은 버려야 한다.)
     Swapchain fresh =
-        CreateSwapchain(inst, dev, window->surface, window->swapchain.handle);
+        CreateSwapchain(inst, dev, window->surface, window->surfaceFormat,
+                        window->swapchain.handle);
     DestroySwapchain(dev, &window->swapchain);
 
     window->swapchain = std::move(fresh);

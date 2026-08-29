@@ -162,9 +162,13 @@ int main() {
     const VulkanDevice dev = CreateDevice(inst, selection);
     if (dev.handle == VK_NULL_HANDLE) { return 1; }
 
+    // 이 창이 받는 포맷을 확정한다. **GPU가 정해진 뒤에만 알 수 있다** -
+    // 어떤 포맷을 받는지는 (GPU, 서피스) 쌍이 정한다. 리사이즈로는 안 바뀐다.
+    if (!SelectSurfaceFormat(inst, dev, &window)) { return 1; }
+
     // 스왑체인은 루프의 EnsureSwapchain이 만든다 - 최초 생성도 재생성과 같은 경로다.
-    // 특별 취급을 없앴다: "지금 그릴 곳이 없다"가 시작 시점에도 정상 상태이기 때문이다
-    // (최소화된 채로 실행할 수 있다).
+    // "지금 그릴 곳이 없다"가 시작 시점에도 정상 상태라(최소화된 채로 실행 가능)
+    // 특별 취급이 필요 없다.
 
     // 큐 패밀리마다 풀 하나. 디바이스 수명이다.
     Commands commands;
@@ -174,13 +178,10 @@ int main() {
     Frame frame;
     if (!CreateFrame(dev, commands, &frame)) { return 1; }
 
-    // 파이프라인은 **스왑체인 포맷**에 묶인다. 그래서 스왑체인이 한 번은 있어야 한다.
-    // 크기는 안 묶인다(동적 상태) - 리사이즈로는 다시 만들 필요가 없다.
-    if (!EnsureSwapchain(inst, dev, &window)) {
-        LOG("[vk] cannot create initial swapchain\n");
-        return 1;
-    }
-    Pipeline pipeline = CreateTrianglePipeline(dev, window.swapchain.format);
+    // 파이프라인은 **포맷**에 묶인다 (크기는 동적 상태라 안 묶인다).
+    // 포맷이 창에 있으므로 스왑체인을 기다릴 필요가 없다 - 한때 여기서 포맷 하나를
+    // 얻으려고 EnsureSwapchain을 미리 부르고, 루프 첫 바퀴가 또 불렀다.
+    Pipeline pipeline = CreateTrianglePipeline(dev, window.surfaceFormat.format);
     if (pipeline.handle == VK_NULL_HANDLE) { return 1; }
 
     // 정점 데이터. y-up 규약이고 감는 방향은 CCW(파이프라인 frontFace와 일치).

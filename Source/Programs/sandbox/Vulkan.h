@@ -144,6 +144,17 @@ struct Window {
     GLFWwindow* handle = nullptr;
     VkSurfaceKHR surface = VK_NULL_HANDLE;
 
+    // **포맷은 스왑체인이 아니라 서피스의 성질이다.**
+    //
+    // vkGetPhysicalDeviceSurfaceFormatsKHR이 주는 목록은 (GPU, 서피스) 쌍으로 정해지고
+    // 리사이즈로 바뀌지 않는다. 스왑체인은 그걸 **쓸 뿐**이다.
+    //
+    // 여기 있으면 파이프라인이 스왑체인을 기다릴 필요가 없다 - 한때 파이프라인 포맷
+    // 하나를 얻으려고 루프 앞에서 스왑체인을 미리 만들었다.
+    //
+    // GPU가 정해져야 알 수 있으므로 OpenWindow가 아니라 SelectSurfaceFormat이 채운다.
+    VkSurfaceFormatKHR surfaceFormat{};
+
     Swapchain swapchain;
 
     // **창마다 하나여야 한다.** 한동안 전역이었는데, 그러면 창이 둘일 때 어느 창이
@@ -169,6 +180,13 @@ bool OpenWindow(const VulkanInstance& inst,
 // 중첩의 역순으로 부순다: 스왑체인 -> 서피스 -> 창.
 void CloseWindow(const VulkanInstance& inst, const struct VulkanDevice& dev,
                  Window* window) noexcept;
+
+// 이 서피스가 받는 포맷 중 하나를 골라 window->surfaceFormat에 담는다.
+// **GPU가 정해진 뒤에 부른다** - 어떤 포맷을 받는지는 (GPU, 서피스) 쌍이 정한다.
+// 실패하면 false (서피스가 포맷을 하나도 안 준 경우).
+bool SelectSurfaceFormat(const VulkanInstance& inst,
+                         const struct VulkanDevice& dev,
+                         Window* window) noexcept;
 
 // 3. 물리 디바이스 고르기 + 큐 패밀리 고르기
 // ============================================================================
@@ -310,6 +328,7 @@ VulkanDevice CreateDevice(const VulkanInstance& inst,
 Swapchain CreateSwapchain(const VulkanInstance& inst,
                           const VulkanDevice& dev,
                           VkSurfaceKHR surface,
+                          VkSurfaceFormatKHR surfaceFormat,
                           VkSwapchainKHR oldSwapchain) noexcept;
 
 void DestroySwapchain(const VulkanDevice& dev, Swapchain* sc) noexcept;
