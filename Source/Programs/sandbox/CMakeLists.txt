@@ -1,5 +1,8 @@
+# 셋으로 나뉜 기준은 **초기화 vs 런타임**이다 (Vulkan.h 위 주석 참고).
 add_executable(sandbox
-    main.cpp
+    Vulkan.h          # 무엇이 있는가 (struct + 선언)
+    VulkanSetup.cpp   # 어떻게 만들고 부수나 (한 번 돈다)
+    main.cpp          # 한 프레임이 어떻게 도나 (매 프레임)
 )
 
 # 평평하게 쓰는 동안은 sandbox가 volk와 GLFW를 직접 든다.
