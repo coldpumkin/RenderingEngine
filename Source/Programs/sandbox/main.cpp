@@ -143,55 +143,71 @@ void RecordFrame(const VolkDeviceTable& vk,
 // main - 목차
 // ============================================================================
 int main() {
-    // ---- 만든다 (위 함수들 순서대로) ----
+    // ========================================================================
+    // 선언 - **파괴 역순으로 배치한다. 채우는 순서와 다르다.**
+    // ========================================================================
     //
-    // out 파라미터가 하나도 없다. 묶음이 곧 반환값이다.
-    const VulkanInstance inst = CreateInstance();
-    if (inst.handle == VK_NULL_HANDLE) { return 1; }
+    // C++은 선언 순서의 역순으로 파괴한다. 그런데 우리의 **생성** 순서와 **파괴** 순서는
+    // 같은 줄에 세울 수가 없다:
+    //
+    //   생성: 창/서피스가 디바이스보다 **먼저** (GPU 고를 때 서피스가 필요하다)
+    //   파괴: 창의 스왑체인이 디바이스보다 **먼저** (디바이스가 만든 것이다)
+    //
+    // 둘 다 만족시키려면 **선언과 채우기를 떼어야 한다.** 전부 기본 생성 = 비어 있음이고
+    // (그 상태가 합법이다) Create가 out 파라미터로 채우므로 가능하다.
+    //
+    // 여기 순서를 잘못 잡으면 검증 레이어가 잡아준다.
+    WindowSystem   windowSystem;   // 파괴: 마지막. glfwTerminate는 모든 창 뒤에
+    VulkanInstance inst;
+    VulkanDevice   dev;
+    Window         window;         // 스왑체인을 품는다 -> dev보다 먼저 죽어야 한다
+    Commands       commands;
+    Frame          frame;
+    Pipeline       pipeline;
+    Buffer         vertexBuffer;   // 파괴: 첫 번째
 
-    if (!InitWindowSystem()) { return 1; }
-
-    // 창 + 서피스. 스왑체인은 디바이스가 생긴 뒤라 아직 비어 있다(= 최소화와 같은 정상 상태).
-    Window window;
+    // ========================================================================
+    // 채우기 - **의존 순서로.**
+    // ========================================================================
+    //
+    // 조기 return이 아무것도 안 샌다. 여기까지 채워진 것은 소멸자가 알아서 정리한다.
+    if (!CreateInstance(&inst)) { return 1; }
+    if (!InitWindowSystem(&windowSystem)) { return 1; }
     if (!OpenWindow(inst, 1280, 720, "Lambda Engine", &window)) { return 1; }
 
     const PhysicalDeviceSelection selection = PickPhysicalDevice(inst, window.surface);
     if (selection.gpu == VK_NULL_HANDLE) { return 1; }
 
     // selection은 여기서 dev 안으로 흡수되고 더 이상 쓰이지 않는다.
-    const VulkanDevice dev = CreateDevice(inst, selection);
-    if (dev.handle == VK_NULL_HANDLE) { return 1; }
+    if (!CreateDevice(inst, selection, &dev)) { return 1; }
 
     // 이 창이 받는 포맷을 확정한다. **GPU가 정해진 뒤에만 알 수 있다** -
     // 어떤 포맷을 받는지는 (GPU, 서피스) 쌍이 정한다. 리사이즈로는 안 바뀐다.
     if (!SelectSurfaceFormat(inst, dev, &window)) { return 1; }
 
-    // 스왑체인은 루프의 EnsureSwapchain이 만든다 - 최초 생성도 재생성과 같은 경로다.
-    // "지금 그릴 곳이 없다"가 시작 시점에도 정상 상태라(최소화된 채로 실행 가능)
-    // 특별 취급이 필요 없다.
-
     // 큐 패밀리마다 풀 하나. 디바이스 수명이다.
-    Commands commands;
     if (!CreateCommands(dev, &commands)) { return 1; }
 
     // frames-in-flight마다 한 벌. 지금은 1이라 하나다.
-    Frame frame;
     if (!CreateFrame(dev, commands, &frame)) { return 1; }
 
     // 파이프라인은 **포맷**에 묶인다 (크기는 동적 상태라 안 묶인다).
-    // 포맷이 창에 있으므로 스왑체인을 기다릴 필요가 없다 - 한때 여기서 포맷 하나를
-    // 얻으려고 EnsureSwapchain을 미리 부르고, 루프 첫 바퀴가 또 불렀다.
-    Pipeline pipeline = CreateTrianglePipeline(dev, window.surfaceFormat.format);
-    if (pipeline.handle == VK_NULL_HANDLE) { return 1; }
+    // 포맷이 창에 있으므로 스왑체인을 기다릴 필요가 없다.
+    if (!CreateTrianglePipeline(dev, window.surfaceFormat.format, &pipeline)) { return 1; }
 
     // 정점 데이터. y-up 규약이고 감는 방향은 CCW(파이프라인 frontFace와 일치).
     constexpr Vertex kTriangle[] = {
-        {{ 0.0f,  0.5f}, {1.0f, 0.0f, 0.0f}},   // 위      - 빨강
-        {{-0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},   // 왼쪽아래 - 초록
+        {{ 0.0f,  0.5f}, {1.0f, 0.0f, 0.0f}},   // 위        - 빨강
+        {{-0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},   // 왼쪽아래   - 초록
         {{ 0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}},   // 오른쪽아래 - 파랑
     };
-    Buffer vertexBuffer = CreateVertexBuffer(dev, commands, kTriangle, sizeof(kTriangle));
-    if (vertexBuffer.handle == VK_NULL_HANDLE) { return 1; }
+    if (!CreateVertexBuffer(dev, commands, kTriangle, sizeof(kTriangle), &vertexBuffer)) {
+        return 1;
+    }
+
+    // 스왑체인은 루프의 EnsureSwapchain이 만든다 - 최초 생성도 재생성과 같은 경로다.
+    // "지금 그릴 곳이 없다"가 시작 시점에도 정상 상태라(최소화된 채로 실행 가능)
+    // 특별 취급이 필요 없다.
 
     // ---- 루프 ----
     LOG("close the window to exit.\n");
@@ -203,7 +219,7 @@ int main() {
         if (!EnsureSwapchain(inst, dev, &window)) {
             continue;   // 최소화 중. 이번 프레임은 없다
         }
-        Swapchain& swapchain = window.swapchain;
+        Swapchain& swapchain = *window.swapchain;
 
         // 1. 이전 프레임이 끝나기를 기다린다 (GPU -> CPU)
         dev.table.vkWaitForFences(dev.handle, 1, &frame.inFlight, VK_TRUE, UINT64_MAX);
@@ -274,28 +290,20 @@ int main() {
         }
     }
 
-    // ---- 정리: 만든 역순 ----
+    // ---- 정리 ----
     //
-    // **여기가 통째로 사라지는 것이 클래스로 옮기는 진짜 이유다.** RAII로 가면
-    // 이 열 줄이 "선언 순서"로 표현되고, 순서를 틀릴 방법 자체가 없어진다.
-    dev.table.vkDeviceWaitIdle(dev.handle);   // GPU가 아직 작업 중일 수 있다
-
-    DestroyBuffer(dev, &vertexBuffer);
-    DestroyPipeline(dev, &pipeline);
-    DestroyFrame(dev, &frame);
-    DestroyCommands(dev, &commands);   // 커맨드 버퍼도 풀과 함께 사라진다
-
-    // 창에 묶인 셋(스왑체인 -> 서피스 -> 창)을 중첩 역순으로. **디바이스보다 먼저다** -
-    // 스왑체인이 디바이스로 만들어졌기 때문이다.
-    CloseWindow(inst, dev, &window);
-
-    dev.table.vkDestroyDevice(dev.handle, nullptr);
-    ShutdownWindowSystem();
-
-    if (inst.messenger != VK_NULL_HANDLE) {
-        inst.table.vkDestroyDebugUtilsMessengerEXT(inst.handle, inst.messenger, nullptr);
-    }
-    inst.table.vkDestroyInstance(inst.handle, nullptr);
+    // **한 줄뿐이다.** 나머지는 전부 소멸자가 선언의 역순으로 한다:
+    //   vertexBuffer -> pipeline -> frame -> commands -> window(스왑체인->서피스->창)
+    //   -> dev -> inst -> windowSystem
+    //
+    // 한때 여기 열 줄이 있었고, 순서를 틀리면 조용히 깨졌다. 자원을 추가할 때마다
+    // 한 줄 더 적어야 했고 잊으면 샜다. 지금은 필드를 추가하면 정리가 따라온다.
+    //
+    // GPU 대기는 남는다 - ~VulkanDevice가 vkDeviceWaitIdle을 부르지만, 그건
+    // **다른 소멸자들이 다 돈 뒤**다. 스왑체인/커맨드 풀처럼 GPU가 아직 쓰고 있을 수
+    // 있는 것들을 파괴하기 전에 한 번 기다려야 한다.
+    // (각 소멸자가 자기 것을 기다리게 할 수도 있지만, 여기서 한 번이 더 싸고 명확하다.)
+    dev.table.vkDeviceWaitIdle(dev.handle);
 
     LOG("[vk] clean shutdown\n");
     return 0;

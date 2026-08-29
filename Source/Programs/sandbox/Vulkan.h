@@ -11,14 +11,28 @@
 // **파일을 나눈 기준이 "초기화 vs 런타임"이다.** 둘은 지켜야 할 규칙이 다르다 -
 // 초기화는 힙 할당도 로그도 자유롭지만, 런타임은 매 프레임 돌아서 둘 다 조심해야 한다.
 //
-// **클래스가 없다. 의도적이다.** 여기 있는 것은 전부 평범한 struct와 자유 함수다.
-// 파일을 나눈 것은 흐름을 보기 위해서지 추상화를 넣기 위해서가 아니다.
-// (RAII는 파괴 순서가 실제로 아플 때 넣는다. 그때 struct 모양은 안 바뀌고
-//  소멸자만 붙는다.)
+// **여전히 클래스가 아니다.** 전부 public 멤버를 가진 struct고 함수는 자유 함수다.
+// 소멸자만 붙었다 - 상속도 가상함수도 캡슐화도 없다.
+//
+// ---------------------------------------------------------------------------
+// **RAII 규약** (여기 있는 자원 타입 전부에 적용)
+//
+//   1. 기본 생성 = 비어 있음. 그 상태가 합법이다 (예: 스왑체인 없음 = 최소화 중)
+//   2. Create가 out 파라미터로 채운다. **값 반환이 아니다** -
+//      소멸자가 있는 타입을 값으로 반환하면 이동 생성자가 필요해지고, 그건
+//      타입마다 10줄씩 늘어난다. out 파라미터면 그게 통째로 없다
+//   3. 소멸자가 자기 것만 파괴한다. **소멸자는 인자를 못 받으므로**
+//      파괴에 필요한 것(dev 또는 inst)을 비소유 포인터로 들고 있다
+//   4. 복사 금지. 핸들이 두 번 파괴된다
+//
+// **얻는 것**: 조기 return이 새지 않는다. 자원을 추가해도 정리를 잊을 수 없다.
+// CreateVertexBuffer의 스테이징 버퍼처럼 중간 실패 경로가 통째로 사라진다.
+// ---------------------------------------------------------------------------
 
 #include <volk.h>
 
 #include <cstdio>
+#include <memory>
 #include <vector>
 
 struct GLFWwindow;
@@ -70,6 +84,12 @@ struct VulkanInstance {
     VolkInstanceTable table{};
     VkInstance handle = VK_NULL_HANDLE;
     VkDebugUtilsMessengerEXT messenger = VK_NULL_HANDLE;
+
+    // **자기 힘으로 파괴한다.** 파괴에 필요한 것(테이블 + 핸들)을 이미 자기가 들고 있다.
+    VulkanInstance() = default;
+    ~VulkanInstance();
+    VulkanInstance(const VulkanInstance&) = delete;
+    VulkanInstance& operator=(const VulkanInstance&) = delete;
 };
 
 // 로더 확인 -> 인스턴스 -> 함수 테이블 -> 디버그 메신저.
@@ -79,7 +99,7 @@ struct VulkanInstance {
 // out 파라미터는 애초에 "이것들은 같이 나온다"는 신호였다.
 // 로더 확인 -> 인스턴스 -> 함수 테이블 -> 디버그 메신저.
 // 실패하면 handle이 VK_NULL_HANDLE인 채로 돌아온다.
-VulkanInstance CreateInstance() noexcept;
+bool CreateInstance(VulkanInstance* out) noexcept;
 
 // ============================================================================
 // 2. 창 시스템 (프로세스 단위) + 창 (창 단위)
@@ -87,8 +107,17 @@ VulkanInstance CreateInstance() noexcept;
 //
 // 둘을 나눈 이유: **glfwInit/glfwTerminate는 창이 아니라 프로세스 단위다.**
 // 창이 둘이 돼도 초기화는 한 번이고, glfwTerminate는 **모든** 창을 부순다.
-bool InitWindowSystem() noexcept;
-void ShutdownWindowSystem() noexcept;
+// glfwInit/glfwTerminate를 감싼다. **모든 창보다 오래 살아야 하므로 제일 먼저 선언한다.**
+struct WindowSystem {
+    bool initialized = false;
+
+    WindowSystem() = default;
+    ~WindowSystem();
+    WindowSystem(const WindowSystem&) = delete;
+    WindowSystem& operator=(const WindowSystem&) = delete;
+};
+
+bool InitWindowSystem(WindowSystem* out) noexcept;
 
 // 스왑체인 자료구조 - **Window가 값으로 들기 때문에 여기서 먼저 정의한다.**
 // 만들고 부수는 함수는 5절(디바이스가 생긴 뒤)에 흐름 순서대로 있다.
@@ -103,10 +132,18 @@ struct SwapchainImage {
 };
 
 struct Swapchain {
+    // 파괴에 필요한 비소유 상태 - 소멸자는 인자를 못 받는다.
+    const struct VulkanDevice* dev = nullptr;
+
     VkSwapchainKHR handle = VK_NULL_HANDLE;
     VkFormat format = VK_FORMAT_UNDEFINED;
     VkExtent2D extent{};
     std::vector<SwapchainImage> images;
+
+    Swapchain() = default;
+    ~Swapchain();
+    Swapchain(const Swapchain&) = delete;
+    Swapchain& operator=(const Swapchain&) = delete;
 };
 
 // ============================================================================
@@ -155,11 +192,22 @@ struct Window {
     // GPU가 정해져야 알 수 있으므로 OpenWindow가 아니라 SelectSurfaceFormat이 채운다.
     VkSurfaceFormatKHR surfaceFormat{};
 
-    Swapchain swapchain;
+    // **unique_ptr인 이유**: 리사이즈마다 통째로 갈아끼운다. 값으로 두면 이동 대입이
+    // 필요하고, 포인터면 그게 공짜다. nullptr이 그대로 "지금 그릴 곳이 없다"를 뜻한다.
+    std::unique_ptr<Swapchain> swapchain;
 
     // **창마다 하나여야 한다.** 한동안 전역이었는데, 그러면 창이 둘일 때 어느 창이
     // 바뀌었는지 구분할 수 없다. 창 하나뿐이라 안 터지고 있었을 뿐이다.
     bool swapchainOutOfDate = false;
+
+    // 서피스 파괴가 인스턴스 레벨이라 인스턴스가 필요하다.
+    // (스왑체인은 자기 dev를 들고 있으므로 여기선 dev가 필요 없다.)
+    const VulkanInstance* inst = nullptr;
+
+    Window() = default;
+    ~Window();
+    Window(const Window&) = delete;
+    Window& operator=(const Window&) = delete;
 };
 
 // 창 크기가 바뀌었다는 표시만 한다.
@@ -176,10 +224,6 @@ struct Window {
 bool OpenWindow(const VulkanInstance& inst,
                 int width, int height, const char* title,
                 Window* out) noexcept;
-
-// 중첩의 역순으로 부순다: 스왑체인 -> 서피스 -> 창.
-void CloseWindow(const VulkanInstance& inst, const struct VulkanDevice& dev,
-                 Window* window) noexcept;
 
 // 이 서피스가 받는 포맷 중 하나를 골라 window->surfaceFormat에 담는다.
 // **GPU가 정해진 뒤에 부른다** - 어떤 포맷을 받는지는 (GPU, 서피스) 쌍이 정한다.
@@ -297,6 +341,13 @@ struct VulkanDevice {
     // 다시 물으려면 인스턴스가 필요하다. 버퍼를 만들 때마다 인스턴스를 끌고 다니는
     // 대신, 안 변하는 값이니 여기 한 번 담아둔다.
     VkPhysicalDeviceMemoryProperties memoryProperties{};
+
+    // 인스턴스와 같다 - vkDeviceWaitIdle과 vkDestroyDevice가 둘 다 디바이스 레벨이라
+    // 자기 테이블로 자기를 지운다.
+    VulkanDevice() = default;
+    ~VulkanDevice();
+    VulkanDevice(const VulkanDevice&) = delete;
+    VulkanDevice& operator=(const VulkanDevice&) = delete;
 };
 
 // 논리 디바이스 + 함수 테이블 + 큐들.
@@ -311,8 +362,9 @@ struct VulkanDevice {
 // **inst를 받는 이유**: vkCreateDevice는 **인스턴스 레벨 함수**다. 만드는 함수와
 // 파괴하는 함수(vkDestroyDevice, 디바이스 레벨)의 층이 다르다는 Vulkan API의 비대칭이고,
 // 그래서 "이 클래스가 무슨 레벨이냐"가 아니라 "이 호출이 무슨 레벨이냐"로 봐야 한다.
-VulkanDevice CreateDevice(const VulkanInstance& inst,
-                          const PhysicalDeviceSelection& selection) noexcept;
+bool CreateDevice(const VulkanInstance& inst,
+                  const PhysicalDeviceSelection& selection,
+                  VulkanDevice* out) noexcept;
 
 // 5. 스왑체인 - **여기만 수명이 있다**
 // ============================================================================
@@ -325,13 +377,12 @@ VulkanDevice CreateDevice(const VulkanInstance& inst,
 // 붙어 있으면 GPU가 그 변환을 하드웨어로 해준다. UNORM을 쓰면 셰이더에서 직접 감마
 // 보정을 해야 하고, 안 하면 화면이 어둡게 나온다.
 // 실패 또는 "지금은 만들 수 없음"(최소화)이면 handle이 VK_NULL_HANDLE인 채로 돌아온다.
-Swapchain CreateSwapchain(const VulkanInstance& inst,
-                          const VulkanDevice& dev,
-                          VkSurfaceKHR surface,
-                          VkSurfaceFormatKHR surfaceFormat,
-                          VkSwapchainKHR oldSwapchain) noexcept;
-
-void DestroySwapchain(const VulkanDevice& dev, Swapchain* sc) noexcept;
+bool CreateSwapchain(const VulkanInstance& inst,
+                     const VulkanDevice& dev,
+                     VkSurfaceKHR surface,
+                     VkSurfaceFormatKHR surfaceFormat,
+                     VkSwapchainKHR oldSwapchain,
+                     Swapchain* out) noexcept;
 
 // 그릴 곳을 보장한다. 낡았거나 없으면 다시 만든다.
 // **false는 실패가 아니라 "지금은 그릴 곳이 없다"** (최소화 중)이다.
@@ -368,24 +419,34 @@ bool EnsureSwapchain(const VulkanInstance& inst,
 // 실제 작업(업로드·디스패치)이 생길 때 그 패밀리의 버퍼를 뽑는다.
 // 전용 패밀리가 없으면 VK_NULL_HANDLE이고, 그 일은 graphics가 한다.
 struct Commands {
+    const VulkanDevice* dev = nullptr;   // 파괴에 필요한 비소유 상태
+
     VkCommandPool graphics = VK_NULL_HANDLE;
     VkCommandPool compute  = VK_NULL_HANDLE;
     VkCommandPool transfer = VK_NULL_HANDLE;
+    Commands() = default;
+    ~Commands();
+    Commands(const Commands&) = delete;
+    Commands& operator=(const Commands&) = delete;
 };
 
 bool CreateCommands(const VulkanDevice& dev, Commands* out) noexcept;
-void DestroyCommands(const VulkanDevice& dev, Commands* c) noexcept;
 
 struct Frame {
+    const VulkanDevice* dev = nullptr;   // 파괴에 필요한 비소유 상태
+
     // graphics 풀에서 나온다. 풀이 죽으면 같이 사라지므로 따로 반납하지 않는다.
     VkCommandBuffer cmd = VK_NULL_HANDLE;
 
     VkSemaphore imageAvailable = VK_NULL_HANDLE;
     VkFence inFlight = VK_NULL_HANDLE;
+    Frame() = default;
+    ~Frame();
+    Frame(const Frame&) = delete;
+    Frame& operator=(const Frame&) = delete;
 };
 
 bool CreateFrame(const VulkanDevice& dev, const Commands& commands, Frame* out) noexcept;
-void DestroyFrame(const VulkanDevice& dev, Frame* frame) noexcept;
 
 // ============================================================================
 // 7. 그래픽스 파이프라인 - **무엇으로 그리는가**
@@ -395,14 +456,20 @@ void DestroyFrame(const VulkanDevice& dev, Frame* frame) noexcept;
 // pColorAttachmentFormats). 크기에는 안 묶인다 - 뷰포트/시저를 동적 상태로 뒀다.
 // 그래서 리사이즈로는 재생성이 필요 없다.
 struct Pipeline {
+    const VulkanDevice* dev = nullptr;   // 파괴에 필요한 비소유 상태
+
     VkPipelineLayout layout = VK_NULL_HANDLE;
     VkPipeline handle = VK_NULL_HANDLE;
+    Pipeline() = default;
+    ~Pipeline();
+    Pipeline(const Pipeline&) = delete;
+    Pipeline& operator=(const Pipeline&) = delete;
 };
 
 // colorFormat: 이 파이프라인이 어떤 포맷의 렌더 타겟에 그릴지. 스왑체인에서 온다.
 // colorFormat: 이 파이프라인이 어떤 포맷의 렌더 타겟에 그릴지. 스왑체인에서 온다.
-Pipeline CreateTrianglePipeline(const VulkanDevice& dev, VkFormat colorFormat) noexcept;
-void DestroyPipeline(const VulkanDevice& dev, Pipeline* pipeline) noexcept;
+bool CreateTrianglePipeline(const VulkanDevice& dev, VkFormat colorFormat,
+                            Pipeline* out) noexcept;
 
 // ============================================================================
 // 9. 버퍼 - **메모리를 직접 다루는 첫 자리**
@@ -415,9 +482,15 @@ void DestroyPipeline(const VulkanDevice& dev, Pipeline* pipeline) noexcept;
 // **한 번은 직접 해봐야 VMA가 무엇을 줄여주는지 알 수 있다.**
 
 struct Buffer {
+    const VulkanDevice* dev = nullptr;   // 파괴에 필요한 비소유 상태
+
     VkBuffer handle = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;   // **우리가 할당했다.** 우리가 반납한다
     VkDeviceSize size = 0;
+    Buffer() = default;
+    ~Buffer();
+    Buffer(const Buffer&) = delete;
+    Buffer& operator=(const Buffer&) = delete;
 };
 
 // 정점 하나. 셰이더의 layout(location=...) in 과 짝이 맞아야 한다.
@@ -443,12 +516,11 @@ uint32_t FindMemoryType(const VulkanDevice& dev,
 
 // 버퍼 생성 + 메모리 할당 + 바인딩. 셋이 항상 같이 간다.
 // 실패하면 handle이 VK_NULL_HANDLE인 채로 돌아온다.
-Buffer CreateBuffer(const VulkanDevice& dev,
-                    VkDeviceSize size,
-                    VkBufferUsageFlags usage,
-                    VkMemoryPropertyFlags memoryProperties) noexcept;
-
-void DestroyBuffer(const VulkanDevice& dev, Buffer* buffer) noexcept;
+bool CreateBuffer(const VulkanDevice& dev,
+                  VkDeviceSize size,
+                  VkBufferUsageFlags usage,
+                  VkMemoryPropertyFlags memoryProperties,
+                  Buffer* out) noexcept;
 
 // CPU 데이터를 GPU 전용 메모리에 올린다 (스테이징 경유).
 //
@@ -457,7 +529,8 @@ void DestroyBuffer(const VulkanDevice& dev, Buffer* buffer) noexcept;
 // "저기서 여기로 복사해"라고 시킨다.
 //
 // 복사가 끝날 때까지 기다렸다가 스테이징을 버린다 - 초기화 경로라 기다려도 된다.
-Buffer CreateVertexBuffer(const VulkanDevice& dev,
-                          const Commands& commands,
-                          const void* data,
-                          VkDeviceSize size) noexcept;
+bool CreateVertexBuffer(const VulkanDevice& dev,
+                        const Commands& commands,
+                        const void* data,
+                        VkDeviceSize size,
+                        Buffer* out) noexcept;

@@ -74,28 +74,28 @@ bool HasInstanceLayer(const char* name) noexcept {
 
 #endif // LAMBDA_ENABLE_VULKAN_VALIDATION
 
-VulkanInstance CreateInstance() noexcept {
-    VulkanInstance inst;
+bool CreateInstance(VulkanInstance* out) noexcept {
+    VulkanInstance& inst = *out;
 
     // volk: vulkan-1.dll을 런타임에 LoadLibrary로 찾는다. 없는 기계에서도 프로세스가
     // 죽지 않고 여기서 실패를 돌려받는다. (Vulkan::Vulkan을 정적 링크했다면 시작조차 못 했다.)
     if (volkInitialize() != VK_SUCCESS) {
         LOG("[vk] volkInitialize failed (vulkan-1.dll not found?)\n");
-        return inst;
+        return false;
     }
 
     // vkEnumerateInstanceVersion은 Vulkan 1.1에서 추가됐다. 1.0 로더에서는 volk가 이
     // 포인터를 못 채우므로, **nullptr이라는 사실 자체가 "이 기계는 1.0"이라는 정보다.**
     if (vkEnumerateInstanceVersion == nullptr) {
         LOG("[vk] Vulkan 1.0 loader; need 1.3\n");
-        return inst;
+        return false;
     }
     uint32_t loaderVersion = 0;
     vkEnumerateInstanceVersion(&loaderVersion);
     if (loaderVersion < kRequiredApiVersion) {
         LOG("[vk] loader is %u.%u; need 1.3\n",
             VK_API_VERSION_MAJOR(loaderVersion), VK_API_VERSION_MINOR(loaderVersion));
-        return inst;
+        return false;
     }
 
     VkApplicationInfo appInfo{VK_STRUCTURE_TYPE_APPLICATION_INFO};
@@ -135,7 +135,7 @@ VulkanInstance CreateInstance() noexcept {
 
     if (vkCreateInstance(&info, nullptr, &inst.handle) != VK_SUCCESS) {
         LOG("[vk] vkCreateInstance failed\n");
-        return inst;
+        return false;
     }
 
     // **인스턴스 레벨도 테이블로 받는다.** 디바이스 테이블과 같은 이유다 -
@@ -161,7 +161,16 @@ VulkanInstance CreateInstance() noexcept {
 
     LOG("[vk] instance created (Vulkan 1.3 requested, loader %u.%u)\n",
         VK_API_VERSION_MAJOR(loaderVersion), VK_API_VERSION_MINOR(loaderVersion));
-    return inst;
+    return true;
+}
+
+// **자기 힘으로 파괴한다.** 테이블도 핸들도 자기가 들고 있다.
+VulkanInstance::~VulkanInstance() {
+    if (handle == VK_NULL_HANDLE) { return; }   // 비어 있는 상태도 합법이다
+    if (messenger != VK_NULL_HANDLE) {
+        table.vkDestroyDebugUtilsMessengerEXT(handle, messenger, nullptr);
+    }
+    table.vkDestroyInstance(handle, nullptr);
 }
 
 // ============================================================================
@@ -176,7 +185,13 @@ void OnGlfwError(int code, const char* description) {
     LOG("[glfw] error %d: %s\n", code, description);
 }
 
-bool InitWindowSystem() noexcept {
+WindowSystem::~WindowSystem() {
+    // **모든 창이 죽은 뒤에 불려야 한다.** glfwTerminate는 남은 창을 전부 부순다.
+    // main()에서 제일 먼저 선언하면(= 제일 나중에 파괴) 그 순서가 보장된다.
+    if (initialized) { glfwTerminate(); }
+}
+
+bool InitWindowSystem(WindowSystem* out) noexcept {
     // 에러 콜백을 glfwInit보다 먼저 건다. glfwInit 자체의 실패 이유도 받으려면 그래야 한다
     // (GLFW 문서가 명시하는, 초기화 전에 부를 수 있는 예외 함수).
     glfwSetErrorCallback(OnGlfwError);
@@ -184,11 +199,8 @@ bool InitWindowSystem() noexcept {
         LOG("[glfw] glfwInit failed\n");
         return false;
     }
+    out->initialized = true;
     return true;
-}
-
-void ShutdownWindowSystem() noexcept {
-    glfwTerminate();
 }
 
 // ---------------------------------------------------------------------------
@@ -206,7 +218,7 @@ void OnFramebufferResized(GLFWwindow* handle, int /*w*/, int /*h*/) {
 bool OpenWindow(const VulkanInstance& inst,
                 int width, int height, const char* title,
                 Window* out) noexcept {
-    *out = Window{};
+    out->inst = &inst;
 
     // GLFW는 기본적으로 OpenGL 컨텍스트를 같이 만든다. Vulkan을 쓰므로 끈다.
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
@@ -229,10 +241,26 @@ bool OpenWindow(const VulkanInstance& inst,
             != VK_SUCCESS) {
         LOG("[vk] vkCreateWin32SurfaceKHR failed\n");
         glfwDestroyWindow(out->handle);
-        *out = Window{};
+        out->handle = nullptr;
         return false;
     }
     return true;
+}
+
+// 중첩의 역순으로 부순다: 스왑체인 -> 서피스 -> 창.
+//
+// **서피스가 창보다 먼저 죽어야 한다** - 죽은 HWND를 참조하게 된다.
+// 스왑체인은 자기 소멸자가 알아서 처리하지만, **서피스보다 먼저** 죽어야 하므로
+// 여기서 명시적으로 먼저 놓는다 (멤버 파괴는 이 본문 뒤에 일어난다).
+Window::~Window() {
+    swapchain.reset();
+
+    if (surface != VK_NULL_HANDLE && inst != nullptr) {
+        inst->table.vkDestroySurfaceKHR(inst->handle, surface, nullptr);
+    }
+    if (handle != nullptr) {
+        glfwDestroyWindow(handle);
+    }
 }
 
 // ============================================================================
@@ -382,9 +410,10 @@ PhysicalDeviceSelection PickPhysicalDevice(const VulkanInstance& inst,
 }
 
 // ============================================================================
-VulkanDevice CreateDevice(const VulkanInstance& inst,
-                          const PhysicalDeviceSelection& selection) noexcept {
-    VulkanDevice dev;
+bool CreateDevice(const VulkanInstance& inst,
+                  const PhysicalDeviceSelection& selection,
+                  VulkanDevice* out) noexcept {
+    VulkanDevice& dev = *out;
     dev.gpu = selection.gpu;
     dev.families = selection.families;
     const QueueFamilies& families = dev.families;
@@ -422,7 +451,7 @@ VulkanDevice CreateDevice(const VulkanInstance& inst,
     // 동작은 했지만(volkLoadInstanceOnly가 전역을 채워둬서) 테이블 규약 위반이었다.
     if (inst.table.vkCreateDevice(dev.gpu, &info, nullptr, &dev.handle) != VK_SUCCESS) {
         LOG("[vk] vkCreateDevice failed\n");
-        return dev;
+        return false;
     }
 
     // **전역이 아니라 테이블로 받는다.** 전역(volkLoadDevice)은 마지막으로 로드한
@@ -447,7 +476,16 @@ VulkanDevice CreateDevice(const VulkanInstance& inst,
     // 메모리 타입 목록을 여기서 한 번 물어 담는다 (인스턴스 레벨 조회다).
     inst.table.vkGetPhysicalDeviceMemoryProperties(dev.gpu, &dev.memoryProperties);
 
-    return dev;
+    return true;
+}
+
+// 인스턴스와 같다 - 자기 테이블로 자기를 지운다.
+// **파괴 전에 GPU를 기다린다**: 스펙상 vkDestroyDevice 전에 이 디바이스의 모든 큐
+// 작업이 끝나 있어야 한다.
+VulkanDevice::~VulkanDevice() {
+    if (handle == VK_NULL_HANDLE) { return; }
+    table.vkDeviceWaitIdle(handle);
+    table.vkDestroyDevice(handle, nullptr);
 }
 
 // ============================================================================
@@ -479,22 +517,22 @@ VkCompositeAlphaFlagBitsKHR ChooseCompositeAlpha(VkCompositeAlphaFlagsKHR suppor
     return static_cast<VkCompositeAlphaFlagBitsKHR>(0);   // 드라이버가 스펙을 어긴 경우
 }
 
-void DestroySwapchain(const VulkanDevice& dev, Swapchain* sc) noexcept {
-    if (sc->handle == VK_NULL_HANDLE) { return; }
+Swapchain::~Swapchain() {
+    if (handle == VK_NULL_HANDLE || dev == nullptr) { return; }
+    const VulkanDevice& d = *dev;
 
     // GPU가 아직 이 이미지들을 쓰고 있을 수 있다. 스펙상 사용 중인 오브젝트 파괴는 금지다.
-    dev.table.vkDeviceWaitIdle(dev.handle);
+    d.table.vkDeviceWaitIdle(d.handle);
 
-    for (SwapchainImage& img : sc->images) {
-        dev.table.vkDestroySemaphore(dev.handle, img.renderFinished, nullptr);
-        dev.table.vkDestroyImageView(dev.handle, img.view, nullptr);
+    for (SwapchainImage& img : images) {
+        d.table.vkDestroySemaphore(d.handle, img.renderFinished, nullptr);
+        d.table.vkDestroyImageView(d.handle, img.view, nullptr);
         // img.image는 파괴하지 않는다 - vkGetSwapchainImagesKHR로 **조회**한 것이고
         // 스왑체인이 소유한다.
     }
-    sc->images.clear();
+    images.clear();
 
-    dev.table.vkDestroySwapchainKHR(dev.handle, sc->handle, nullptr);
-    *sc = Swapchain{};
+    d.table.vkDestroySwapchainKHR(d.handle, handle, nullptr);
 }
 
 // 실패 또는 "지금은 만들 수 없음"(최소화)이면 handle이 VK_NULL_HANDLE인 채로 돌아온다.
@@ -523,25 +561,27 @@ bool SelectSurfaceFormat(const VulkanInstance& inst,
     return true;
 }
 
-Swapchain CreateSwapchain(const VulkanInstance& inst,
-                          const VulkanDevice& dev,
-                          VkSurfaceKHR surface,
-                          VkSurfaceFormatKHR surfaceFormat,
-                          VkSwapchainKHR oldSwapchain) noexcept {
-    Swapchain sc;
+bool CreateSwapchain(const VulkanInstance& inst,
+                     const VulkanDevice& dev,
+                     VkSurfaceKHR surface,
+                     VkSurfaceFormatKHR surfaceFormat,
+                     VkSwapchainKHR oldSwapchain,
+                     Swapchain* out) noexcept {
+    Swapchain& sc = *out;
+    sc.dev = &dev;
 
     // ---- 서피스에게 "이 창은 무엇을 받나"를 묻는다 ----
     VkSurfaceCapabilitiesKHR caps{};
     if (inst.table.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(dev.gpu, surface, &caps) != VK_SUCCESS) {
         LOG("[vk] vkGetPhysicalDeviceSurfaceCapabilitiesKHR failed\n");
-        return sc;
+        return false;
     }
 
     // 창이 최소화되면 서피스 크기가 0x0이 된다. 스왑체인을 만들 수 없지만 **오류가 아니라
     // 정상 상황**이고, 최소화가 풀릴 때까지 지속된다. 그래서 로그를 찍지 않는다 -
     // 찍으면 최소화하고 있는 내내 초당 수백 줄이 된다.
     if (caps.currentExtent.width == 0 || caps.currentExtent.height == 0) {
-        return sc;
+        return false;
     }
 
     // 포맷은 인자로 받는다 - **여기서 고르지 않는다.** 서피스의 성질이라 창이 들고 있다.
@@ -551,7 +591,7 @@ Swapchain CreateSwapchain(const VulkanInstance& inst,
         ChooseCompositeAlpha(caps.supportedCompositeAlpha);
     if (compositeAlpha == 0) {
         LOG("[vk] no usable composite alpha (0x%x)\n", caps.supportedCompositeAlpha);
-        return sc;
+        return false;
     }
 
     // 이미지 개수: 최소보다 하나 더 요청한다. 최소만 요청하면 드라이버가 다음 이미지를
@@ -587,7 +627,7 @@ Swapchain CreateSwapchain(const VulkanInstance& inst,
     if (created != VK_SUCCESS) {
         LOG("[vk] vkCreateSwapchainKHR failed (%d)\n", created);
         sc.handle = VK_NULL_HANDLE;
-        return sc;
+        return false;
     }
 
     sc.format = surfaceFormat.format;
@@ -600,15 +640,13 @@ Swapchain CreateSwapchain(const VulkanInstance& inst,
     if (dev.table.vkGetSwapchainImagesKHR(dev.handle, sc.handle, &actualCount, nullptr)
             != VK_SUCCESS || actualCount == 0) {
         LOG("[vk] vkGetSwapchainImagesKHR returned no images\n");
-        DestroySwapchain(dev, &sc);
-        return sc;
+        return false;
     }
     std::vector<VkImage> rawImages(actualCount);
     if (dev.table.vkGetSwapchainImagesKHR(dev.handle, sc.handle, &actualCount, rawImages.data())
             != VK_SUCCESS) {
         LOG("[vk] vkGetSwapchainImagesKHR failed\n");
-        DestroySwapchain(dev, &sc);
-        return sc;
+        return false;
     }
 
     // ---- 이미지마다 뷰 + 세마포어 ----
@@ -617,8 +655,8 @@ Swapchain CreateSwapchain(const VulkanInstance& inst,
     // 호출자는 sc.handle이 유효한 것만 보고 다음 프레임에 null 뷰로 렌더링을 시도한다.
     // "객체가 존재하면 항상 유효하다"를 지키려면 중간 실패에서 되돌려야 한다.
     //
-    // 되돌리기는 DestroySwapchain이 그대로 해준다 - vkDestroy~는 VK_NULL_HANDLE에
-    // 대해 no-op이라(스펙 보장) 반쯤 채워진 배열도 안전하게 정리된다.
+    // 되돌리기는 **소멸자가 한다.** 실패하면 호출자가 이 객체를 놓고, ~Swapchain이
+    // 반쯤 채워진 배열을 정리한다 - vkDestroy~는 VK_NULL_HANDLE에 no-op이다(스펙 보장).
     sc.images.resize(actualCount);
     for (uint32_t i = 0; i < actualCount; ++i) {
         sc.images[i].image = rawImages[i];
@@ -635,8 +673,7 @@ Swapchain CreateSwapchain(const VulkanInstance& inst,
             dev.table.vkCreateImageView(dev.handle, &viewInfo, nullptr, &sc.images[i].view);
         if (viewResult != VK_SUCCESS) {
             LOG("[vk] vkCreateImageView failed on image %u (%d)\n", i, viewResult);
-            DestroySwapchain(dev, &sc);
-            return sc;
+                return false;
         }
 
         // **이미지당 하나인 이유**: 이 세마포어는 present가 기다린다. 그런데 present에는
@@ -657,14 +694,13 @@ Swapchain CreateSwapchain(const VulkanInstance& inst,
                                         &sc.images[i].renderFinished);
         if (semResult != VK_SUCCESS) {
             LOG("[vk] vkCreateSemaphore failed on image %u (%d)\n", i, semResult);
-            DestroySwapchain(dev, &sc);
-            return sc;
+                return false;
         }
     }
 
     LOG("[vk] swapchain %ux%u, %u images, format %d, FIFO\n",
         sc.extent.width, sc.extent.height, actualCount, static_cast<int>(sc.format));
-    return sc;
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -679,44 +715,39 @@ Swapchain CreateSwapchain(const VulkanInstance& inst,
 bool EnsureSwapchain(const VulkanInstance& inst,
                      const VulkanDevice& dev,
                      Window* window) noexcept {
-    if (!window->swapchainOutOfDate && window->swapchain.handle != VK_NULL_HANDLE) {
+    if (!window->swapchainOutOfDate && window->swapchain != nullptr) {
         return true;
     }
 
     dev.table.vkDeviceWaitIdle(dev.handle);
 
-    // 이전 것을 oldSwapchain으로 넘겨 **은퇴시키고**, 새것을 만든 뒤에 파괴한다.
+    // 이전 것을 oldSwapchain으로 넘겨 **은퇴시키고**, 새것을 만든 뒤에 놓는다.
     // 넘긴 것은 "은퇴시켜라"는 뜻이지 "네가 지워라"가 아니다 - 파괴는 여전히 우리 몫이다.
     // (생성이 실패해도 은퇴는 일어나므로, 실패해도 이전 것은 버려야 한다.)
-    Swapchain fresh =
-        CreateSwapchain(inst, dev, window->surface, window->surfaceFormat,
-                        window->swapchain.handle);
-    DestroySwapchain(dev, &window->swapchain);
+    const VkSwapchainKHR retiring =
+        window->swapchain != nullptr ? window->swapchain->handle : VK_NULL_HANDLE;
 
-    window->swapchain = std::move(fresh);
+    auto fresh = std::make_unique<Swapchain>();
+    const bool created = CreateSwapchain(inst, dev, window->surface, window->surfaceFormat,
+                                         retiring, fresh.get());
+
+    // **새것을 만든 뒤에** 이전 것을 놓는다. reset()이 소멸자를 부른다.
+    window->swapchain.reset();
+
+    // 실패하면 fresh가 여기서 파괴된다 - 반쯤 만들어진 것도 소멸자가 정리한다.
+    // 그래서 CreateSwapchain의 중간 실패 경로에 되돌리기 코드가 하나도 없다.
+    if (created) {
+        window->swapchain = std::move(fresh);
+    }
     window->swapchainOutOfDate = false;
 
-    return window->swapchain.handle != VK_NULL_HANDLE;
-}
-
-// 중첩의 역순으로 부순다: 스왑체인 -> 서피스 -> 창.
-//
-// **서피스가 창보다 먼저 죽어야 한다** - 죽은 HWND를 참조하게 된다.
-// 이 순서가 한 함수 안에 있는 것이 이 묶음의 값이다. 전에는 main() 끝에
-// 다른 정리들과 섞여 있어서 순서를 틀리기 쉬웠다.
-void CloseWindow(const VulkanInstance& inst, const VulkanDevice& dev, Window* window) noexcept {
-    DestroySwapchain(dev, &window->swapchain);
-
-    if (window->surface != VK_NULL_HANDLE) {
-        inst.table.vkDestroySurfaceKHR(inst.handle, window->surface, nullptr);
-    }
-    if (window->handle != nullptr) {
-        glfwDestroyWindow(window->handle);
-    }
-    *window = Window{};
+    return window->swapchain != nullptr;
 }
 
 // ============================================================================
+// 6. 커맨드 풀 (큐 패밀리마다) + 프레임 자원 (frames-in-flight마다)
+// ============================================================================
+
 VkCommandPool CreateCommandPool(const VulkanDevice& dev, uint32_t queueFamily) noexcept {
     // RESET_COMMAND_BUFFER: 풀 전체가 아니라 버퍼 하나만 개별 리셋할 수 있게 한다.
     VkCommandPoolCreateInfo info{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
@@ -732,7 +763,7 @@ VkCommandPool CreateCommandPool(const VulkanDevice& dev, uint32_t queueFamily) n
 }
 
 bool CreateCommands(const VulkanDevice& dev, Commands* out) noexcept {
-    *out = Commands{};
+    out->dev = &dev;
 
     out->graphics = CreateCommandPool(dev, dev.families.graphics);
     if (out->graphics == VK_NULL_HANDLE) { return false; }
@@ -748,14 +779,14 @@ bool CreateCommands(const VulkanDevice& dev, Commands* out) noexcept {
     return true;
 }
 
-void DestroyCommands(const VulkanDevice& dev, Commands* c) noexcept {
+Commands::~Commands() {
+    if (dev == nullptr) { return; }
     // 풀을 파괴하면 거기서 나온 커맨드 버퍼도 같이 사라진다.
-    for (VkCommandPool pool : {c->graphics, c->compute, c->transfer}) {
+    for (VkCommandPool pool : {graphics, compute, transfer}) {
         if (pool != VK_NULL_HANDLE) {
-            dev.table.vkDestroyCommandPool(dev.handle, pool, nullptr);
+            dev->table.vkDestroyCommandPool(dev->handle, pool, nullptr);
         }
     }
-    *c = Commands{};
 }
 
 // ---------------------------------------------------------------------------
@@ -779,7 +810,7 @@ void DestroyCommands(const VulkanDevice& dev, Commands* c) noexcept {
 // 지금 frames-in-flight = 1이라 한 벌이다. 2로 올리면 이 struct가 배열이 되고,
 // 루프는 frames[frameIndex]를 돌려쓰게 된다.
 bool CreateFrame(const VulkanDevice& dev, const Commands& commands, Frame* out) noexcept {
-    *out = Frame{};
+    out->dev = &dev;
 
     // PRIMARY: 큐에 직접 제출할 수 있다. SECONDARY는 다른 버퍼 안에서만 실행된다.
     VkCommandBufferAllocateInfo allocInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
@@ -808,15 +839,15 @@ bool CreateFrame(const VulkanDevice& dev, const Commands& commands, Frame* out) 
     return true;
 }
 
-void DestroyFrame(const VulkanDevice& dev, Frame* frame) noexcept {
-    if (frame->inFlight != VK_NULL_HANDLE) {
-        dev.table.vkDestroyFence(dev.handle, frame->inFlight, nullptr);
+Frame::~Frame() {
+    if (dev == nullptr) { return; }
+    if (inFlight != VK_NULL_HANDLE) {
+        dev->table.vkDestroyFence(dev->handle, inFlight, nullptr);
     }
-    if (frame->imageAvailable != VK_NULL_HANDLE) {
-        dev.table.vkDestroySemaphore(dev.handle, frame->imageAvailable, nullptr);
+    if (imageAvailable != VK_NULL_HANDLE) {
+        dev->table.vkDestroySemaphore(dev->handle, imageAvailable, nullptr);
     }
     // cmd는 따로 반납하지 않는다 - 풀이 파괴될 때 같이 사라진다.
-    *frame = Frame{};
 }
 
 // ============================================================================
@@ -875,15 +906,17 @@ VkShaderModule LoadShader(const VulkanDevice& dev, const char* path) noexcept {
 }
 
 // 파이프라인 + 레이아웃. 둘이 같이 태어나고 같이 죽는다.
-Pipeline CreateTrianglePipeline(const VulkanDevice& dev, VkFormat colorFormat) noexcept {
-    Pipeline pipeline;
+bool CreateTrianglePipeline(const VulkanDevice& dev, VkFormat colorFormat,
+                            Pipeline* out) noexcept {
+    Pipeline& pipeline = *out;
+    pipeline.dev = &dev;
 
     VkShaderModule vs = LoadShader(dev, "Shaders/triangle.vert.spv");
     VkShaderModule fs = LoadShader(dev, "Shaders/triangle.frag.spv");
     if (vs == VK_NULL_HANDLE || fs == VK_NULL_HANDLE) {
         if (vs != VK_NULL_HANDLE) { dev.table.vkDestroyShaderModule(dev.handle, vs, nullptr); }
         if (fs != VK_NULL_HANDLE) { dev.table.vkDestroyShaderModule(dev.handle, fs, nullptr); }
-        return pipeline;
+        return false;
     }
 
     VkPipelineShaderStageCreateInfo stages[2]{};
@@ -980,7 +1013,7 @@ Pipeline CreateTrianglePipeline(const VulkanDevice& dev, VkFormat colorFormat) n
         LOG("[vk] vkCreatePipelineLayout failed\n");
         dev.table.vkDestroyShaderModule(dev.handle, vs, nullptr);
         dev.table.vkDestroyShaderModule(dev.handle, fs, nullptr);
-        return pipeline;
+        return false;
     }
 
     // **다이나믹 렌더링**: VkRenderPass 객체를 안 만드는 대신, 그릴 대상의 포맷을
@@ -1014,22 +1047,21 @@ Pipeline CreateTrianglePipeline(const VulkanDevice& dev, VkFormat colorFormat) n
 
     if (created != VK_SUCCESS) {
         LOG("[vk] vkCreateGraphicsPipelines failed (%d)\n", created);
-        dev.table.vkDestroyPipelineLayout(dev.handle, pipeline.layout, nullptr);
-        return Pipeline{};
+        return false;   // layout은 ~Pipeline이 정리한다
     }
 
     LOG("[vk] triangle pipeline ready\n");
-    return pipeline;
+    return true;
 }
 
-void DestroyPipeline(const VulkanDevice& dev, Pipeline* pipeline) noexcept {
-    if (pipeline->handle != VK_NULL_HANDLE) {
-        dev.table.vkDestroyPipeline(dev.handle, pipeline->handle, nullptr);
+Pipeline::~Pipeline() {
+    if (dev == nullptr) { return; }
+    if (handle != VK_NULL_HANDLE) {
+        dev->table.vkDestroyPipeline(dev->handle, handle, nullptr);
     }
-    if (pipeline->layout != VK_NULL_HANDLE) {
-        dev.table.vkDestroyPipelineLayout(dev.handle, pipeline->layout, nullptr);
+    if (layout != VK_NULL_HANDLE) {
+        dev->table.vkDestroyPipelineLayout(dev->handle, layout, nullptr);
     }
-    *pipeline = Pipeline{};
 }
 
 // ============================================================================
@@ -1063,11 +1095,13 @@ uint32_t FindMemoryType(const VulkanDevice& dev,
     return UINT32_MAX;
 }
 
-Buffer CreateBuffer(const VulkanDevice& dev,
-                    VkDeviceSize size,
-                    VkBufferUsageFlags usage,
-                    VkMemoryPropertyFlags memoryProperties) noexcept {
-    Buffer buffer;
+bool CreateBuffer(const VulkanDevice& dev,
+                  VkDeviceSize size,
+                  VkBufferUsageFlags usage,
+                  VkMemoryPropertyFlags memoryProperties,
+                  Buffer* out) noexcept {
+    Buffer& buffer = *out;
+    buffer.dev = &dev;
 
     VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     info.size = size;
@@ -1078,7 +1112,7 @@ Buffer CreateBuffer(const VulkanDevice& dev,
 
     if (dev.table.vkCreateBuffer(dev.handle, &info, nullptr, &buffer.handle) != VK_SUCCESS) {
         LOG("[vk] vkCreateBuffer failed\n");
-        return Buffer{};
+        return false;
     }
 
     // **버퍼를 만들었다고 메모리가 붙은 게 아니다.** 여기서 요구사항을 물어본다:
@@ -1091,8 +1125,7 @@ Buffer CreateBuffer(const VulkanDevice& dev,
     const uint32_t typeIndex =
         FindMemoryType(dev, requirements.memoryTypeBits, memoryProperties);
     if (typeIndex == UINT32_MAX) {
-        dev.table.vkDestroyBuffer(dev.handle, buffer.handle, nullptr);
-        return Buffer{};
+        return false;   // 여기까지 만든 것은 ~Buffer가 정리한다
     }
 
     // **실제 할당.** 여기가 VMA가 대신하게 될 자리다 - VMA는 큰 덩어리를 미리 잡아두고
@@ -1106,55 +1139,58 @@ Buffer CreateBuffer(const VulkanDevice& dev,
             != VK_SUCCESS) {
         LOG("[vk] vkAllocateMemory failed (%llu bytes)\n",
             static_cast<unsigned long long>(requirements.size));
-        dev.table.vkDestroyBuffer(dev.handle, buffer.handle, nullptr);
-        return Buffer{};
+        return false;
     }
 
     // 버퍼와 메모리를 잇는다. 이제야 쓸 수 있다.
     if (dev.table.vkBindBufferMemory(dev.handle, buffer.handle, buffer.memory, 0)
             != VK_SUCCESS) {
         LOG("[vk] vkBindBufferMemory failed\n");
-        dev.table.vkFreeMemory(dev.handle, buffer.memory, nullptr);
-        dev.table.vkDestroyBuffer(dev.handle, buffer.handle, nullptr);
-        return Buffer{};
+        return false;
     }
 
     buffer.size = size;
-    return buffer;
+    return true;
 }
 
-void DestroyBuffer(const VulkanDevice& dev, Buffer* buffer) noexcept {
+Buffer::~Buffer() {
+    if (dev == nullptr) { return; }
     // **순서가 있다**: 버퍼를 먼저 부수고 메모리를 반납한다.
     // 메모리를 먼저 반납하면 버퍼가 없는 메모리를 가리키게 된다.
-    if (buffer->handle != VK_NULL_HANDLE) {
-        dev.table.vkDestroyBuffer(dev.handle, buffer->handle, nullptr);
+    if (handle != VK_NULL_HANDLE) {
+        dev->table.vkDestroyBuffer(dev->handle, handle, nullptr);
     }
-    if (buffer->memory != VK_NULL_HANDLE) {
-        dev.table.vkFreeMemory(dev.handle, buffer->memory, nullptr);
+    if (memory != VK_NULL_HANDLE) {
+        dev->table.vkFreeMemory(dev->handle, memory, nullptr);
     }
-    *buffer = Buffer{};
 }
 
-Buffer CreateVertexBuffer(const VulkanDevice& dev,
-                          const Commands& commands,
-                          const void* data,
-                          VkDeviceSize size) noexcept {
+bool CreateVertexBuffer(const VulkanDevice& dev,
+                        const Commands& commands,
+                        const void* data,
+                        VkDeviceSize size,
+                        Buffer* out) noexcept {
     // ---- 1. 스테이징: CPU가 쓸 수 있는 임시 버퍼 ----
     //
     // HOST_VISIBLE   vkMapMemory로 CPU 주소를 얻을 수 있다
     // HOST_COHERENT  CPU가 쓴 것이 GPU에게 자동으로 보인다.
     //                없으면 vkFlushMappedMemoryRanges를 직접 불러야 한다
-    Buffer staging = CreateBuffer(dev, size,
-                                  VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
-                                      | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    if (staging.handle == VK_NULL_HANDLE) { return Buffer{}; }
+    //
+    // **지역 변수다.** 어느 경로로 나가든 ~Buffer가 정리한다 - 한때 실패 지점마다
+    // DestroyBuffer(dev, &staging)를 네 번 적어야 했다.
+    Buffer staging;
+    if (!CreateBuffer(dev, size,
+                      VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+                          | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                      &staging)) {
+        return false;
+    }
 
     void* mapped = nullptr;
     if (dev.table.vkMapMemory(dev.handle, staging.memory, 0, size, 0, &mapped) != VK_SUCCESS) {
         LOG("[vk] vkMapMemory failed\n");
-        DestroyBuffer(dev, &staging);
-        return Buffer{};
+        return false;
     }
     std::memcpy(mapped, data, static_cast<size_t>(size));
     dev.table.vkUnmapMemory(dev.handle, staging.memory);
@@ -1164,13 +1200,12 @@ Buffer CreateVertexBuffer(const VulkanDevice& dev,
     // DEVICE_LOCAL은 GPU가 가장 빠르게 읽는 메모리다. 대신 CPU가 매핑할 수 없는 것이
     // 보통이라(외장 GPU의 VRAM) 스테이징을 거쳐야 한다.
     // TRANSFER_DST: 복사의 목적지가 될 수 있다고 미리 알려준다.
-    Buffer vertexBuffer = CreateBuffer(dev, size,
-                                       VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
-                                           | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                                       VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if (vertexBuffer.handle == VK_NULL_HANDLE) {
-        DestroyBuffer(dev, &staging);
-        return Buffer{};
+    if (!CreateBuffer(dev, size,
+                      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
+                          | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                      out)) {
+        return false;
     }
 
     // ---- 3. GPU에게 복사를 시킨다 ----
@@ -1189,9 +1224,7 @@ Buffer CreateVertexBuffer(const VulkanDevice& dev,
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     if (dev.table.vkAllocateCommandBuffers(dev.handle, &allocInfo, &cmd) != VK_SUCCESS) {
         LOG("[vk] vkAllocateCommandBuffers(upload) failed\n");
-        DestroyBuffer(dev, &vertexBuffer);
-        DestroyBuffer(dev, &staging);
-        return Buffer{};
+        return false;
     }
 
     VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -1200,7 +1233,7 @@ Buffer CreateVertexBuffer(const VulkanDevice& dev,
 
     VkBufferCopy region{};
     region.size = size;
-    dev.table.vkCmdCopyBuffer(cmd, staging.handle, vertexBuffer.handle, 1, &region);
+    dev.table.vkCmdCopyBuffer(cmd, staging.handle, out->handle, 1, &region);
 
     dev.table.vkEndCommandBuffer(cmd);
 
@@ -1216,11 +1249,10 @@ Buffer CreateVertexBuffer(const VulkanDevice& dev,
     dev.table.vkQueueSubmit2(dev.queues.graphics, 1, &submit, VK_NULL_HANDLE);
     dev.table.vkQueueWaitIdle(dev.queues.graphics);
 
-    // ---- 4. 뒷정리 ----
     dev.table.vkFreeCommandBuffers(dev.handle, commands.graphics, 1, &cmd);
-    DestroyBuffer(dev, &staging);
+    // staging은 여기서 스코프를 벗어나며 ~Buffer가 정리한다.
 
     LOG("[vk] vertex buffer ready (%llu bytes, device-local)\n",
         static_cast<unsigned long long>(size));
-    return vertexBuffer;
+    return true;
 }
