@@ -1,7 +1,12 @@
 ﻿// **한 프레임이 어떻게 도는가** - 런타임 경로.
 //
-// 만들고 부수는 것은 전부 VulkanSetup.cpp에 있다. 여기는 매 프레임 도는 코드만 있다.
-// 무엇이 있는지는 Vulkan.h.
+// 만들고 부수는 것은 전부 Vulkan/ 아래에 있다. 여기는 매 프레임 도는 코드만 있다.
+//
+// Vulkan/ 은 **개념당 한 쌍**이다 (언리얼 VulkanRHI와 같은 축):
+//   Core.h       두 함수 테이블 · 요구사항 · RAII 규약
+//   Instance     Window      Swapchain
+//   Device       Commands    Pipeline    Buffer
+// 자원이 늘어도 기존 파일이 안 자란다 - 새 쌍이 하나 생길 뿐이다.
 //
 // **초기화와 런타임은 지켜야 할 규칙이 다르다:**
 //
@@ -13,7 +18,11 @@
 //
 // 그게 파일을 나눈 기준이다.
 
-#include "Vulkan.h"
+#include "Config.h"
+#include "Vulkan/Buffer.h"
+#include "Vulkan/Commands.h"
+#include "Vulkan/Pipeline.h"
+#include "Vulkan/Window.h"
 
 #include <GLFW/glfw3.h>
 

@@ -1,9 +1,27 @@
-# 셋으로 나뉜 기준은 **초기화 vs 런타임**이다 (Vulkan.h 위 주석 참고).
+# **개념당 한 쌍.** 언리얼 VulkanRHI와 같은 축이다 - 자원이 늘어도 기존 파일이
+# 안 자라고 새 쌍이 하나 생긴다. 추상화 층은 없다 (struct + 자유 함수뿐).
+#
+# 의존은 한 방향으로만 흐른다:
+#   Core <- Instance <- Device <- { Swapchain, Commands, Pipeline, Buffer }
+#                                    ^
+#                                  Window (서피스는 Instance, 스왑체인을 품는다)
 add_executable(sandbox
-    Vulkan.h          # 무엇이 있는가 (struct + 선언)
-    VulkanSetup.cpp   # 어떻게 만들고 부수나 (한 번 돈다)
-    main.cpp          # 한 프레임이 어떻게 도나 (매 프레임)
+    Config.h                # 손잡이 (컴파일 상수)
+
+    Vulkan/Core.h           # 두 함수 테이블 · 요구사항 · RAII 규약
+    Vulkan/Instance.h    Vulkan/Instance.cpp
+    Vulkan/Device.h      Vulkan/Device.cpp      # + 큐 패밀리 · 큐 · GPU 선택 · VMA 할당자
+    Vulkan/Window.h      Vulkan/Window.cpp      # 창 시스템 · 창 · 서피스
+    Vulkan/Swapchain.h   Vulkan/Swapchain.cpp
+    Vulkan/Commands.h    Vulkan/Commands.cpp    # 커맨드 풀(패밀리마다) + Frame(프레임마다)
+    Vulkan/Pipeline.h    Vulkan/Pipeline.cpp
+    Vulkan/Buffer.h      Vulkan/Buffer.cpp
+
+    main.cpp                # 한 프레임이 어떻게 도나 (런타임 경로)
 )
+
+# 자기 폴더를 include 루트로 - "Vulkan/Device.h"처럼 어느 그룹인지가 include에 보인다.
+target_include_directories(sandbox PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 # 평평하게 쓰는 동안은 sandbox가 volk와 GLFW를 직접 든다.
 # 중간 모듈이 없으므로 숨길 것도 없다.
