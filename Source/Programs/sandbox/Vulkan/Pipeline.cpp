@@ -181,8 +181,17 @@ bool CreateTrianglePipeline(const VulkanDevice& dev, VkFormat colorFormat,
     depthStencil.stencilTestEnable = VK_FALSE;
 
     // 레이아웃: 셰이더가 받는 외부 자원(유니폼, 푸시 상수)의 모양.
-    // **지금은 비어 있다** - 셰이더가 아무것도 안 받는다. 그래도 만들어야 한다.
+    //
+    // **stageFlags가 실제로 읽는 스테이지와 맞아야 한다.** 정점 셰이더만 쓰는데
+    // FRAGMENT까지 켜면 낭비고, 반대로 빠뜨리면 검증 레이어가 잡는다.
+    VkPushConstantRange pushRange{};
+    pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    pushRange.offset = 0;
+    pushRange.size = sizeof(PushConstants);
+
     VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    layoutInfo.pushConstantRangeCount = 1;
+    layoutInfo.pPushConstantRanges = &pushRange;
     if (dev.table.vkCreatePipelineLayout(dev.handle, &layoutInfo, nullptr, &pipeline.layout)
             != VK_SUCCESS) {
         LOG("[vk] vkCreatePipelineLayout failed\n");

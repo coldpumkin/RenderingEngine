@@ -173,6 +173,19 @@ bool RecordFrame(const VolkDeviceTable& vk,
 
     vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.handle);
 
+    // **매 프레임 셰이더에 값을 밀어 넣는다.** 커맨드 버퍼에 값이 그대로 실려 가므로
+    // 버퍼도, 디스크립터도, 동기화도 필요 없다.
+    //
+    // aspect를 여기서 계산하는 이유: extent는 리사이즈마다 바뀌는데 파이프라인은
+    // 그대로다. 값이 커맨드에 실리니 파이프라인을 다시 만들 이유가 없다 -
+    // 뷰포트를 동적 상태로 둔 것과 같은 이야기다.
+    const PushConstants push{
+        static_cast<float>(glfwGetTime()),
+        static_cast<float>(extent.width) / static_cast<float>(extent.height),
+    };
+    vk.vkCmdPushConstants(cmd, pipeline.layout, VK_SHADER_STAGE_VERTEX_BIT,
+                          0, sizeof(push), &push);
+
     // 정점 버퍼를 0번 슬롯에 건다. 파이프라인의 binding=0과 짝이다.
     // offset은 버퍼 안에서 시작할 바이트 - 여러 메시를 한 버퍼에 담으면 여기가 달라진다.
     const VkDeviceSize offset = 0;
