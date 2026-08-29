@@ -111,6 +111,16 @@ bool OpenWindow(const VulkanInstance& inst,
                 int width, int height, const char* title,
                 Window* out) noexcept;
 
+// 지금 그릴 수 있는 크기인가. **최소화하면 프레임버퍼가 0x0이 된다.**
+//
+// **왜 루프 맨 위에서 이걸 묻나**: 안 물으면 최소화 중에 EnsureSwapchain이 매 순회마다
+// vkDeviceWaitIdle + 서피스 조회 + 스왑체인 생성을 재시도한다. present를 안 하니
+// 수직동기 제동도 없다. 실측으로 **CPU 10.9% -> 135.9%** (12배)였다.
+//
+// 이 질문은 "프레임을 아예 돌릴 것인가"이고, BeginFrame의 "프레임이 어떻게 진행되는가"와
+// 다르다. 그래서 BeginFrame이 아니라 루프에 있다.
+bool WindowHasDrawableSize(const Window& window) noexcept;
+
 // 이 서피스가 받는 포맷 중 하나를 골라 window->surfaceFormat에 담는다.
 // **GPU가 정해진 뒤에 부른다** - 어떤 포맷을 받는지는 (GPU, 서피스) 쌍이 정한다.
 // 실패하면 false (서피스가 포맷을 하나도 안 준 경우).

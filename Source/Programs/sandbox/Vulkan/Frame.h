@@ -47,20 +47,30 @@ struct FrameTarget {
     uint32_t imageIndex = 0;
 };
 
+// **호출자가 무엇을 해야 하는가**로 적는다. 내부에서 무슨 일이 있었나가 아니다.
+//
+// 한때 bool이었는데 false가 세 가지를 뜻하게 됐다 - 최소화(자야 함), 스왑체인
+// 낡음(즉시 재시도), DEVICE_LOST(그만둬야 함). 호출자가 구분할 수 없으니 전부
+// continue했고, 그래서 회복 불가 상태에서 **최대 속도로 로그를 뿜는 무한 루프**가 됐다.
+enum class FrameResult {
+    Ready,   // 그린다
+    Skip,    // 이번 프레임은 없다. 다음 순회에 다시 (스왑체인이 낡았다)
+    Fatal,   // 회복 불가. 루프를 끝낸다 (DEVICE_LOST, SURFACE_LOST, 메모리 부족)
+};
+
 // 프레임을 연다: 그릴 곳 확보 -> 이전 프레임 대기 -> 이미지 확보.
 //
-// **false는 실패가 아니라 "이번 프레임은 없다"**이다 (최소화 중이거나 스왑체인이 낡음).
-// 호출자는 continue한다.
-bool BeginFrame(const VulkanDevice& dev,
-                Window* window,
-                const Frame& frame,
-                FrameTarget* out) noexcept;
+// **최소화는 여기서 안 다룬다.** 루프가 WindowHasDrawableSize로 먼저 거른다.
+FrameResult BeginFrame(const VulkanDevice& dev,
+                       Window* window,
+                       const Frame& frame,
+                       FrameTarget* out) noexcept;
 
 // 프레임을 닫는다: 펜스 리셋 -> 제출 -> 화면에 표시.
-// **BeginFrame이 false를 준 프레임에는 부르지 않는다.**
+// **BeginFrame이 Ready를 준 프레임에만 부른다.**
 //
-// BeginFrame과 같이 bool이다. 제출은 실패할 수 있고, 실패하면 이 프레임에 그린 것은
-// 화면에 안 나온다 - 호출자가 알아야 하는 사실이다.
+// 결과가 실제로 둘뿐이라(계속 / 그만) bool이다. Skip이 나올 자리가 없으므로
+// 억지로 FrameResult를 쓰지 않는다.
 bool EndFrame(const VulkanDevice& dev,
               Window* window,
               const Frame& frame,

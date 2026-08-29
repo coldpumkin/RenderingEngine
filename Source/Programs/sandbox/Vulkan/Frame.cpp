@@ -45,16 +45,22 @@ Frame::~Frame() {
 // 프레임 여닫기 - **동기화만 있고 그리는 것은 하나도 없다**
 // ============================================================================
 
-bool BeginFrame(const VulkanDevice& dev,
-                Window* window,
-                const Frame& frame,
-                FrameTarget* out) noexcept {
+FrameResult BeginFrame(const VulkanDevice& dev,
+                       Window* window,
+                       const Frame& frame,
+                       FrameTarget* out) noexcept {
     *out = FrameTarget{};
 
     // ---- 0. 그릴 곳 확보 ----
     // 리사이즈 통보는 창 콜백이 window에 직접 세워놨다.
+    //
+    // **Skip이지 Fatal이 아니다.** 창이 그릴 수 있는 크기라는 건 루프가 이미 확인했지만,
+    // 그 확인과 여기 사이에 창이 바뀔 수 있다 (리사이즈 드래그 중). 그 순간을 Fatal로
+    // 보면 리사이즈 도중에 앱이 죽는다.
+    // (대가: 크기가 0이 아닌데 생성이 계속 실패하면 여기서 돈다. 그건 정상 경로가
+    //  아니고, 재시도 횟수를 세는 건 지금 필요한 복잡도가 아니다.)
     if (!EnsureSwapchain(dev, window)) {
-        return false;   // 최소화 중. 이번 프레임은 없다
+        return FrameResult::Skip;
     }
     Swapchain& swapchain = *window->swapchain;
 
@@ -65,7 +71,16 @@ bool BeginFrame(const VulkanDevice& dev,
     //
     // 실측(120Hz, 삼각형 하나): 여기서 쓰는 시간이 0.4%뿐이었다. 프레임 시간의 90%는
     // 아래 acquire(모니터 대기)에서 나온다. **GPU가 바빠져야 이 대기가 의미를 갖는다.**
-    dev.table.vkWaitForFences(dev.handle, 1, &frame.inFlight, VK_TRUE, UINT64_MAX);
+    //
+    // **타임아웃이 UINT64_MAX인데도 반환값을 본다.** 스펙상 여기서 나올 수 있는 실패는
+    // DEVICE_LOST와 메모리 부족이고, DEVICE_LOST면 이 펜스는 **영원히 신호되지 않는다**.
+    // 그때 그냥 진행하면 아래 acquire도, 다음 순회의 이 대기도 계속 실패한다.
+    const VkResult waited =
+        dev.table.vkWaitForFences(dev.handle, 1, &frame.inFlight, VK_TRUE, UINT64_MAX);
+    if (waited != VK_SUCCESS) {
+        LOG("[vk] vkWaitForFences failed (%d) - 디바이스를 잃었을 수 있다\n", waited);
+        return FrameResult::Fatal;
+    }
 
     // ---- 2. 이미지를 하나 빌린다 ----
     uint32_t imageIndex = 0;
@@ -73,13 +88,16 @@ bool BeginFrame(const VulkanDevice& dev,
         dev.handle, swapchain.handle, UINT64_MAX,
         frame.imageAvailable, VK_NULL_HANDLE, &imageIndex);
 
+    // SUBOPTIMAL은 성공이다 - 이미지를 받았고 세마포어도 신호된다. 화질이 최적이 아닐 뿐.
     if (acquired == VK_ERROR_OUT_OF_DATE_KHR) {
         window->swapchainOutOfDate = true;
-        return false;   // 다음 프레임 시작에 재생성된다
+        return FrameResult::Skip;   // 다음 프레임 시작에 재생성된다
     }
     if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR) {
+        // **스왑체인을 다시 만들어도 안 고쳐지는 것들이다**: DEVICE_LOST, SURFACE_LOST,
+        // 메모리 부족. 여기서 Skip을 주면 다음 순회에 똑같이 실패하며 무한히 돈다.
         LOG("[vk] vkAcquireNextImageKHR failed (%d)\n", acquired);
-        return false;
+        return FrameResult::Fatal;
     }
 
     // **펜스는 여기서 리셋하지 않는다.** 리셋의 짝은 acquire가 아니라 제출이다
@@ -88,7 +106,7 @@ bool BeginFrame(const VulkanDevice& dev,
     out->image = &swapchain.images[imageIndex];
     out->extent = swapchain.extent;
     out->imageIndex = imageIndex;
-    return true;
+    return FrameResult::Ready;
 }
 
 bool EndFrame(const VulkanDevice& dev,
@@ -148,14 +166,27 @@ bool EndFrame(const VulkanDevice& dev,
     present.pSwapchains = &swapchainHandle;
     present.pImageIndices = &target.imageIndex;
 
-    // SUBOPTIMAL은 에러가 아니다. 그려지긴 했고 다음 프레임에 다시 만들면 된다.
     const VkResult presented = dev.table.vkQueuePresentKHR(dev.queues.present, &present);
+
+    // ---- present 결과를 두 부류로 가른다 ----
+    //
+    // 어느 쪽이든 **제출은 이미 됐고 펜스는 신호된다.** 그래서 다음 프레임이 대기에
+    // 걸릴 걱정은 없다. 갈리는 건 **다시 만들면 고쳐지는가**다.
+    //
+    // 회복 가능: 창 크기가 달라졌을 뿐이다. 다음 프레임 시작에 스왑체인을 다시 만든다.
     if (presented == VK_ERROR_OUT_OF_DATE_KHR || presented == VK_SUBOPTIMAL_KHR) {
         window->swapchainOutOfDate = true;
+        return true;
     }
 
-    // present가 실패해도 true다. **제출은 이미 됐고 펜스는 신호될 것이다** - 프레임은
-    // 정상적으로 끝났고 화면에 못 나갔을 뿐이다. 스왑체인을 다시 만들면 되는 일이라
-    // 루프를 끊을 이유가 없다.
+    // 회복 불가: 스펙이 여기서 DEVICE_LOST, SURFACE_LOST_KHR, 메모리 부족,
+    // FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT도 준다. **스왑체인을 다시 만들어도 안 고쳐진다**
+    // (SURFACE_LOST면 그 서피스로는 생성 자체가 실패한다).
+    // 한때 이걸 로그도 없이 true로 흘려보냈다 - "present 실패는 재생성으로 해결된다"고
+    // 뭉뚱그렸는데, 그건 위의 둘에만 맞는 말이었다.
+    if (presented != VK_SUCCESS) {
+        LOG("[vk] vkQueuePresentKHR failed (%d)\n", presented);
+        return false;
+    }
     return true;
 }

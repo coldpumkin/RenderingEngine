@@ -64,18 +64,28 @@ void RecordLayoutTransition(const VolkDeviceTable& vk, VkCommandBuffer cmd, VkIm
 // **인자가 넷뿐인 것에 주목.** 동기화(펜스·세마포어·acquire·present)가 하나도 안 들어온다 -
 // 그건 전부 main()의 루프에 남아 있다. 기록과 동기화는 서로 모르는 채로 돌아간다.
 // 이게 나중에 "기록하는 쪽"과 "제출하는 쪽"이 갈리는 선이다.
-void RecordFrame(const VolkDeviceTable& vk,
+// **bool인 이유**: vkBegin/EndCommandBuffer는 실패할 수 있고(메모리 부족), 실패하면
+// 커맨드 버퍼가 무효 상태다. 그걸 제출하는 것은 스펙 위반이라 호출자가 알아야 한다.
+bool RecordFrame(const VolkDeviceTable& vk,
                  VkCommandBuffer cmd,
                  const SwapchainImage& target,
                  VkExtent2D extent,
                  const Pipeline& pipeline,
                  const Buffer& vertexBuffer) noexcept {
-    vk.vkResetCommandBuffer(cmd, 0);
+    // 풀을 VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT로 만들었기에 버퍼 하나만
+    // 되감을 수 있다. 그 플래그가 없으면 풀 전체를 리셋해야 한다.
+    if (vk.vkResetCommandBuffer(cmd, 0) != VK_SUCCESS) {
+        LOG("[vk] vkResetCommandBuffer failed\n");
+        return false;
+    }
 
     VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     // ONE_TIME_SUBMIT: 한 번 제출하고 버릴 기록이라고 드라이버에 알린다.
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vk.vkBeginCommandBuffer(cmd, &beginInfo);
+    if (vk.vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS) {
+        LOG("[vk] vkBeginCommandBuffer failed\n");
+        return false;
+    }
 
     // ---- 그릴 수 있는 레이아웃으로 ----
     // oldLayout이 UNDEFINED인 것은 이전 내용을 안 쓰기 때문이다 - 어차피 loadOp=CLEAR로
@@ -146,7 +156,11 @@ void RecordFrame(const VolkDeviceTable& vk,
                            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                            VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 
-    vk.vkEndCommandBuffer(cmd);
+    if (vk.vkEndCommandBuffer(cmd) != VK_SUCCESS) {
+        LOG("[vk] vkEndCommandBuffer failed\n");
+        return false;
+    }
+    return true;
 }
 
 // ============================================================================
@@ -237,19 +251,32 @@ int main() {
     while (glfwWindowShouldClose(window.handle) == 0) {
         glfwPollEvents();
 
+        // **최소화 중이면 이벤트가 올 때까지 잔다.** 이게 없으면 스왑체인을 못 만드는
+        // 상태에서 매 순회 재생성을 시도하고, present가 없어 수직동기 제동도 없다.
+        // 실측 CPU 10.9% -> 135.9%였다.
+        if (!WindowHasDrawableSize(window)) {
+            glfwWaitEvents();
+            continue;
+        }
+
         const Frame& frame = frames[frameIndex];
 
         FrameTarget target;
-        if (!BeginFrame(dev, &window, frame, &target)) {
-            continue;   // 지금 그릴 곳이 없다. 실패가 아니다
+        const FrameResult begun = BeginFrame(dev, &window, frame, &target);
+        if (begun == FrameResult::Fatal) { break; }
+        if (begun == FrameResult::Skip) { continue; }
+
+        // 기록이 실패하면 **제출하지 않고 끝낸다.** 무효한 커맨드 버퍼를 제출하는 것은
+        // 스펙 위반이고, 여기서 continue하면 이미 신호된 imageAvailable을 기다릴 사람이
+        // 없어진 채로 다음 acquire가 같은 세마포어를 다시 신호하게 된다.
+        if (!RecordFrame(dev.table, frame.cmd, *target.image, target.extent,
+                         pipeline, vertexBuffer)) {
+            break;
         }
 
-        RecordFrame(dev.table, frame.cmd, *target.image, target.extent,
-                    pipeline, vertexBuffer);
-
         // **여기는 continue가 아니라 break다.** 제출이 실패하면 이 프레임의 펜스를
-        // 신호할 사람이 없어 다음 순회가 영원히 걸린다. 게다가 실패 사유는
-        // OUT_OF_MEMORY / DEVICE_LOST뿐이라 다음 프레임을 시도할 상황이 아니다.
+        // 신호할 사람이 없어 다음 순회가 영원히 걸린다. present의 회복 불가 에러도
+        // 여기로 온다 (Frame.cpp 참고).
         if (!EndFrame(dev, &window, frame, target)) {
             break;
         }

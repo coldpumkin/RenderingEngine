@@ -78,6 +78,13 @@ bool OpenWindow(const VulkanInstance& inst,
     return true;
 }
 
+bool WindowHasDrawableSize(const Window& window) noexcept {
+    int width = 0;
+    int height = 0;
+    glfwGetFramebufferSize(window.handle, &width, &height);
+    return width > 0 && height > 0;
+}
+
 // 중첩의 역순으로 부순다: 스왑체인 -> 서피스 -> 창.
 //
 // **서피스가 창보다 먼저 죽어야 한다** - 죽은 HWND를 참조하게 된다.
