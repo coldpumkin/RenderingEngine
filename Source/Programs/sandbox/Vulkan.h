@@ -271,6 +271,14 @@ struct VulkanDevice {
 
     // vkGetDeviceQueue는 **조회**다. vkCreateDevice가 이미 만들었고 파괴 함수도 없다.
     Queues queues;
+
+    // 이 GPU의 메모리 타입 목록. **여기 두는 이유**(기준 A ③):
+    //   생성 시 확정 · 사는 동안 불변 · 디바이스가 죽으면 의미 상실 - 셋 다 참이다.
+    //
+    // 조회 함수(vkGetPhysicalDeviceMemoryProperties)는 **인스턴스 레벨**이라 나중에
+    // 다시 물으려면 인스턴스가 필요하다. 버퍼를 만들 때마다 인스턴스를 끌고 다니는
+    // 대신, 안 변하는 값이니 여기 한 번 담아둔다.
+    VkPhysicalDeviceMemoryProperties memoryProperties{};
 };
 
 // 논리 디바이스 + 함수 테이블 + 큐들.
@@ -376,3 +384,61 @@ struct Pipeline {
 // colorFormat: 이 파이프라인이 어떤 포맷의 렌더 타겟에 그릴지. 스왑체인에서 온다.
 Pipeline CreateTrianglePipeline(const VulkanDevice& dev, VkFormat colorFormat) noexcept;
 void DestroyPipeline(const VulkanDevice& dev, Pipeline* pipeline) noexcept;
+
+// ============================================================================
+// 9. 버퍼 - **메모리를 직접 다루는 첫 자리**
+// ============================================================================
+//
+// 지금까지 만든 것(인스턴스·디바이스·스왑체인·커맨드 풀)은 전부 드라이버가 메모리를
+// 알아서 잡아줬다. 버퍼부터는 **우리가 어떤 메모리에 놓을지 고른다.**
+//
+// 그 고르는 과정이 FindMemoryType이고, VMA가 대신해주게 될 부분이 정확히 거기다.
+// **한 번은 직접 해봐야 VMA가 무엇을 줄여주는지 알 수 있다.**
+
+struct Buffer {
+    VkBuffer handle = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;   // **우리가 할당했다.** 우리가 반납한다
+    VkDeviceSize size = 0;
+};
+
+// 정점 하나. 셰이더의 layout(location=...) in 과 짝이 맞아야 한다.
+//
+// GPU가 이 구조체를 어떻게 읽을지는 파이프라인의 vertexInput이 정한다 -
+// stride(한 정점의 크기)와 각 필드의 offset·format을 거기서 알려준다.
+struct Vertex {
+    float position[2];   // vec2 -> VK_FORMAT_R32G32_SFLOAT
+    float color[3];      // vec3 -> VK_FORMAT_R32G32B32_SFLOAT
+};
+
+// 요구 조건을 만족하는 메모리 타입 번호를 찾는다. 없으면 UINT32_MAX.
+//
+// **typeBits**: vkGetBufferMemoryRequirements가 준 비트마스크. "이 버퍼는 i번 타입에
+//   놓을 수 있다"가 i번 비트로 표현돼 있다. **버퍼가 정하는 제약**이다.
+// **required**: 우리가 원하는 성질 (HOST_VISIBLE = CPU가 매핑 가능, DEVICE_LOCAL = GPU 전용 빠른 메모리).
+//   **우리가 정하는 요구**다.
+//
+// 둘을 대조하는 것이 전부다. VMA가 감춰주는 게 이 대조다.
+uint32_t FindMemoryType(const VulkanDevice& dev,
+                        uint32_t typeBits,
+                        VkMemoryPropertyFlags required) noexcept;
+
+// 버퍼 생성 + 메모리 할당 + 바인딩. 셋이 항상 같이 간다.
+// 실패하면 handle이 VK_NULL_HANDLE인 채로 돌아온다.
+Buffer CreateBuffer(const VulkanDevice& dev,
+                    VkDeviceSize size,
+                    VkBufferUsageFlags usage,
+                    VkMemoryPropertyFlags memoryProperties) noexcept;
+
+void DestroyBuffer(const VulkanDevice& dev, Buffer* buffer) noexcept;
+
+// CPU 데이터를 GPU 전용 메모리에 올린다 (스테이징 경유).
+//
+// **왜 바로 못 올리나**: GPU가 가장 빠르게 읽는 메모리(DEVICE_LOCAL)는 보통 CPU가
+// 매핑할 수 없다. 그래서 CPU가 쓸 수 있는 임시 버퍼(스테이징)에 넣고, GPU에게
+// "저기서 여기로 복사해"라고 시킨다.
+//
+// 복사가 끝날 때까지 기다렸다가 스테이징을 버린다 - 초기화 경로라 기다려도 된다.
+Buffer CreateVertexBuffer(const VulkanDevice& dev,
+                          const Commands& commands,
+                          const void* data,
+                          VkDeviceSize size) noexcept;

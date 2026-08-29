@@ -58,7 +58,8 @@ void RecordFrame(const VolkDeviceTable& vk,
                  VkCommandBuffer cmd,
                  const SwapchainImage& target,
                  VkExtent2D extent,
-                 const Pipeline& pipeline) noexcept {
+                 const Pipeline& pipeline,
+                 const Buffer& vertexBuffer) noexcept {
     vk.vkResetCommandBuffer(cmd, 0);
 
     VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -117,8 +118,12 @@ void RecordFrame(const VolkDeviceTable& vk,
 
     vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.handle);
 
-    // 정점 3개, 인스턴스 1개. **정점 버퍼를 바인딩하지 않는다** -
-    // 셰이더가 gl_VertexIndex(0,1,2)로 상수 배열에서 꺼낸다.
+    // 정점 버퍼를 0번 슬롯에 건다. 파이프라인의 binding=0과 짝이다.
+    // offset은 버퍼 안에서 시작할 바이트 - 여러 메시를 한 버퍼에 담으면 여기가 달라진다.
+    const VkDeviceSize offset = 0;
+    vk.vkCmdBindVertexBuffers(cmd, 0, 1, &vertexBuffer.handle, &offset);
+
+    // 정점 3개, 인스턴스 1개.
     vk.vkCmdDraw(cmd, 3, 1, 0, 0);
 
     vk.vkCmdEndRendering(cmd);
@@ -178,6 +183,15 @@ int main() {
     Pipeline pipeline = CreateTrianglePipeline(dev, window.swapchain.format);
     if (pipeline.handle == VK_NULL_HANDLE) { return 1; }
 
+    // 정점 데이터. y-up 규약이고 감는 방향은 CCW(파이프라인 frontFace와 일치).
+    constexpr Vertex kTriangle[] = {
+        {{ 0.0f,  0.5f}, {1.0f, 0.0f, 0.0f}},   // 위      - 빨강
+        {{-0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},   // 왼쪽아래 - 초록
+        {{ 0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}},   // 오른쪽아래 - 파랑
+    };
+    Buffer vertexBuffer = CreateVertexBuffer(dev, commands, kTriangle, sizeof(kTriangle));
+    if (vertexBuffer.handle == VK_NULL_HANDLE) { return 1; }
+
     // ---- 루프 ----
     LOG("close the window to exit.\n");
 
@@ -215,7 +229,7 @@ int main() {
         dev.table.vkResetFences(dev.handle, 1, &frame.inFlight);
 
         // 4~11. 기록
-        RecordFrame(dev.table, frame.cmd, target, swapchain.extent, pipeline);
+        RecordFrame(dev.table, frame.cmd, target, swapchain.extent, pipeline, vertexBuffer);
 
         // 12. 제출
         // acquire가 끝나야 이미지에 쓸 수 있고(wait), 다 쓰면 present가 알아야 한다(signal).
@@ -265,6 +279,7 @@ int main() {
     // 이 열 줄이 "선언 순서"로 표현되고, 순서를 틀릴 방법 자체가 없어진다.
     dev.table.vkDeviceWaitIdle(dev.handle);   // GPU가 아직 작업 중일 수 있다
 
+    DestroyBuffer(dev, &vertexBuffer);
     DestroyPipeline(dev, &pipeline);
     DestroyFrame(dev, &frame);
     DestroyCommands(dev, &commands);   // 커맨드 버퍼도 풀과 함께 사라진다

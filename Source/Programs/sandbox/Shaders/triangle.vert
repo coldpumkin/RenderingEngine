@@ -1,39 +1,20 @@
 #version 450
 
-// 정점 버퍼가 없다. gl_VertexIndex(0,1,2)로 상수 배열에서 꺼낸다.
+// **정점 버퍼에서 읽는다.** 전에는 gl_VertexIndex로 상수 배열에서 꺼냈다.
 //
-// 이렇게 하는 이유: 정점 버퍼를 쓰려면 버퍼 생성 + 메모리 할당 + 업로드가 필요하고
-// 그건 전송 큐까지 끌고 온다. **먼저 삼각형이 뜨는 것을 확인하고**, 정점 버퍼는
-// 그다음에 넣는다.
+// location 번호는 C++의 VkVertexInputAttributeDescription::location과 짝이 맞아야 한다.
+// 어긋나면 컴파일도 되고 실행도 되는데 화면만 이상해진다 - 검증 레이어가 잡아주는
+// 몇 안 되는 경우이기도 하다.
 //
-// ---------------------------------------------------------------------------
-// **좌표 규약: y가 위로 향한다.**
-//
-// Vulkan의 기본 NDC는 y가 **아래로** 향한다 (OpenGL과 반대). 그런데 C++ 쪽에서
-// 뷰포트 height를 음수로 줘서 뒤집어놨다 - GLM 같은 수학 라이브러리가 y-up을
-// 가정하기 때문이고, 대부분의 엔진이 같은 선택을 한다.
-//
-// **그래서 여기 좌표도 y-up으로 적는다.** 둘이 어긋나면 화면이 뒤집힌다
-// (실제로 처음에 그렇게 나왔다).
-//
-// 감는 방향도 y-up 기준 반시계(CCW)다. 파이프라인의 frontFace가 CCW라서,
-// 나중에 뒷면 컬링을 켜도 이 삼각형은 앞면으로 남는다.
-// ---------------------------------------------------------------------------
-vec2 positions[3] = vec2[](
-    vec2( 0.0,  0.5),   // 위 꼭짓점
-    vec2(-0.5, -0.5),   // 왼쪽 아래
-    vec2( 0.5, -0.5)    // 오른쪽 아래
-);
-
-vec3 colors[3] = vec3[](
-    vec3(1.0, 0.0, 0.0),
-    vec3(0.0, 1.0, 0.0),
-    vec3(0.0, 0.0, 1.0)
-);
+// **좌표 규약: y가 위로 향한다.** Vulkan 기본 NDC는 y가 아래로 향하지만, C++ 쪽에서
+// 뷰포트 height를 음수로 줘서 뒤집어놨다 (GLM 같은 수학 라이브러리가 y-up을 가정하고
+// 대부분의 엔진이 같은 선택을 한다). 정점 데이터도 y-up으로 적는다.
+layout(location = 0) in vec2 inPosition;
+layout(location = 1) in vec3 inColor;
 
 layout(location = 0) out vec3 fragColor;
 
 void main() {
-    gl_Position = vec4(positions[gl_VertexIndex], 0.0, 1.0);
-    fragColor = colors[gl_VertexIndex];
+    gl_Position = vec4(inPosition, 0.0, 1.0);
+    fragColor = inColor;
 }

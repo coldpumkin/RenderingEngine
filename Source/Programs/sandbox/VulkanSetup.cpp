@@ -444,6 +444,9 @@ VulkanDevice CreateDevice(const VulkanInstance& inst,
     // 그래픽스 패밀리가 present를 지원하는 것은 PickPhysicalDevice가 이미 확인했다.
     dev.queues.present = dev.queues.graphics;
 
+    // 메모리 타입 목록을 여기서 한 번 물어 담는다 (인스턴스 레벨 조회다).
+    inst.table.vkGetPhysicalDeviceMemoryProperties(dev.gpu, &dev.memoryProperties);
+
     return dev;
 }
 
@@ -882,10 +885,36 @@ Pipeline CreateTrianglePipeline(const VulkanDevice& dev, VkFormat colorFormat) n
     stages[1].module = fs;
     stages[1].pName = "main";
 
-    // 정점 입력이 **비어 있다.** 정점 버퍼를 안 쓰고 셰이더가 gl_VertexIndex로
-    // 상수 배열에서 꺼내기 때문이다.
+    // ---- 정점 입력: GPU에게 "정점 데이터를 어떻게 읽어라"를 알려준다 ----
+    //
+    // binding  버퍼 슬롯 하나. stride는 한 정점의 크기, inputRate는 정점마다 넘길지
+    //          인스턴스마다 넘길지. 여러 버퍼로 나눠 담으면 binding이 늘어난다.
+    // attribute 그 안의 필드 하나. location은 셰이더의 layout(location=N) in과 짝이다.
+    //
+    // **format이 크기까지 정한다**: R32G32_SFLOAT = float 2개. 셰이더가 vec3으로 받아도
+    // 여기가 vec2면 z는 0이 된다 - 조용히 틀리는 자리라 offsetof로 묶어둔다.
+    VkVertexInputBindingDescription binding{};
+    binding.binding = 0;
+    binding.stride = sizeof(Vertex);
+    binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+    VkVertexInputAttributeDescription attributes[2]{};
+    attributes[0].location = 0;                             // layout(location = 0) in vec2
+    attributes[0].binding = 0;
+    attributes[0].format = VK_FORMAT_R32G32_SFLOAT;
+    attributes[0].offset = offsetof(Vertex, position);
+    attributes[1].location = 1;                             // layout(location = 1) in vec3
+    attributes[1].binding = 0;
+    attributes[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+    attributes[1].offset = offsetof(Vertex, color);
+
     VkPipelineVertexInputStateCreateInfo vertexInput{
         VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    vertexInput.vertexBindingDescriptionCount = 1;
+    vertexInput.pVertexBindingDescriptions = &binding;
+    vertexInput.vertexAttributeDescriptionCount =
+        static_cast<uint32_t>(std::size(attributes));
+    vertexInput.pVertexAttributeDescriptions = attributes;
 
     VkPipelineInputAssemblyStateCreateInfo inputAssembly{
         VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
@@ -993,3 +1022,194 @@ void DestroyPipeline(const VulkanDevice& dev, Pipeline* pipeline) noexcept {
 }
 
 // ============================================================================
+// ============================================================================
+// 9. 버퍼
+// ============================================================================
+
+uint32_t FindMemoryType(const VulkanDevice& dev,
+                        uint32_t typeBits,
+                        VkMemoryPropertyFlags required) noexcept {
+    // GPU가 가진 메모리 타입 목록. **하드웨어마다 완전히 다르다.**
+    //   외장 GPU: DEVICE_LOCAL(VRAM), HOST_VISIBLE(시스템 RAM),
+    //             둘 다인 것(리사이저블 BAR 구간, 보통 256MB 또는 전체)
+    //   내장 GPU: 대부분 DEVICE_LOCAL | HOST_VISIBLE (메모리를 CPU와 공유하므로)
+    const VkPhysicalDeviceMemoryProperties& memory = dev.memoryProperties;
+
+    for (uint32_t i = 0; i < memory.memoryTypeCount; ++i) {
+        // (a) 이 버퍼가 i번 타입에 놓일 수 있나 - **버퍼가 정한 제약**
+        const bool allowedByBuffer = (typeBits & (1u << i)) != 0;
+
+        // (b) i번 타입이 우리가 원하는 성질을 **전부** 가졌나 - **우리가 정한 요구**
+        const VkMemoryPropertyFlags flags = memory.memoryTypes[i].propertyFlags;
+        const bool hasRequired = (flags & required) == required;
+
+        if (allowedByBuffer && hasRequired) {
+            return i;
+        }
+    }
+
+    LOG("[vk] no memory type for typeBits=0x%x required=0x%x\n", typeBits, required);
+    return UINT32_MAX;
+}
+
+Buffer CreateBuffer(const VulkanDevice& dev,
+                    VkDeviceSize size,
+                    VkBufferUsageFlags usage,
+                    VkMemoryPropertyFlags memoryProperties) noexcept {
+    Buffer buffer;
+
+    VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    info.size = size;
+    info.usage = usage;
+    // EXCLUSIVE: 한 번에 한 큐 패밀리만 소유한다. 다른 패밀리가 쓰려면 소유권을
+    // 명시적으로 넘겨야 한다. 지금은 그래픽스 큐만 만지므로 넘길 일이 없다.
+    info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    if (dev.table.vkCreateBuffer(dev.handle, &info, nullptr, &buffer.handle) != VK_SUCCESS) {
+        LOG("[vk] vkCreateBuffer failed\n");
+        return Buffer{};
+    }
+
+    // **버퍼를 만들었다고 메모리가 붙은 게 아니다.** 여기서 요구사항을 물어본다:
+    //   size          실제 필요한 크기 (정렬 때문에 요청보다 클 수 있다)
+    //   alignment     시작 주소 정렬
+    //   memoryTypeBits 놓을 수 있는 타입들
+    VkMemoryRequirements requirements{};
+    dev.table.vkGetBufferMemoryRequirements(dev.handle, buffer.handle, &requirements);
+
+    const uint32_t typeIndex =
+        FindMemoryType(dev, requirements.memoryTypeBits, memoryProperties);
+    if (typeIndex == UINT32_MAX) {
+        dev.table.vkDestroyBuffer(dev.handle, buffer.handle, nullptr);
+        return Buffer{};
+    }
+
+    // **실제 할당.** 여기가 VMA가 대신하게 될 자리다 - VMA는 큰 덩어리를 미리 잡아두고
+    // 그 안에서 잘라 쓴다. vkAllocateMemory는 호출 횟수에 상한이 있어서
+    // (maxMemoryAllocationCount, 보통 4096) 버퍼마다 부르면 금방 바닥난다.
+    VkMemoryAllocateInfo allocInfo{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    allocInfo.allocationSize = requirements.size;
+    allocInfo.memoryTypeIndex = typeIndex;
+
+    if (dev.table.vkAllocateMemory(dev.handle, &allocInfo, nullptr, &buffer.memory)
+            != VK_SUCCESS) {
+        LOG("[vk] vkAllocateMemory failed (%llu bytes)\n",
+            static_cast<unsigned long long>(requirements.size));
+        dev.table.vkDestroyBuffer(dev.handle, buffer.handle, nullptr);
+        return Buffer{};
+    }
+
+    // 버퍼와 메모리를 잇는다. 이제야 쓸 수 있다.
+    if (dev.table.vkBindBufferMemory(dev.handle, buffer.handle, buffer.memory, 0)
+            != VK_SUCCESS) {
+        LOG("[vk] vkBindBufferMemory failed\n");
+        dev.table.vkFreeMemory(dev.handle, buffer.memory, nullptr);
+        dev.table.vkDestroyBuffer(dev.handle, buffer.handle, nullptr);
+        return Buffer{};
+    }
+
+    buffer.size = size;
+    return buffer;
+}
+
+void DestroyBuffer(const VulkanDevice& dev, Buffer* buffer) noexcept {
+    // **순서가 있다**: 버퍼를 먼저 부수고 메모리를 반납한다.
+    // 메모리를 먼저 반납하면 버퍼가 없는 메모리를 가리키게 된다.
+    if (buffer->handle != VK_NULL_HANDLE) {
+        dev.table.vkDestroyBuffer(dev.handle, buffer->handle, nullptr);
+    }
+    if (buffer->memory != VK_NULL_HANDLE) {
+        dev.table.vkFreeMemory(dev.handle, buffer->memory, nullptr);
+    }
+    *buffer = Buffer{};
+}
+
+Buffer CreateVertexBuffer(const VulkanDevice& dev,
+                          const Commands& commands,
+                          const void* data,
+                          VkDeviceSize size) noexcept {
+    // ---- 1. 스테이징: CPU가 쓸 수 있는 임시 버퍼 ----
+    //
+    // HOST_VISIBLE   vkMapMemory로 CPU 주소를 얻을 수 있다
+    // HOST_COHERENT  CPU가 쓴 것이 GPU에게 자동으로 보인다.
+    //                없으면 vkFlushMappedMemoryRanges를 직접 불러야 한다
+    Buffer staging = CreateBuffer(dev, size,
+                                  VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+                                      | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (staging.handle == VK_NULL_HANDLE) { return Buffer{}; }
+
+    void* mapped = nullptr;
+    if (dev.table.vkMapMemory(dev.handle, staging.memory, 0, size, 0, &mapped) != VK_SUCCESS) {
+        LOG("[vk] vkMapMemory failed\n");
+        DestroyBuffer(dev, &staging);
+        return Buffer{};
+    }
+    std::memcpy(mapped, data, static_cast<size_t>(size));
+    dev.table.vkUnmapMemory(dev.handle, staging.memory);
+
+    // ---- 2. 목적지: GPU 전용 메모리 ----
+    //
+    // DEVICE_LOCAL은 GPU가 가장 빠르게 읽는 메모리다. 대신 CPU가 매핑할 수 없는 것이
+    // 보통이라(외장 GPU의 VRAM) 스테이징을 거쳐야 한다.
+    // TRANSFER_DST: 복사의 목적지가 될 수 있다고 미리 알려준다.
+    Buffer vertexBuffer = CreateBuffer(dev, size,
+                                       VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
+                                           | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                       VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (vertexBuffer.handle == VK_NULL_HANDLE) {
+        DestroyBuffer(dev, &staging);
+        return Buffer{};
+    }
+
+    // ---- 3. GPU에게 복사를 시킨다 ----
+    //
+    // **그래픽스 큐를 쓴다. 전송 큐가 아니다.**
+    // 전송 큐의 값어치는 그리는 동안 **동시에** 올리는 것인데, 이건 루프가 시작하기 전
+    // 한 번뿐이라 겹칠 대상이 없다. 반면 큐를 바꾸면 **큐 패밀리 소유권 이전**
+    // (release/acquire 배리어 한 쌍)이 필요해진다 - 얻는 것 없이 비용만 낸다.
+    //
+    // 전송 큐는 **그리는 중에 올려야 할 때** 값을 한다. 그때 옮긴다.
+    VkCommandBufferAllocateInfo allocInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    allocInfo.commandPool = commands.graphics;
+    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocInfo.commandBufferCount = 1;
+
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    if (dev.table.vkAllocateCommandBuffers(dev.handle, &allocInfo, &cmd) != VK_SUCCESS) {
+        LOG("[vk] vkAllocateCommandBuffers(upload) failed\n");
+        DestroyBuffer(dev, &vertexBuffer);
+        DestroyBuffer(dev, &staging);
+        return Buffer{};
+    }
+
+    VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    dev.table.vkBeginCommandBuffer(cmd, &beginInfo);
+
+    VkBufferCopy region{};
+    region.size = size;
+    dev.table.vkCmdCopyBuffer(cmd, staging.handle, vertexBuffer.handle, 1, &region);
+
+    dev.table.vkEndCommandBuffer(cmd);
+
+    // 복사가 끝날 때까지 기다린다. **초기화 경로라 기다려도 된다** -
+    // 매 프레임이면 펜스로 넘겨받아야 하지만 여기는 한 번뿐이다.
+    VkCommandBufferSubmitInfo cmdInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
+    cmdInfo.commandBuffer = cmd;
+
+    VkSubmitInfo2 submit{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
+    submit.commandBufferInfoCount = 1;
+    submit.pCommandBufferInfos = &cmdInfo;
+
+    dev.table.vkQueueSubmit2(dev.queues.graphics, 1, &submit, VK_NULL_HANDLE);
+    dev.table.vkQueueWaitIdle(dev.queues.graphics);
+
+    // ---- 4. 뒷정리 ----
+    dev.table.vkFreeCommandBuffers(dev.handle, commands.graphics, 1, &cmd);
+    DestroyBuffer(dev, &staging);
+
+    LOG("[vk] vertex buffer ready (%llu bytes, device-local)\n",
+        static_cast<unsigned long long>(size));
+    return vertexBuffer;
+}
