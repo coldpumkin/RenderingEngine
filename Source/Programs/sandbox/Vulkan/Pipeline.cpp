@@ -99,9 +99,9 @@ bool CreateTrianglePipeline(const VulkanDevice& dev, VkFormat colorFormat,
     binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
     VkVertexInputAttributeDescription attributes[2]{};
-    attributes[0].location = 0;                             // layout(location = 0) in vec2
+    attributes[0].location = 0;                             // layout(location = 0) in vec3
     attributes[0].binding = 0;
-    attributes[0].format = VK_FORMAT_R32G32_SFLOAT;
+    attributes[0].format = VK_FORMAT_R32G32B32_SFLOAT;      // 뎁스가 생기며 vec2 -> vec3
     attributes[0].offset = offsetof(Vertex, position);
     attributes[1].location = 1;                             // layout(location = 1) in vec3
     attributes[1].binding = 0;
@@ -161,6 +161,25 @@ bool CreateTrianglePipeline(const VulkanDevice& dev, VkFormat colorFormat,
     colorBlend.attachmentCount = 1;
     colorBlend.pAttachments = &blendAttachment;
 
+    // ---- 뎁스 테스트 ----
+    //
+    // 이게 없으면(pDepthStencilState = nullptr) 뎁스 첨부를 붙여도 아무 일도 안 일어난다.
+    //
+    // **compareOp = LESS + 클리어 값 1.0**: 뎁스는 0(가까움)~1(멈)이고, 새 픽셀의 깊이가
+    // 기존보다 **작을 때만** 통과한다. 그래서 가까운 것이 먼 것을 덮는다.
+    // (역방향 뎁스 - 1.0으로 클리어하지 않고 GREATER를 쓰는 - 는 부동소수 정밀도가
+    //  0 근처에 몰리는 것을 먼 쪽에 쓰는 기법인데, 지금 필요하지 않다.)
+    //
+    // **depthWriteEnable**: 통과한 픽셀이 자기 깊이를 기록한다. 반투명을 그릴 때는
+    // 이걸 끄고 정렬해서 그린다 - 그때 이 두 스위치가 갈린다.
+    VkPipelineDepthStencilStateCreateInfo depthStencil{
+        VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+    depthStencil.depthTestEnable = VK_TRUE;
+    depthStencil.depthWriteEnable = VK_TRUE;
+    depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+    depthStencil.depthBoundsTestEnable = VK_FALSE;
+    depthStencil.stencilTestEnable = VK_FALSE;
+
     // 레이아웃: 셰이더가 받는 외부 자원(유니폼, 푸시 상수)의 모양.
     // **지금은 비어 있다** - 셰이더가 아무것도 안 받는다. 그래도 만들어야 한다.
     VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
@@ -178,6 +197,9 @@ bool CreateTrianglePipeline(const VulkanDevice& dev, VkFormat colorFormat,
         VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
     pipelineRendering.colorAttachmentCount = 1;
     pipelineRendering.pColorAttachmentFormats = &colorFormat;
+    // 뎁스도 여기 적는다. **RecordFrame이 붙이는 뎁스 뷰의 포맷과 같아야 한다** -
+    // 어긋나면 파이프라인 생성이 아니라 렌더링 시점에 검증 레이어가 잡는다.
+    pipelineRendering.depthAttachmentFormat = dev.depthFormat;
 
     VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
     info.pNext = &pipelineRendering;
@@ -188,6 +210,7 @@ bool CreateTrianglePipeline(const VulkanDevice& dev, VkFormat colorFormat,
     info.pViewportState = &viewportState;
     info.pRasterizationState = &rasterization;
     info.pMultisampleState = &multisample;
+    info.pDepthStencilState = &depthStencil;
     info.pColorBlendState = &colorBlend;
     info.pDynamicState = &dynamicState;
     info.layout = pipeline.layout;

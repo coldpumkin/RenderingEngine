@@ -48,6 +48,13 @@ Swapchain::~Swapchain() {
         d.table.vkDestroyImageView(d.handle, img.view, nullptr);
         // img.image는 파괴하지 않는다 - vkGetSwapchainImagesKHR로 **조회**한 것이고
         // 스왑체인이 소유한다.
+
+        // **뎁스는 반대다. 우리가 만들었으니 우리가 지운다.**
+        // 뷰를 먼저, 그다음 이미지+메모리 (vmaDestroyImage가 둘을 같이 놓는다).
+        d.table.vkDestroyImageView(d.handle, img.depthView, nullptr);
+        if (img.depthImage != VK_NULL_HANDLE) {
+            vmaDestroyImage(d.allocator, img.depthImage, img.depthAllocation);
+        }
     }
     images.clear();
 
@@ -217,6 +224,54 @@ bool CreateSwapchain(const VulkanInstance& inst,
         if (semResult != VK_SUCCESS) {
             LOG("[vk] vkCreateSemaphore failed on image %u (%d)\n", i, semResult);
                 return false;
+        }
+
+        // ---- 뎁스 이미지 ----
+        //
+        // 색 이미지와 달리 **우리가 만들고 우리가 메모리를 붙인다.** 스왑체인이 주는
+        // 것이 아니다. vmaCreateImage가 생성 + 할당 + 바인딩을 한 번에 한다.
+        //
+        // 여기 인라인으로 쓴 이유: 이미지를 만드는 곳이 지금 여기뿐이다. **텍스처가
+        // 들어오면 두 번째 사용자가 생기고, 그때가 Image 개념을 빼낼 때다.**
+        VkImageCreateInfo depthInfo{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+        depthInfo.imageType = VK_IMAGE_TYPE_2D;
+        depthInfo.format = dev.depthFormat;
+        depthInfo.extent = VkExtent3D{sc.extent.width, sc.extent.height, 1};
+        depthInfo.mipLevels = 1;
+        depthInfo.arrayLayers = 1;
+        depthInfo.samples = VK_SAMPLE_COUNT_1_BIT;   // 파이프라인의 MSAA 설정과 맞아야 한다
+        depthInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        depthInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+        depthInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+        // GPU만 읽고 쓴다. CPU가 볼 일이 없으므로 DEVICE_LOCAL이면 된다.
+        VmaAllocationCreateInfo depthAlloc{};
+        depthAlloc.usage = VMA_MEMORY_USAGE_AUTO;
+        depthAlloc.priority = 1.0f;   // 렌더 타겟이다. 쫓겨나면 매 프레임 손해다
+
+        const VkResult depthResult =
+            vmaCreateImage(dev.allocator, &depthInfo, &depthAlloc,
+                           &sc.images[i].depthImage, &sc.images[i].depthAllocation, nullptr);
+        if (depthResult != VK_SUCCESS) {
+            LOG("[vk] vmaCreateImage(depth) failed on image %u (%d)\n", i, depthResult);
+            return false;
+        }
+
+        VkImageViewCreateInfo depthViewInfo{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+        depthViewInfo.image = sc.images[i].depthImage;
+        depthViewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        depthViewInfo.format = dev.depthFormat;
+        // **DEPTH만 켠다.** 고른 포맷에 스텐실이 붙어 있어도 우리는 안 쓴다.
+        depthViewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        depthViewInfo.subresourceRange.levelCount = 1;
+        depthViewInfo.subresourceRange.layerCount = 1;
+
+        const VkResult depthViewResult =
+            dev.table.vkCreateImageView(dev.handle, &depthViewInfo, nullptr,
+                                        &sc.images[i].depthView);
+        if (depthViewResult != VK_SUCCESS) {
+            LOG("[vk] vkCreateImageView(depth) failed on image %u (%d)\n", i, depthViewResult);
+            return false;
         }
     }
 

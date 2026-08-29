@@ -62,7 +62,9 @@ struct Buffer {
 // GPU가 이 구조체를 어떻게 읽을지는 파이프라인의 vertexInput이 정한다 -
 // stride(한 정점의 크기)와 각 필드의 offset·format을 거기서 알려준다.
 struct Vertex {
-    float position[2];   // vec2 -> VK_FORMAT_R32G32_SFLOAT
+    // z가 생겼다. **뎁스 테스트가 비교하는 값이 이것**이고, 0(가까움)~1(멈) 범위다.
+    // 이 범위 밖은 잘려 나간다 (파이프라인의 minDepth/maxDepth가 0~1이다).
+    float position[3];   // vec3 -> VK_FORMAT_R32G32B32_SFLOAT
     float color[3];      // vec3 -> VK_FORMAT_R32G32B32_SFLOAT
 };
 

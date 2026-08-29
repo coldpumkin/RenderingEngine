@@ -35,7 +35,10 @@
 // GPU 이미지는 **용도마다 내부 배치가 다르다.** "렌더 타겟으로 쓸 때 빠른 배치"와
 // "화면에 내보낼 때의 배치"가 다르고, 그 사이를 명시적으로 바꿔줘야 한다.
 // 배리어는 그 전환과 함께 **메모리 가시성**(앞의 쓰기가 뒤의 읽기에 보이는가)도 처리한다.
+// aspect가 인자로 올라온 이유: 뎁스 이미지는 COLOR가 아니라 DEPTH로 전이해야 한다.
+// 배리어 셋 중 둘이 색, 하나가 뎁스다.
 void RecordLayoutTransition(const VolkDeviceTable& vk, VkCommandBuffer cmd, VkImage image,
+                            VkImageAspectFlags aspect,
                             VkPipelineStageFlags2 srcStage, VkAccessFlags2 srcAccess,
                             VkPipelineStageFlags2 dstStage, VkAccessFlags2 dstAccess,
                             VkImageLayout oldLayout, VkImageLayout newLayout) noexcept {
@@ -49,7 +52,7 @@ void RecordLayoutTransition(const VolkDeviceTable& vk, VkCommandBuffer cmd, VkIm
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.image = image;
-    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.aspectMask = aspect;
     barrier.subresourceRange.levelCount = 1;
     barrier.subresourceRange.layerCount = 1;
 
@@ -61,9 +64,13 @@ void RecordLayoutTransition(const VolkDeviceTable& vk, VkCommandBuffer cmd, VkIm
 
 // 프레임의 6~11단계: 배리어 -> 렌더링 시작 -> **드로우** -> 렌더링 끝 -> 배리어 -> 기록 끝.
 //
-// **인자가 넷뿐인 것에 주목.** 동기화(펜스·세마포어·acquire·present)가 하나도 안 들어온다 -
-// 그건 전부 main()의 루프에 남아 있다. 기록과 동기화는 서로 모르는 채로 돌아간다.
-// 이게 나중에 "기록하는 쪽"과 "제출하는 쪽"이 갈리는 선이다.
+// **동기화(펜스·세마포어·acquire·present)가 하나도 안 들어온다** - 그건 전부
+// BeginFrame/EndFrame에 있다. 기록과 동기화는 서로 모르는 채로 돌아간다.
+// 이게 "기록하는 쪽"과 "제출하는 쪽"이 갈리는 선이다.
+//
+// 뎁스가 들어와도 **인자가 안 늘었다.** 뎁스 이미지·뷰가 SwapchainImage 안에 있어서
+// target 하나로 같이 온다. 자원을 수명이 같은 것끼리 묶어두면 이런 게 공짜가 된다.
+// (인자 묶기 트리거는 아직 안 울렸다.)
 // **bool인 이유**: vkBegin/EndCommandBuffer는 실패할 수 있고(메모리 부족), 실패하면
 // 커맨드 버퍼가 무효 상태다. 그걸 제출하는 것은 스펙 위반이라 호출자가 알아야 한다.
 bool RecordFrame(const VolkDeviceTable& vk,
@@ -90,12 +97,27 @@ bool RecordFrame(const VolkDeviceTable& vk,
     // ---- 그릴 수 있는 레이아웃으로 ----
     // oldLayout이 UNDEFINED인 것은 이전 내용을 안 쓰기 때문이다 - 어차피 loadOp=CLEAR로
     // 덮는다. 보존을 요구하면 드라이버가 실제로 복사를 해야 한다.
-    RecordLayoutTransition(vk, cmd, target.image,
+    RecordLayoutTransition(vk, cmd, target.image, VK_IMAGE_ASPECT_COLOR_BIT,
                            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                            VK_IMAGE_LAYOUT_UNDEFINED,
                            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+
+    // ---- 뎁스도 쓸 수 있는 레이아웃으로 ----
+    //
+    // **스테이지가 색과 다르다.** 뎁스 테스트는 프래그먼트 셰이더 앞뒤(EARLY/LATE
+    // FRAGMENT_TESTS)에서 일어나고, 색 쓰기(COLOR_ATTACHMENT_OUTPUT)보다 앞이다.
+    // 색 배리어의 스테이지를 그대로 쓰면 뎁스 쓰기가 배리어보다 먼저 일어날 수 있다.
+    //
+    // oldLayout이 UNDEFINED인 것은 색과 같은 이유다 - loadOp=CLEAR로 어차피 덮는다.
+    RecordLayoutTransition(vk, cmd, target.depthImage, VK_IMAGE_ASPECT_DEPTH_BIT,
+                           VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                           VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT
+                               | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                           VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                           VK_IMAGE_LAYOUT_UNDEFINED,
+                           VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
 
     // ---- 렌더링 시작 ----
     // 다이나믹 렌더링: VkRenderPass/VkFramebuffer 객체를 미리 만들지 않는다.
@@ -106,11 +128,24 @@ bool RecordFrame(const VolkDeviceTable& vk,
     color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     color.clearValue.color = VkClearColorValue{{0.0f, 0.0f, 0.0f, 1.0f}};
 
+    // **뎁스 클리어 값은 1.0** - "가장 멈". 파이프라인의 compareOp=LESS와 짝이다.
+    // 0.0으로 클리어하면 아무것도 통과하지 못해 화면이 빈다.
+    //
+    // storeOp가 DONT_CARE인 이유: 뎁스는 이 프레임 안에서만 쓰인다. 다음 프레임에
+    // 필요하면(SSAO 같은 후처리) STORE로 바꿔야 한다.
+    VkRenderingAttachmentInfo depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    depth.imageView = target.depthView;
+    depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depth.clearValue.depthStencil.depth = 1.0f;
+
     VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
     rendering.renderArea.extent = extent;
     rendering.layerCount = 1;
     rendering.colorAttachmentCount = 1;
     rendering.pColorAttachments = &color;
+    rendering.pDepthAttachment = &depth;
 
     vk.vkCmdBeginRendering(cmd, &rendering);
 
@@ -143,13 +178,15 @@ bool RecordFrame(const VolkDeviceTable& vk,
     const VkDeviceSize offset = 0;
     vk.vkCmdBindVertexBuffers(cmd, 0, 1, &vertexBuffer.handle, &offset);
 
-    // 정점 3개, 인스턴스 1개.
-    vk.vkCmdDraw(cmd, 3, 1, 0, 0);
+    // 정점 6개 = 삼각형 2개, 인스턴스 1개. 한 드로우콜로 둘 다 나간다.
+    vk.vkCmdDraw(cmd, 6, 1, 0, 0);
 
     vk.vkCmdEndRendering(cmd);
 
     // ---- present 가능한 레이아웃으로 ----
-    RecordLayoutTransition(vk, cmd, target.image,
+    // **뎁스는 여기서 전이하지 않는다.** present는 색 이미지만 본다. 뎁스는 다음 프레임에
+    // 다시 UNDEFINED에서 시작하므로 되돌릴 이유가 없다.
+    RecordLayoutTransition(vk, cmd, target.image, VK_IMAGE_ASPECT_COLOR_BIT,
                            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                            VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0,
@@ -221,13 +258,28 @@ int main() {
     // 포맷이 창에 있으므로 스왑체인을 기다릴 필요가 없다.
     if (!CreateTrianglePipeline(dev, window.surfaceFormat.format, &pipeline)) { return 1; }
 
-    // 정점 데이터. y-up 규약이고 감는 방향은 CCW(파이프라인 frontFace와 일치).
-    constexpr Vertex kTriangle[] = {
-        {{ 0.0f,  0.5f}, {1.0f, 0.0f, 0.0f}},   // 위        - 빨강
-        {{-0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},   // 왼쪽아래   - 초록
-        {{ 0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}},   // 오른쪽아래 - 파랑
+    // 정점 데이터. y-up 규약이다.
+    //
+    // **삼각형 둘을 겹치게 두고, 그리는 순서를 깊이 순서와 반대로 만들었다.**
+    // 이게 뎁스 테스트가 실제로 도는지 보는 방법이다:
+    //
+    //   뎁스 켜짐 -> 겹친 곳이 **초록**(가까운 쪽). 나중에 그린 빨강이 밀려난다
+    //   뎁스 꺼짐 -> 겹친 곳이 **빨강**(나중에 그린 쪽). 덮어쓰기만 일어난다
+    //
+    // 삼각형 하나로는 이 차이가 안 보인다. 전에 z를 전부 0으로 두고도 잘 그려졌던
+    // 이유이기도 하다.
+    constexpr Vertex kTriangles[] = {
+        // 가까움 (z=0.25), 먼저 그린다 - 초록
+        {{-0.7f,  0.5f, 0.25f}, {0.1f, 0.9f, 0.2f}},
+        {{-0.7f, -0.5f, 0.25f}, {0.1f, 0.9f, 0.2f}},
+        {{ 0.3f,  0.0f, 0.25f}, {0.1f, 0.9f, 0.2f}},
+
+        // 멈 (z=0.75), 나중에 그린다 - 빨강
+        {{ 0.7f,  0.5f, 0.75f}, {0.9f, 0.2f, 0.1f}},
+        {{-0.3f,  0.0f, 0.75f}, {0.9f, 0.2f, 0.1f}},
+        {{ 0.7f, -0.5f, 0.75f}, {0.9f, 0.2f, 0.1f}},
     };
-    if (!CreateVertexBuffer(dev, commands, kTriangle, sizeof(kTriangle), &vertexBuffer)) {
+    if (!CreateVertexBuffer(dev, commands, kTriangles, sizeof(kTriangles), &vertexBuffer)) {
         return 1;
     }
 
