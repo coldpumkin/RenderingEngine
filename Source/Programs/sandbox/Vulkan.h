@@ -439,6 +439,26 @@ struct Commands {
 
 bool CreateCommands(const VulkanDevice& dev, Commands* out) noexcept;
 
+// **CPU가 GPU보다 몇 프레임 앞서갈 수 있나.**
+//
+// 1이면 매 프레임 CPU가 GPU를 기다린다 - 제출하고, 끝나기를 기다리고, 다음을 준비한다.
+// 2면 GPU가 N번 프레임을 그리는 동안 CPU가 N+1번을 준비할 수 있다.
+//
+// **늘리면 그만큼 자원이 배로 든다** - 커맨드 버퍼, acquire 세마포어, 펜스가 각각
+// 이 수만큼 필요하다. 그게 Frame이 한 벌인 이유다.
+//
+// 3 이상은 지연(입력 -> 화면)이 늘어나는 대신 얻는 게 적어서 잘 안 쓴다.
+constexpr uint32_t kFramesInFlight = 2;
+
+// **스왑체인 이미지를 몇 장 요청할까.** frames-in-flight와 다른 축이다:
+//
+//   frames-in-flight  CPU가 GPU보다 몇 프레임 앞설 수 있나  (펜스가 막는다)
+//   이미지 개수        프레젠테이션 엔진이 몇 장을 돌리나    (acquire가 막는다)
+//
+// 실측상 프레임 시간의 90% 이상이 acquire에서 나오므로, 이쪽이 더 큰 손잡이다.
+// **요청값일 뿐이다** - caps.minImageCount 아래로는 못 가고 드라이버가 더 줄 수도 있다.
+constexpr uint32_t kDesiredSwapchainImages = 3;
+
 struct Frame {
     const VulkanDevice* dev = nullptr;   // 파괴에 필요한 비소유 상태
 

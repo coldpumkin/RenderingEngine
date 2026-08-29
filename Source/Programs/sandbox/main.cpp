@@ -17,6 +17,8 @@
 
 #include <GLFW/glfw3.h>
 
+#include <chrono>
+
 // 8. 한 프레임 기록하기
 // ============================================================================
 
@@ -162,7 +164,7 @@ int main() {
     VulkanDevice   dev;
     Window         window;         // 스왑체인을 품는다 -> dev보다 먼저 죽어야 한다
     Commands       commands;
-    Frame          frame;
+    Frame          frames[kFramesInFlight];   // **한 벌씩. 배열이 된 게 전부다**
     Pipeline       pipeline;
     Buffer         vertexBuffer;   // 파괴: 첫 번째
 
@@ -188,8 +190,10 @@ int main() {
     // 큐 패밀리마다 풀 하나. 디바이스 수명이다.
     if (!CreateCommands(dev, &commands)) { return 1; }
 
-    // frames-in-flight마다 한 벌. 지금은 1이라 하나다.
-    if (!CreateFrame(dev, commands, &frame)) { return 1; }
+    // frames-in-flight마다 한 벌.
+    for (Frame& f : frames) {
+        if (!CreateFrame(dev, commands, &f)) { return 1; }
+    }
 
     // 파이프라인은 **포맷**에 묶인다 (크기는 동적 상태라 안 묶인다).
     // 포맷이 창에 있으므로 스왑체인을 기다릴 필요가 없다.
@@ -212,6 +216,16 @@ int main() {
     // ---- 루프 ----
     LOG("close the window to exit.\n");
 
+    // 어느 프레임 자원 한 벌을 쓸 차례인가. 매 프레임 돌아간다.
+    uint32_t frameIndex = 0;
+
+    // [임시 계측] "frames-in-flight를 늘리면 뭐가 좋아지나"를 재기 위한 것.
+    // 런타임 경로에 로그가 들어가지만 초당 한 번으로 묶어서 폭주하지 않는다.
+    uint64_t frameCount = 0;
+    double fenceSeconds = 0.0;
+    double acquireSeconds = 0.0;
+    auto reportAt = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+
     while (glfwWindowShouldClose(window.handle) == 0) {
         glfwPollEvents();
 
@@ -221,13 +235,24 @@ int main() {
         }
         Swapchain& swapchain = *window.swapchain;
 
+        Frame& frame = frames[frameIndex];
+
         // 1. 이전 프레임이 끝나기를 기다린다 (GPU -> CPU)
+        //
+        // **여기가 frames-in-flight의 값어치가 드러나는 자리다.** 1이면 바로 직전
+        // 프레임을 기다리고, 2면 두 프레임 전 것을 기다린다 - 그동안 GPU가 앞선다.
+        const auto waitBegin = std::chrono::steady_clock::now();
         dev.table.vkWaitForFences(dev.handle, 1, &frame.inFlight, VK_TRUE, UINT64_MAX);
+        fenceSeconds += std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - waitBegin).count();
 
         // 2. 이미지를 하나 빌린다
         uint32_t imageIndex = 0;
+        const auto acquireBegin = std::chrono::steady_clock::now();
         const VkResult acquired = dev.table.vkAcquireNextImageKHR(
             dev.handle, swapchain.handle, UINT64_MAX, frame.imageAvailable, VK_NULL_HANDLE, &imageIndex);
+        acquireSeconds += std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - acquireBegin).count();
 
         if (acquired == VK_ERROR_OUT_OF_DATE_KHR) {
             window.swapchainOutOfDate = true;
@@ -287,6 +312,22 @@ int main() {
         const VkResult presented = dev.table.vkQueuePresentKHR(dev.queues.present, &present);
         if (presented == VK_ERROR_OUT_OF_DATE_KHR || presented == VK_SUBOPTIMAL_KHR) {
             window.swapchainOutOfDate = true;
+        }
+
+        // 다음 차례. **이 한 줄이 frames-in-flight를 돌리는 전부다.**
+        frameIndex = (frameIndex + 1) % kFramesInFlight;
+
+        // [임시 계측] 초당 한 번
+        ++frameCount;
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= reportAt) {
+            LOG("[perf] in-flight=%u | %llu fps | fence %.1f%% | acquire %.1f%%\n",
+                kFramesInFlight, static_cast<unsigned long long>(frameCount),
+                fenceSeconds * 100.0, acquireSeconds * 100.0);
+            frameCount = 0;
+            fenceSeconds = 0.0;
+            acquireSeconds = 0.0;
+            reportAt = now + std::chrono::seconds(1);
         }
     }
 

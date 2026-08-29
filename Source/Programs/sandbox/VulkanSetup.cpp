@@ -652,7 +652,10 @@ bool CreateSwapchain(const VulkanInstance& inst,
 
     // 이미지 개수: 최소보다 하나 더 요청한다. 최소만 요청하면 드라이버가 다음 이미지를
     // 내줄 때까지 매번 기다리게 된다. maxImageCount == 0은 "상한 없음"이라 클램프에서 뺀다.
-    uint32_t imageCount = caps.minImageCount + 1;
+    // 요청값을 하드웨어가 허용하는 범위로 클램프한다.
+    // maxImageCount == 0은 "상한 없음"이라 클램프에서 뺀다.
+    uint32_t imageCount = kDesiredSwapchainImages;
+    if (imageCount < caps.minImageCount) { imageCount = caps.minImageCount; }
     if (caps.maxImageCount > 0 && imageCount > caps.maxImageCount) {
         imageCount = caps.maxImageCount;
     }
@@ -754,8 +757,9 @@ bool CreateSwapchain(const VulkanInstance& inst,
         }
     }
 
-    LOG("[vk] swapchain %ux%u, %u images, format %d, FIFO\n",
-        sc.extent.width, sc.extent.height, actualCount, static_cast<int>(sc.format));
+    LOG("[vk] swapchain %ux%u, %u images (min %u), format %d, FIFO\n",
+        sc.extent.width, sc.extent.height, actualCount, caps.minImageCount,
+        static_cast<int>(sc.format));
     return true;
 }
 
