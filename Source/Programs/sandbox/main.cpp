@@ -240,14 +240,19 @@ int main() {
         const Frame& frame = frames[frameIndex];
 
         FrameTarget target;
-        if (!BeginFrame(inst, dev, &window, frame, &target)) {
+        if (!BeginFrame(dev, &window, frame, &target)) {
             continue;   // 지금 그릴 곳이 없다. 실패가 아니다
         }
 
         RecordFrame(dev.table, frame.cmd, *target.image, target.extent,
                     pipeline, vertexBuffer);
 
-        EndFrame(dev, &window, frame, target);
+        // **여기는 continue가 아니라 break다.** 제출이 실패하면 이 프레임의 펜스를
+        // 신호할 사람이 없어 다음 순회가 영원히 걸린다. 게다가 실패 사유는
+        // OUT_OF_MEMORY / DEVICE_LOST뿐이라 다음 프레임을 시도할 상황이 아니다.
+        if (!EndFrame(dev, &window, frame, target)) {
+            break;
+        }
 
         frameIndex = (frameIndex + 1) % kFramesInFlight;
     }

@@ -49,6 +49,8 @@ bool CreateSwapchain(const VulkanInstance& inst,
 
 // 그릴 곳을 보장한다. 낡았거나 없으면 다시 만든다.
 // **false는 실패가 아니라 "지금은 그릴 곳이 없다"** (최소화 중)이다.
-bool EnsureSwapchain(const VulkanInstance& inst,
-                     const VulkanDevice& dev,
-                     Window* window) noexcept;
+//
+// **인스턴스를 인자로 받지 않는다.** window가 이미 자기를 만든 인스턴스를 들고 있다.
+// 밖에서 또 받으면 *다른* 인스턴스를 넘길 수 있는 구멍이 생기는데, 그건 컴파일러가
+// 못 잡는다. 아예 안 받으면 그 실수가 불가능해진다.
+bool EnsureSwapchain(const VulkanDevice& dev, Window* window) noexcept;

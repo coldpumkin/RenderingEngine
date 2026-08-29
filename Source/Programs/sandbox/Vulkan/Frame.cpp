@@ -45,8 +45,7 @@ Frame::~Frame() {
 // 프레임 여닫기 - **동기화만 있고 그리는 것은 하나도 없다**
 // ============================================================================
 
-bool BeginFrame(const VulkanInstance& inst,
-                const VulkanDevice& dev,
+bool BeginFrame(const VulkanDevice& dev,
                 Window* window,
                 const Frame& frame,
                 FrameTarget* out) noexcept {
@@ -54,7 +53,7 @@ bool BeginFrame(const VulkanInstance& inst,
 
     // ---- 0. 그릴 곳 확보 ----
     // 리사이즈 통보는 창 콜백이 window에 직접 세워놨다.
-    if (!EnsureSwapchain(inst, dev, window)) {
+    if (!EnsureSwapchain(dev, window)) {
         return false;   // 최소화 중. 이번 프레임은 없다
     }
     Swapchain& swapchain = *window->swapchain;
@@ -83,10 +82,8 @@ bool BeginFrame(const VulkanInstance& inst,
         return false;
     }
 
-    // ---- 3. 펜스 리셋 (**acquire가 성공한 뒤에**) ----
-    // 먼저 리셋하면, acquire가 실패해 제출 없이 돌아가는 프레임에서 펜스가 영영
-    // 신호되지 않고 다음 WaitForFences가 영원히 걸린다.
-    dev.table.vkResetFences(dev.handle, 1, &frame.inFlight);
+    // **펜스는 여기서 리셋하지 않는다.** 리셋의 짝은 acquire가 아니라 제출이다
+    // (EndFrame 참고). 여기서 리셋하면 그 뒤에 실패할 수 있는 것이 남아 있다.
 
     out->image = &swapchain.images[imageIndex];
     out->extent = swapchain.extent;
@@ -94,7 +91,7 @@ bool BeginFrame(const VulkanInstance& inst,
     return true;
 }
 
-void EndFrame(const VulkanDevice& dev,
+bool EndFrame(const VulkanDevice& dev,
               Window* window,
               const Frame& frame,
               const FrameTarget& target) noexcept {
@@ -120,10 +117,25 @@ void EndFrame(const VulkanDevice& dev,
     submit.signalSemaphoreInfoCount = 1;
     submit.pSignalSemaphoreInfos = &signal;
 
+    // **펜스 리셋은 제출 바로 앞이다.**
+    //
+    // 펜스를 신호하는 것은 제출뿐이고, 제출은 비신호 펜스만 받는다. 그래서 리셋과 제출
+    // 사이에 실패할 수 있는 것이 끼면, 그 프레임의 펜스는 비신호로 남고 신호할 사람이
+    // 없어진다 - 다음 순회의 vkWaitForFences(UINT64_MAX)가 영원히 걸린다.
+    //
+    // 리셋이 acquire 직후에 있던 때는 그 사이에 RecordFrame 전체와 이 함수의 앞부분이
+    // 들어 있었다. 여기로 내리면 그 창이 0이 된다.
+    //
+    // **남는 것은 제출 자체의 실패 하나뿐이고, 그건 못 되돌린다** - 일반 펜스를 CPU에서
+    // 신호하는 API가 없다(타임라인 세마포어에만 있다). 그래서 실패하면 false를 돌려
+    // 호출자가 루프를 **빠져나가게** 한다. 어차피 OUT_OF_MEMORY / DEVICE_LOST뿐이라
+    // 다음 프레임을 시도할 상황이 아니다.
+    dev.table.vkResetFences(dev.handle, 1, &frame.inFlight);
+
     if (dev.table.vkQueueSubmit2(dev.queues.graphics, 1, &submit, frame.inFlight)
             != VK_SUCCESS) {
         LOG("[vk] vkQueueSubmit2 failed\n");
-        return;
+        return false;
     }
 
     // ---- 13. 화면에 내보낸다 ----
@@ -141,4 +153,9 @@ void EndFrame(const VulkanDevice& dev,
     if (presented == VK_ERROR_OUT_OF_DATE_KHR || presented == VK_SUBOPTIMAL_KHR) {
         window->swapchainOutOfDate = true;
     }
+
+    // present가 실패해도 true다. **제출은 이미 됐고 펜스는 신호될 것이다** - 프레임은
+    // 정상적으로 끝났고 화면에 못 나갔을 뿐이다. 스왑체인을 다시 만들면 되는 일이라
+    // 루프를 끊을 이유가 없다.
+    return true;
 }

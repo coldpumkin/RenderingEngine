@@ -235,9 +235,7 @@ bool CreateSwapchain(const VulkanInstance& inst,
 //
 // 루프의 0단계가 통째로 여기 들어왔다. 재생성 조건 판단, oldSwapchain 넘기기,
 // 이전 것 파괴가 한 덩어리라 흩어져 있을 이유가 없다.
-bool EnsureSwapchain(const VulkanInstance& inst,
-                     const VulkanDevice& dev,
-                     Window* window) noexcept {
+bool EnsureSwapchain(const VulkanDevice& dev, Window* window) noexcept {
     if (!window->swapchainOutOfDate && window->swapchain != nullptr) {
         return true;
     }
@@ -251,8 +249,8 @@ bool EnsureSwapchain(const VulkanInstance& inst,
         window->swapchain != nullptr ? window->swapchain->handle : VK_NULL_HANDLE;
 
     auto fresh = std::make_unique<Swapchain>();
-    const bool created = CreateSwapchain(inst, dev, window->surface, window->surfaceFormat,
-                                         retiring, fresh.get());
+    const bool created = CreateSwapchain(*window->inst, dev, window->surface,
+                                         window->surfaceFormat, retiring, fresh.get());
 
     // **새것을 만든 뒤에** 이전 것을 놓는다. reset()이 소멸자를 부른다.
     window->swapchain.reset();

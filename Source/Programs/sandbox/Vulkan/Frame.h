@@ -47,19 +47,21 @@ struct FrameTarget {
     uint32_t imageIndex = 0;
 };
 
-// 프레임을 연다: 그릴 곳 확보 -> 이전 프레임 대기 -> 이미지 확보 -> 펜스 리셋.
+// 프레임을 연다: 그릴 곳 확보 -> 이전 프레임 대기 -> 이미지 확보.
 //
 // **false는 실패가 아니라 "이번 프레임은 없다"**이다 (최소화 중이거나 스왑체인이 낡음).
 // 호출자는 continue한다.
-bool BeginFrame(const VulkanInstance& inst,
-                const VulkanDevice& dev,
+bool BeginFrame(const VulkanDevice& dev,
                 Window* window,
                 const Frame& frame,
                 FrameTarget* out) noexcept;
 
-// 프레임을 닫는다: 제출 -> 화면에 표시.
+// 프레임을 닫는다: 펜스 리셋 -> 제출 -> 화면에 표시.
 // **BeginFrame이 false를 준 프레임에는 부르지 않는다.**
-void EndFrame(const VulkanDevice& dev,
+//
+// BeginFrame과 같이 bool이다. 제출은 실패할 수 있고, 실패하면 이 프레임에 그린 것은
+// 화면에 안 나온다 - 호출자가 알아야 하는 사실이다.
+bool EndFrame(const VulkanDevice& dev,
               Window* window,
               const Frame& frame,
               const FrameTarget& target) noexcept;
