@@ -10,6 +10,11 @@ struct Window;
 
 struct SwapchainImage {
     VkImage image = VK_NULL_HANDLE;               // 스왑체인이 소유. 우리가 파괴하지 않는다
+
+    // **present가 이 값을 요구한다.** 배열 위치와 같은 값이라 중복이지만, 밖에서
+    // 이미지와 인덱스를 따로 들고 다니면 **짝이 어긋나도 컴파일이 된다.**
+    // 여기 두면 그 실수가 불가능해진다.
+    uint32_t index = 0;
     VkImageView view = VK_NULL_HANDLE;            // 우리가 만들었다 -> 우리가 파괴한다
     VkSemaphore renderFinished = VK_NULL_HANDLE;  // 우리가 만들었다. **이미지당 하나**
 

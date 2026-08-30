@@ -50,13 +50,12 @@ bool CreateFrame(const VulkanDevice& dev, const Commands& commands, Frame* out) 
 //   draw     우리 이미지. 여기에 그린다. 스왑체인이 없어도 성립한다
 //   present  스왑체인 이미지. 다 그린 결과를 여기로 복사해 내보낸다
 //
-// imageIndex를 들고 있는 이유: acquire가 준 값을 present가 다시 써야 하는데,
-// 그 사이에 RecordFrame이 끼어 있어 지역 변수로는 건널 수 없다.
+// acquire가 고른 것을 present까지 나른다 - 그 사이에 RecordFrame이 끼어 있어
+// 지역 변수로는 못 건넌다. (present가 요구하는 인덱스는 SwapchainImage가 들고 온다.)
 struct FrameTarget {
     const RenderTargets* draw = nullptr;
     const SwapchainImage* present = nullptr;
     VkExtent2D presentExtent{};   // 창 크기. draw->extent와 다를 수 있다
-    uint32_t imageIndex = 0;
 };
 
 // **호출자가 무엇을 해야 하는가**로 적는다. 내부에서 무슨 일이 있었나가 아니다.
@@ -115,7 +114,8 @@ bool SubmitFrame(const VulkanDevice& dev,
 // image를 인덱스로 다시 찾지 않고 **BeginFrame이 고른 것을 그대로 받는다.** 지금은
 // 프레임 도중에 스왑체인이 안 바뀌어서 둘이 같지만, 바뀌게 되면 인덱스는 다른 이미지를
 // 가리키고 참조는 안 그렇다. FrameTarget이 있는 이유가 그 "이미 고른 것"을 나르는 것이다.
+//
+// 인덱스는 image가 들고 온다 - 둘이 짝이 맞아야 하는데 따로 받으면 어긋나도 컴파일된다.
 bool PresentFrame(const VulkanDevice& dev,
                   Window* window,
-                  const SwapchainImage& image,
-                  uint32_t imageIndex) noexcept;
+                  const SwapchainImage& image) noexcept;

@@ -115,7 +115,6 @@ FrameResult BeginFrame(const VulkanDevice& dev,
     out->draw = &frame.targets;
     out->present = &swapchain.images[imageIndex];
     out->presentExtent = swapchain.extent;
-    out->imageIndex = imageIndex;
     return FrameResult::Ready;
 }
 
@@ -180,8 +179,7 @@ bool SubmitFrame(const VulkanDevice& dev,
 
 bool PresentFrame(const VulkanDevice& dev,
                   Window* window,
-                  const SwapchainImage& image,
-                  uint32_t imageIndex) noexcept {
+                  const SwapchainImage& image) noexcept {
     const VkSwapchainKHR swapchainHandle = window->swapchain->handle;
 
     VkPresentInfoKHR present{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
@@ -191,7 +189,7 @@ bool PresentFrame(const VulkanDevice& dev,
     // 창 개수라는 뜻이고, 제출(큐 개수)과 다르다.
     present.swapchainCount = 1;
     present.pSwapchains = &swapchainHandle;
-    present.pImageIndices = &imageIndex;
+    present.pImageIndices = &image.index;
 
     const VkResult presented = dev.table.vkQueuePresentKHR(dev.queues.present, &present);
 

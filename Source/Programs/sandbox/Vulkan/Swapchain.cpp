@@ -190,6 +190,7 @@ bool CreateSwapchain(const VulkanInstance& inst,
     sc.images.resize(actualCount);
     for (uint32_t i = 0; i < actualCount; ++i) {
         sc.images[i].image = rawImages[i];
+        sc.images[i].index = i;
 
         VkImageViewCreateInfo viewInfo{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
         viewInfo.image = rawImages[i];
