@@ -20,11 +20,7 @@ bool CreateBuffer(const VulkanDevice& dev,
     bufferInfo.size = size;
     bufferInfo.usage = usage;
     // EXCLUSIVE: 한 번에 한 큐 패밀리만 소유한다. 다른 패밀리가 쓰려면 소유권을
-    // 명시적으로 넘겨야 하고, 안 넘기면 **내용이 정의되지 않는다**(스펙).
-    // CreateVertexBuffer가 전송 큐로 올리면서 실제로 그 이전을 한다.
-    //
-    // 대안은 CONCURRENT지만 드라이버가 최적화를 포기하는 대가가 있다.
-    // 이전이 초기화 때 한 번이면 EXCLUSIVE가 맞다.
+    // 명시적으로 넘겨야 한다. 지금은 그래픽스 큐만 만지므로 넘길 일이 없다.
     bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
     VmaAllocationCreateInfo allocInfo{};
@@ -106,182 +102,76 @@ bool CreateVertexBuffer(const VulkanDevice& dev,
 
     // ---- 3. GPU에게 복사를 시킨다 ----
     //
-    // **전용 전송 큐가 있으면 그쪽으로 올린다.**
+    // **그래픽스 큐를 쓴다. 전송 큐가 아니다.**
+    // 전송 큐의 값어치는 그리는 동안 **동시에** 올리는 것인데, 이건 루프가 시작하기 전
+    // 한 번뿐이라 겹칠 대상이 없다. 반면 큐를 바꾸면 **큐 패밀리 소유권 이전**
+    // (release/acquire 배리어 한 쌍)이 필요해진다 - 얻는 것 없이 비용만 낸다.
     //
-    // 속도 때문이 아니다 - 이건 루프 전에 한 번뿐이라 겹칠 대상이 없다. 이유는 둘:
-    //   1. 전송 큐와 풀을 만들어만 놓고 **한 번도 제출한 적이 없었다.** 안 밟은 경로다
-    //   2. 큐가 둘이 되면 **큐 패밀리 소유권 이전**이 필요해진다. EXCLUSIVE로 만든
-    //      자원은 다른 패밀리가 그냥 읽으면 **내용이 정의되지 않는다**(스펙).
+    // 전송 큐는 **그리는 중에 올려야 할 때** 값을 한다. 그때 옮긴다.
     //
-    // 전용 큐가 없으면 그래픽스로 떨어지고, 그때는 이전도 필요 없다.
-    const bool crossQueue = dev.families.HasTransfer();
-    const VkQueue uploadQueue = crossQueue ? dev.queues.transfer : dev.queues.graphics;
-    const VkCommandPool uploadPool = crossQueue ? commands.transfer : commands.graphics;
-    const uint32_t srcFamily = crossQueue ? dev.families.transfer : VK_QUEUE_FAMILY_IGNORED;
-    const uint32_t dstFamily = crossQueue ? dev.families.graphics : VK_QUEUE_FAMILY_IGNORED;
-
+    // 한 번 옮겨봤다가 되돌렸다 (`b104a27` -> 이 커밋). 동작은 했지만 초기화 경로라
+    // 얻는 게 없었고, 소유권 이전이라는 어려운 개념만 늘었다.
+    // **필요해지면 그 커밋을 그대로 꺼내 쓴다** - release/acquire 배리어 한 쌍과
+    // 큐 사이를 잇는 세마포어가 거기 다 있다.
     VkCommandBufferAllocateInfo allocInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    allocInfo.commandPool = commands.graphics;
     allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     allocInfo.commandBufferCount = 1;
 
-    // 업로드용 하나. 큐가 둘이면 acquire를 기록할 그래픽스용이 하나 더 필요하다.
-    // **풀은 큐 패밀리에 묶인다** - 다른 패밀리에 제출할 버퍼를 여기서 뽑을 수 없다.
-    VkCommandBuffer uploadCmd = VK_NULL_HANDLE;
-    VkCommandBuffer acquireCmd = VK_NULL_HANDLE;
-    VkSemaphore handoff = VK_NULL_HANDLE;
-
-    allocInfo.commandPool = uploadPool;
-    if (dev.table.vkAllocateCommandBuffers(dev.handle, &allocInfo, &uploadCmd) != VK_SUCCESS) {
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    if (dev.table.vkAllocateCommandBuffers(dev.handle, &allocInfo, &cmd) != VK_SUCCESS) {
         LOG("[vk] vkAllocateCommandBuffers(upload) failed\n");
         return false;
     }
 
-    // 실패 경로가 여러 자원을 반납해야 해서 람다로 묶었다.
+    // **여기부터 반환값을 다 본다.** 한때 전부 버렸는데, 그러면 복사가 한 줄도 실행되지
+    // 않아도 아래 "vertex buffer ready" 로그가 찍히고 true가 나간다. 화면에는 쓰레기
+    // 정점이 그려지거나 아무것도 안 나오고, 원인을 어디서도 알 수 없다.
+    //
+    // 실패 경로가 커맨드 버퍼를 반납해야 해서 goto 대신 람다로 묶었다.
     const auto fail = [&](const char* what) {
         LOG("[vk] %s failed (vertex upload)\n", what);
-        if (handoff != VK_NULL_HANDLE) {
-            dev.table.vkDestroySemaphore(dev.handle, handoff, nullptr);
-        }
-        if (acquireCmd != VK_NULL_HANDLE) {
-            dev.table.vkFreeCommandBuffers(dev.handle, commands.graphics, 1, &acquireCmd);
-        }
-        dev.table.vkFreeCommandBuffers(dev.handle, uploadPool, 1, &uploadCmd);
+        dev.table.vkFreeCommandBuffers(dev.handle, commands.graphics, 1, &cmd);
         return false;
-    };
-
-    // 버퍼 배리어 하나. crossQueue면 srcFamily/dstFamily가 실제 값이라 **소유권 이전**이
-    // 되고, 아니면 IGNORED라 순수 메모리 배리어가 된다.
-    //
-    // release(전송 큐)와 acquire(그래픽스 큐)는 **패밀리 값이 정확히 같아야** 짝이 된다.
-    // release는 dst 스코프를, acquire는 src 스코프를 무시한다(스펙).
-    const auto bufferBarrier = [&](VkCommandBuffer cmd,
-                                   VkPipelineStageFlags2 srcStage, VkAccessFlags2 srcAccess,
-                                   VkPipelineStageFlags2 dstStage, VkAccessFlags2 dstAccess) {
-        VkBufferMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
-        barrier.srcStageMask = srcStage;
-        barrier.srcAccessMask = srcAccess;
-        barrier.dstStageMask = dstStage;
-        barrier.dstAccessMask = dstAccess;
-        barrier.srcQueueFamilyIndex = srcFamily;
-        barrier.dstQueueFamilyIndex = dstFamily;
-        barrier.buffer = out->handle;
-        barrier.size = VK_WHOLE_SIZE;
-
-        VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-        dep.bufferMemoryBarrierCount = 1;
-        dep.pBufferMemoryBarriers = &barrier;
-        dev.table.vkCmdPipelineBarrier2(cmd, &dep);
     };
 
     VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-
-    // ---- 3a. 복사 + release ----
-    if (dev.table.vkBeginCommandBuffer(uploadCmd, &beginInfo) != VK_SUCCESS) {
-        return fail("vkBeginCommandBuffer(upload)");
+    if (dev.table.vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS) {
+        return fail("vkBeginCommandBuffer");
     }
+
     VkBufferCopy region{};
     region.size = size;
-    dev.table.vkCmdCopyBuffer(uploadCmd, staging.handle, out->handle, 1, &region);
+    dev.table.vkCmdCopyBuffer(cmd, staging.handle, out->handle, 1, &region);
 
-    // crossQueue면 release: dst 스코프는 무시되므로 NONE.
-    // 아니면 같은 큐 안의 메모리 배리어라 dst를 정점 읽기로 채운다.
-    bufferBarrier(uploadCmd,
-                  VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                  crossQueue ? VK_PIPELINE_STAGE_2_NONE
-                             : VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT,
-                  crossQueue ? VK_ACCESS_2_NONE
-                             : VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT);
-
-    if (dev.table.vkEndCommandBuffer(uploadCmd) != VK_SUCCESS) {
-        return fail("vkEndCommandBuffer(upload)");
+    if (dev.table.vkEndCommandBuffer(cmd) != VK_SUCCESS) {
+        return fail("vkEndCommandBuffer");
     }
 
-    // ---- 3b. crossQueue면 acquire를 그래픽스 쪽에 기록 ----
-    if (crossQueue) {
-        allocInfo.commandPool = commands.graphics;
-        if (dev.table.vkAllocateCommandBuffers(dev.handle, &allocInfo, &acquireCmd)
-                != VK_SUCCESS) {
-            return fail("vkAllocateCommandBuffers(acquire)");
-        }
-        if (dev.table.vkBeginCommandBuffer(acquireCmd, &beginInfo) != VK_SUCCESS) {
-            return fail("vkBeginCommandBuffer(acquire)");
-        }
-        // acquire: src 스코프는 무시되므로 NONE. 이 버퍼는 정점 입력으로 읽힌다.
-        bufferBarrier(acquireCmd,
-                      VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE,
-                      VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT,
-                      VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT);
-        if (dev.table.vkEndCommandBuffer(acquireCmd) != VK_SUCCESS) {
-            return fail("vkEndCommandBuffer(acquire)");
-        }
+    // 복사가 끝날 때까지 기다린다. **초기화 경로라 기다려도 된다** -
+    // 매 프레임이면 펜스로 넘겨받아야 하지만 여기는 한 번뿐이다.
+    VkCommandBufferSubmitInfo cmdInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
+    cmdInfo.commandBuffer = cmd;
 
-        // **release가 끝나야 acquire를 시작할 수 있다.** 큐가 다르므로 배리어로는
-        // 안 되고 세마포어가 필요하다 - 큐 사이를 잇는 것은 세마포어뿐이다.
-        VkSemaphoreCreateInfo semInfo{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-        if (dev.table.vkCreateSemaphore(dev.handle, &semInfo, nullptr, &handoff) != VK_SUCCESS) {
-            return fail("vkCreateSemaphore(handoff)");
-        }
+    VkSubmitInfo2 submit{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
+    submit.commandBufferInfoCount = 1;
+    submit.pCommandBufferInfos = &cmdInfo;
+
+    if (dev.table.vkQueueSubmit2(dev.queues.graphics, 1, &submit, VK_NULL_HANDLE)
+            != VK_SUCCESS) {
+        return fail("vkQueueSubmit2");
+    }
+    // **대기가 실패하면 복사가 끝났는지 알 수 없다.** 커맨드 버퍼를 반납하는 것도
+    // 위험하지만(GPU가 아직 읽고 있을 수 있다) 여기서 할 수 있는 최선이다.
+    if (dev.table.vkQueueWaitIdle(dev.queues.graphics) != VK_SUCCESS) {
+        return fail("vkQueueWaitIdle");
     }
 
-    // ---- 3c. 제출 ----
-    // 초기화 경로라 기다려도 된다. 매 프레임이면 펜스로 넘겨받아야 한다.
-    VkCommandBufferSubmitInfo uploadCmdInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
-    uploadCmdInfo.commandBuffer = uploadCmd;
-
-    VkSemaphoreSubmitInfo signalInfo{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
-    signalInfo.semaphore = handoff;
-    signalInfo.stageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-
-    VkSubmitInfo2 uploadSubmit{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
-    uploadSubmit.commandBufferInfoCount = 1;
-    uploadSubmit.pCommandBufferInfos = &uploadCmdInfo;
-    if (crossQueue) {
-        uploadSubmit.signalSemaphoreInfoCount = 1;
-        uploadSubmit.pSignalSemaphoreInfos = &signalInfo;
-    }
-
-    if (dev.table.vkQueueSubmit2(uploadQueue, 1, &uploadSubmit, VK_NULL_HANDLE) != VK_SUCCESS) {
-        return fail("vkQueueSubmit2(upload)");
-    }
-
-    if (crossQueue) {
-        VkCommandBufferSubmitInfo acquireCmdInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
-        acquireCmdInfo.commandBuffer = acquireCmd;
-
-        VkSemaphoreSubmitInfo waitInfo{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
-        waitInfo.semaphore = handoff;
-        waitInfo.stageMask = VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT;
-
-        VkSubmitInfo2 acquireSubmit{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
-        acquireSubmit.waitSemaphoreInfoCount = 1;
-        acquireSubmit.pWaitSemaphoreInfos = &waitInfo;
-        acquireSubmit.commandBufferInfoCount = 1;
-        acquireSubmit.pCommandBufferInfos = &acquireCmdInfo;
-
-        if (dev.table.vkQueueSubmit2(dev.queues.graphics, 1, &acquireSubmit, VK_NULL_HANDLE)
-                != VK_SUCCESS) {
-            return fail("vkQueueSubmit2(acquire)");
-        }
-        if (dev.table.vkQueueWaitIdle(dev.queues.graphics) != VK_SUCCESS) {
-            return fail("vkQueueWaitIdle(graphics)");
-        }
-    }
-    // 업로드 큐도 비운다. 세마포어와 커맨드 버퍼를 놓으려면 둘 다 끝나 있어야 한다.
-    if (dev.table.vkQueueWaitIdle(uploadQueue) != VK_SUCCESS) {
-        return fail("vkQueueWaitIdle(upload)");
-    }
-
-    if (handoff != VK_NULL_HANDLE) {
-        dev.table.vkDestroySemaphore(dev.handle, handoff, nullptr);
-    }
-    if (acquireCmd != VK_NULL_HANDLE) {
-        dev.table.vkFreeCommandBuffers(dev.handle, commands.graphics, 1, &acquireCmd);
-    }
-    dev.table.vkFreeCommandBuffers(dev.handle, uploadPool, 1, &uploadCmd);
+    dev.table.vkFreeCommandBuffers(dev.handle, commands.graphics, 1, &cmd);
     // staging은 여기서 스코프를 벗어나며 ~Buffer가 정리한다.
 
-    LOG("[vk] vertex buffer ready (%llu bytes, device-local, %s queue)\n",
-        static_cast<unsigned long long>(size), crossQueue ? "transfer" : "graphics");
+    LOG("[vk] vertex buffer ready (%llu bytes, device-local)\n",
+        static_cast<unsigned long long>(size));
     return true;
 }
