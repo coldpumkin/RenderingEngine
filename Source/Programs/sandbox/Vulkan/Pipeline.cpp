@@ -252,3 +252,131 @@ Pipeline::~Pipeline() {
         dev->table.vkDestroyPipelineLayout(dev->handle, layout, nullptr);
     }
 }
+// ============================================================================
+// 전체화면 패스 - 첫 패스의 결과를 텍스처로 읽어 스왑체인에 그린다
+// ============================================================================
+//
+// **삼각형 파이프라인의 복제다.** 무엇이 실제로 공통인지 둘을 나란히 놓고 보려고
+// 일부러 그렇게 뒀다. 다른 부분에만 표시를 해뒀다.
+bool CreateFullscreenPipeline(const VulkanDevice& dev,
+                              VkFormat colorFormat,
+                              VkDescriptorSetLayout setLayout,
+                              Pipeline* out) noexcept {
+    Pipeline& pipeline = *out;
+    pipeline.dev = &dev;
+
+    VkShaderModule vs = LoadShader(dev, "Shaders/fullscreen.vert.spv");
+    VkShaderModule fs = LoadShader(dev, "Shaders/fullscreen.frag.spv");
+    if (vs == VK_NULL_HANDLE || fs == VK_NULL_HANDLE) {
+        if (vs != VK_NULL_HANDLE) { dev.table.vkDestroyShaderModule(dev.handle, vs, nullptr); }
+        if (fs != VK_NULL_HANDLE) { dev.table.vkDestroyShaderModule(dev.handle, fs, nullptr); }
+        return false;
+    }
+
+    VkPipelineShaderStageCreateInfo stages[2]{};
+    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vs;
+    stages[0].pName = "main";
+    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = fs;
+    stages[1].pName = "main";
+
+    // **[다름] 정점 입력이 비어 있다.** 정점 버퍼를 안 쓰고 셰이더가 gl_VertexIndex로
+    // 세 점을 만든다. 그래서 계약 둘 중 "정점 레이아웃"이 아예 없다.
+    VkPipelineVertexInputStateCreateInfo vertexInput{
+        VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly{
+        VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    VkPipelineViewportStateCreateInfo viewportState{
+        VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+    viewportState.viewportCount = 1;
+    viewportState.scissorCount = 1;
+
+    constexpr VkDynamicState kDynamicStates[] = {
+        VK_DYNAMIC_STATE_VIEWPORT,
+        VK_DYNAMIC_STATE_SCISSOR,
+    };
+    VkPipelineDynamicStateCreateInfo dynamicState{
+        VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+    dynamicState.dynamicStateCount = static_cast<uint32_t>(std::size(kDynamicStates));
+    dynamicState.pDynamicStates = kDynamicStates;
+
+    VkPipelineRasterizationStateCreateInfo rasterization{
+        VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    rasterization.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterization.cullMode = VK_CULL_MODE_NONE;
+    rasterization.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rasterization.lineWidth = 1.0f;
+
+    VkPipelineMultisampleStateCreateInfo multisample{
+        VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+    multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkPipelineColorBlendAttachmentState blendAttachment{};
+    blendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT
+                                   | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    blendAttachment.blendEnable = VK_FALSE;
+
+    VkPipelineColorBlendStateCreateInfo colorBlend{
+        VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+    colorBlend.attachmentCount = 1;
+    colorBlend.pAttachments = &blendAttachment;
+
+    // **[다름] 뎁스 상태가 없다.** pDepthStencilState를 안 준다 - 화면을 덮는 사각형
+    // 하나에 깊이 비교는 의미가 없고, 뎁스 첨부도 안 붙인다.
+
+    // **[다름] 레이아웃이 비어 있지 않다.** 셋 레이아웃 하나를 받는다 -
+    // 셰이더가 이미지를 읽으니까. 삼각형 쪽은 푸시 상수만 있었다.
+    VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    layoutInfo.setLayoutCount = 1;
+    layoutInfo.pSetLayouts = &setLayout;
+    if (dev.table.vkCreatePipelineLayout(dev.handle, &layoutInfo, nullptr, &pipeline.layout)
+            != VK_SUCCESS) {
+        LOG("[vk] vkCreatePipelineLayout(fullscreen) failed\n");
+        dev.table.vkDestroyShaderModule(dev.handle, vs, nullptr);
+        dev.table.vkDestroyShaderModule(dev.handle, fs, nullptr);
+        return false;
+    }
+
+    // **[다름] 색 포맷이 스왑체인 것이고 뎁스 포맷이 없다.**
+    // 계약의 상대가 우리 렌더 타겟이 아니라 스왑체인 이미지다.
+    VkPipelineRenderingCreateInfo pipelineRendering{
+        VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+    pipelineRendering.colorAttachmentCount = 1;
+    pipelineRendering.pColorAttachmentFormats = &colorFormat;
+
+    VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+    info.pNext = &pipelineRendering;
+    info.stageCount = 2;
+    info.pStages = stages;
+    info.pVertexInputState = &vertexInput;
+    info.pInputAssemblyState = &inputAssembly;
+    info.pViewportState = &viewportState;
+    info.pRasterizationState = &rasterization;
+    info.pMultisampleState = &multisample;
+    info.pColorBlendState = &colorBlend;
+    info.pDynamicState = &dynamicState;
+    info.layout = pipeline.layout;
+    info.renderPass = VK_NULL_HANDLE;
+
+    const VkResult created = dev.table.vkCreateGraphicsPipelines(
+        dev.handle, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline.handle);
+
+    dev.table.vkDestroyShaderModule(dev.handle, vs, nullptr);
+    dev.table.vkDestroyShaderModule(dev.handle, fs, nullptr);
+
+    if (created != VK_SUCCESS) {
+        LOG("[vk] vkCreateGraphicsPipelines(fullscreen) failed (%d)\n", created);
+        dev.table.vkDestroyPipelineLayout(dev.handle, pipeline.layout, nullptr);
+        pipeline.layout = VK_NULL_HANDLE;
+        return false;
+    }
+
+    LOG("[vk] fullscreen pipeline ready\n");
+    return true;
+}

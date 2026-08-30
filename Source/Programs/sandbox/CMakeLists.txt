@@ -16,6 +16,7 @@ add_executable(sandbox
     Vulkan/Swapchain.h   Vulkan/Swapchain.cpp
     Vulkan/RenderTargets.h Vulkan/RenderTargets.cpp  # 우리가 그리는 곳 (스왑체인과 무관)
     Vulkan/Barrier.h     Vulkan/Barrier.cpp     # 이미지 레이아웃 전이
+    Vulkan/Descriptors.h Vulkan/Descriptors.cpp # 셰이더가 이미지를 읽게 하는 장치
     Vulkan/Commands.h    Vulkan/Commands.cpp    # 커맨드 풀 (큐 패밀리마다)
     Vulkan/Frame.h       Vulkan/Frame.cpp       # 프레임 자원(프레임마다) + 프레임 여닫기
     Vulkan/Pipeline.h    Vulkan/Pipeline.cpp
@@ -55,7 +56,7 @@ find_program(GLSLC_EXE glslc HINTS "$ENV{VULKAN_SDK}/Bin" REQUIRED)
 set(SHADER_BUILD_DIR "${CMAKE_CURRENT_BINARY_DIR}/Shaders")
 set(SPV_FILES "")
 
-foreach(SHADER triangle.vert triangle.frag)
+foreach(SHADER triangle.vert triangle.frag fullscreen.vert fullscreen.frag)
     set(SRC "${CMAKE_CURRENT_SOURCE_DIR}/Shaders/${SHADER}")
     set(SPV "${SHADER_BUILD_DIR}/${SHADER}.spv")
     add_custom_command(
@@ -85,6 +86,8 @@ add_custom_command(TARGET sandbox POST_BUILD
 target_sources(sandbox PRIVATE
     Shaders/triangle.vert
     Shaders/triangle.frag
+    Shaders/fullscreen.vert
+    Shaders/fullscreen.frag
 )
 set_source_files_properties(Shaders/triangle.vert Shaders/triangle.frag
                             PROPERTIES HEADER_FILE_ONLY TRUE)

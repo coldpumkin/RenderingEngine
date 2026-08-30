@@ -130,17 +130,12 @@ bool CreateSwapchain(const VulkanInstance& inst,
     info.imageColorSpace = surfaceFormat.colorSpace;
     info.imageExtent = caps.currentExtent;
     info.imageArrayLayers = 1;
-    // **오프스크린으로 바뀌면서 TRANSFER_DST가 붙었다.** 이제 여기에 직접 그리지 않고
-    // 우리 이미지에 그린 뒤 블릿해 넣는다. COLOR_ATTACHMENT는 남겨둔다 - 직접 그리는
-    // 경로로 돌아갈 수도 있고, 스펙이 반드시 지원을 보장하는 유일한 용도이기도 하다.
+    // COLOR_ATTACHMENT만 있으면 된다. **두 번째 패스가 여기에 직접 그린다.**
     //
-    // **TRANSFER_DST는 보장되지 않는다.** 스펙이 supportedUsageFlags에 반드시 넣는 것은
-    // COLOR_ATTACHMENT뿐이다. 그래서 물어보고 없으면 실패한다.
-    if ((caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT) == 0) {
-        LOG("[vk] surface does not support TRANSFER_DST on swapchain images\n");
-        return false;
-    }
-    info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    // 블릿으로 내보내던 동안은 TRANSFER_DST가 필요했고, 그건 스펙이 보장하지 않아서
+    // supportedUsageFlags를 확인해야 했다. 이제 그 확인이 사라졌다 -
+    // **COLOR_ATTACHMENT는 스펙이 항상 보장하는 유일한 용도다.**
+    info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     // EXCLUSIVE로 두는 이유: **스왑체인 이미지는 그래픽스 큐만 만진다** (그리고, present한다).
     // 컴퓨트/전송 큐가 따로 있어도 이 이미지에는 손대지 않는다. 나중에 컴퓨트가 스왑체인
     // 이미지에 직접 써야 하면 그때 CONCURRENT로 바꾸거나 큐 패밀리 소유권 이전을 넣는다

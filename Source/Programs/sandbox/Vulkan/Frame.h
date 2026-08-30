@@ -18,6 +18,7 @@
 
 #include "Config.h"
 #include "Vulkan/Commands.h"
+#include "Vulkan/Descriptors.h"
 #include "Vulkan/RenderTargets.h"
 #include "Vulkan/Window.h"
 
@@ -34,6 +35,12 @@ struct Frame {
     // **이 프레임이 그려 넣을 곳.** 스왑체인이 아니라 우리 이미지다.
     // 개수의 근거가 Frame과 같아서(동시에 그려지는 프레임 수) 여기 있다.
     RenderTargets targets;
+
+    // **자기 targets.color를 가리키는 디스크립터 셋.** 두 번째 패스가 이걸 바인딩해서
+    // 첫 패스의 결과를 읽는다. 개수의 근거가 Frame과 같아서(프레임마다 자기 이미지)
+    // 여기 있다. 풀이 죽을 때 같이 사라지므로 따로 반납하지 않는다.
+    VkDescriptorSet colorSet = VK_NULL_HANDLE;
+
     Frame() = default;
     ~Frame();
     Frame(const Frame&) = delete;
@@ -43,6 +50,7 @@ struct Frame {
 // formats: 이 프레임의 렌더 타겟이 쓸 포맷 계약. **파이프라인이 받는 것과 같은 것**이라야
 // 한다 - 그래서 main이 한 번 고르고 양쪽에 같은 값을 준다.
 bool CreateFrame(const VulkanDevice& dev, const Commands& commands,
+                 const Descriptors& descriptors,
                  RenderTargetFormats formats, Frame* out) noexcept;
 
 // 이번 프레임의 **그릴 곳과 내보낼 곳**. BeginFrame이 정하고 뒤가 쓴다.

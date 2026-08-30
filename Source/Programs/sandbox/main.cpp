@@ -22,6 +22,7 @@
 #include "Vulkan/Barrier.h"
 #include "Vulkan/Buffer.h"
 #include "Vulkan/Commands.h"
+#include "Vulkan/Descriptors.h"
 #include "Vulkan/Frame.h"
 #include "Vulkan/Pipeline.h"
 #include "Vulkan/Window.h"
@@ -73,7 +74,9 @@ bool RecordFrame(const VolkDeviceTable& vk,
                  VkCommandBuffer cmd,
                  const FrameTarget& target,
                  const Pipeline& pipeline,
-                 const Buffer& vertexBuffer) noexcept {
+                 const Buffer& vertexBuffer,
+                 const Pipeline& fullscreen,
+                 VkDescriptorSet colorSet) noexcept {
     const RenderTargets& draw = *target.draw;
     const VkExtent2D extent = draw.extent;   // **창 크기가 아니다.** Config.h가 정한다
     // 풀을 VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT로 만들었기에 버퍼 하나만
@@ -194,65 +197,80 @@ bool RecordFrame(const VolkDeviceTable& vk,
     vk.vkCmdEndRendering(cmd);
 
     // ========================================================================
-    // 여기까지가 렌더링이다. **스왑체인이 한 번도 안 나왔다.**
-    // 아래는 결과를 화면으로 내보내는 일이고, 창이 없으면 통째로 없어도 되는 부분이다.
+    // 여기까지가 첫 패스다. **스왑체인이 한 번도 안 나왔다.**
     // ========================================================================
 
-    // ---- 우리 색 이미지를 전송원으로 ----
-    // 그리기가 끝나야(COLOR_ATTACHMENT_OUTPUT) 읽을 수 있다(TRANSFER + TRANSFER_READ).
+    // ---- 첫 패스의 결과를 셰이더가 읽을 수 있게 ----
+    // 그리기가 끝나야(COLOR_ATTACHMENT_OUTPUT) 읽을 수 있다(FRAGMENT_SHADER).
+    // 레이아웃은 디스크립터를 채울 때 적어둔 SHADER_READ_ONLY_OPTIMAL과 같아야 한다.
     RecordLayoutTransition(vk, cmd, draw.color.handle, VK_IMAGE_ASPECT_COLOR_BIT,
                            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                           VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                           VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                           VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
-    // ---- 스왑체인 이미지를 전송지로 ----
-    // UNDEFINED에서 시작하는 이유는 색 첨부 때와 같다 - 블릿이 전부 덮어쓴다.
-    //
-    // **srcStage가 TOP_OF_PIPE가 아니라 BLIT이다.** TOP_OF_PIPE는 "앞선 작업 없음"이라
-    // 아무것도 안 기다리고, 그러면 이 레이아웃 전이(= 이미지 쓰기)가 acquire 세마포어
-    // 대기를 앞질러 실행될 수 있다. 동기화 검증이 WRITE_AFTER_READ로 잡아준 자리다.
-    //
-    // SubmitFrame의 wait.stageMask와 **겹치기만 하면 된다** (같을 필요는 없다).
-    // 근거는 Frame.cpp의 실험표.
+    // ---- 스왑체인 이미지를 그릴 수 있는 레이아웃으로 ----
+    // **다시 색 첨부다** (블릿을 쓰던 동안은 TRANSFER_DST였다).
+    // srcStage가 SubmitFrame의 wait.stageMask와 겹쳐야 한다 - 안 겹치면 이 전이가
+    // acquire를 앞질러 실행될 수 있다 (동기화 검증이 잡아준 자리).
     RecordLayoutTransition(vk, cmd, target.present->image, VK_IMAGE_ASPECT_COLOR_BIT,
-                           VK_PIPELINE_STAGE_2_BLIT_BIT, 0,
-                           VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                           VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, 0,
+                           VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                           VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                            VK_IMAGE_LAYOUT_UNDEFINED,
-                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                           VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
-    // ---- 블릿 ----
+    // ======== 두 번째 패스: 스왑체인에 전체화면 ========
     //
-    // **복사(vkCmdCopyImage)가 아니라 블릿인 이유**: 크기와 포맷이 다를 수 있다.
-    // 복사는 둘 다 같아야 하는데, 렌더 해상도는 Config.h가 정하고 창 크기는 사용자가
-    // 정한다. 블릿은 필터링하며 늘리거나 줄여준다 - 창을 리사이즈해도 렌더 해상도가
-    // 그대로인 것이 여기서 흡수된다.
-    //
-    // (전제: 두 포맷이 BLIT_SRC / BLIT_DST를 지원해야 한다. 8비트 RGBA류는 사실상
-    //  모든 구현이 지원하고, 아니면 검증 레이어가 크게 알려준다.)
-    VkImageBlit region{};
-    region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    region.srcSubresource.layerCount = 1;
-    region.srcOffsets[1] = VkOffset3D{static_cast<int32_t>(extent.width),
-                                      static_cast<int32_t>(extent.height), 1};
-    region.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    region.dstSubresource.layerCount = 1;
-    region.dstOffsets[1] = VkOffset3D{static_cast<int32_t>(target.presentExtent.width),
-                                      static_cast<int32_t>(target.presentExtent.height), 1};
+    // 첫 패스와 다른 것: **첨부가 스왑체인이고, 뎁스가 없고, 정점 버퍼가 없다.**
+    // 크기도 다르다 - 여기는 창 크기(presentExtent)로 그린다. 렌더 해상도와 창 크기가
+    // 다르면 샘플러의 LINEAR가 늘리거나 줄인다 (블릿이 하던 일이다).
+    VkRenderingAttachmentInfo present{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    present.imageView = target.present->view;
+    present.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    present.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;   // 전체를 덮으니 지울 필요가 없다
+    present.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 
-    vk.vkCmdBlitImage(cmd,
-                      draw.color.handle, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                      target.present->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                      1, &region, VK_FILTER_LINEAR);
+    VkRenderingInfo presentPass{VK_STRUCTURE_TYPE_RENDERING_INFO};
+    presentPass.renderArea.extent = target.presentExtent;
+    presentPass.layerCount = 1;
+    presentPass.colorAttachmentCount = 1;
+    presentPass.pColorAttachments = &present;
+
+    vk.vkCmdBeginRendering(cmd, &presentPass);
+
+    // **y를 안 뒤집는다.** 첫 패스는 GLM 규약을 맞추려고 뒤집었지만, 여기는 셰이더가
+    // uv를 직접 만들어 쓰므로 뒤집으면 화면이 상하로 뒤집힌다.
+    VkViewport presentViewport{};
+    presentViewport.width = static_cast<float>(target.presentExtent.width);
+    presentViewport.height = static_cast<float>(target.presentExtent.height);
+    presentViewport.maxDepth = 1.0f;
+    vk.vkCmdSetViewport(cmd, 0, 1, &presentViewport);
+
+    VkRect2D presentScissor{};
+    presentScissor.extent = target.presentExtent;
+    vk.vkCmdSetScissor(cmd, 0, 1, &presentScissor);
+
+    vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, fullscreen.handle);
+
+    // **푸시 상수 대신 디스크립터 셋을 건다.** 값이 아니라 이미지라 커맨드에 실을 수 없고,
+    // "이 셋을 0번 자리에 붙여라"만 명령으로 나간다.
+    vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, fullscreen.layout,
+                               0, 1, &colorSet, 0, nullptr);
+
+    // 정점 3개, 정점 버퍼 없음. 셰이더가 gl_VertexIndex로 만든다.
+    vk.vkCmdDraw(cmd, 3, 1, 0, 0);
+
+    vk.vkCmdEndRendering(cmd);
 
     // ---- present 가능한 레이아웃으로 ----
-    // **뎁스는 아무 전이도 안 한다.** 화면에 나갈 일이 없고 다음 프레임에 다시
-    // UNDEFINED에서 시작한다.
     RecordLayoutTransition(vk, cmd, target.present->image, VK_IMAGE_ASPECT_COLOR_BIT,
-                           VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                           VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                           VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                            VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0,
-                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                            VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 
     if (vk.vkEndCommandBuffer(cmd) != VK_SUCCESS) {
@@ -286,7 +304,9 @@ int main() {
     Window         window;         // 스왑체인을 품는다 -> dev보다 먼저 죽어야 한다
     Commands       commands;
     Frame          frames[kFramesInFlight];   // **한 벌씩. 배열이 된 게 전부다**
+    Descriptors    descriptors;
     Pipeline       pipeline;
+    Pipeline       fullscreen;
     Buffer         vertexBuffer;   // 파괴: 첫 번째
 
     // ========================================================================
@@ -320,15 +340,24 @@ int main() {
     // 큐 패밀리마다 풀 하나. 디바이스 수명이다.
     if (!CreateCommands(dev, &commands)) { return 1; }
 
+    // 프레임마다 셋 하나. **풀은 자라지 않아서 최대 개수를 미리 말해야 한다.**
+    if (!CreateDescriptors(dev, kFramesInFlight, &descriptors)) { return 1; }
+
     // frames-in-flight마다 한 벌.
     for (Frame& f : frames) {
-        if (!CreateFrame(dev, commands, formats, &f)) { return 1; }
+        if (!CreateFrame(dev, commands, descriptors, formats, &f)) { return 1; }
     }
 
     // 파이프라인은 **포맷**에 묶인다 (크기는 동적 상태라 안 묶인다).
     // **창 포맷이 아니라 우리 렌더 타겟 포맷이다.** 파이프라인이 그리는 곳은
     // 오프스크린 이미지고, 스왑체인 포맷과는 블릿이 매개한다.
     if (!CreateTrianglePipeline(dev, formats, &pipeline)) {
+        return 1;
+    }
+    // **두 번째 파이프라인.** 계약의 상대가 다르다 - 스왑체인 포맷에 그리고,
+    // 뎁스가 없고, 정점 대신 이미지를 읽는다.
+    if (!CreateFullscreenPipeline(dev, window.surfaceFormat.format,
+                                  descriptors.setLayout, &fullscreen)) {
         return 1;
     }
 
@@ -395,7 +424,8 @@ int main() {
         // 기록이 실패하면 **제출하지 않고 끝낸다.** 무효한 커맨드 버퍼를 제출하는 것은
         // 스펙 위반이고, 여기서 continue하면 이미 신호된 imageAvailable을 기다릴 사람이
         // 없어진 채로 다음 acquire가 같은 세마포어를 다시 신호하게 된다.
-        if (!RecordFrame(dev.table, frame.cmd, target, pipeline, vertexBuffer)) {
+        if (!RecordFrame(dev.table, frame.cmd, target, pipeline, vertexBuffer,
+                         fullscreen, frame.colorSet)) {
             break;
         }
 

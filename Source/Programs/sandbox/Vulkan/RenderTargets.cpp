@@ -94,10 +94,10 @@ bool CreateRenderTargets(const VulkanDevice& dev, VkExtent2D extent,
     out->dev = &dev;
     out->extent = extent;
 
-    // TRANSFER_SRC가 붙는 것이 오프스크린의 표식이다 - 여기에 그린 다음
-    // **다른 곳으로 복사해 나간다**. 스왑체인 이미지에는 이게 필요 없었다.
+    // **SAMPLED가 붙는 것이 오프스크린의 표식이다** - 여기에 그린 다음 두 번째 패스가
+    // 이것을 텍스처로 읽는다. 한때 TRANSFER_SRC였다(블릿으로 내보냈다).
     if (!CreateImage2D(dev, extent, formats.color,
-                       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                        VK_IMAGE_ASPECT_COLOR_BIT, &out->color)) {
         return false;
     }

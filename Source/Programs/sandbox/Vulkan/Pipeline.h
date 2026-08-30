@@ -1,5 +1,6 @@
 ﻿#pragma once
 
+#include "Vulkan/Descriptors.h"
 #include "Vulkan/RenderTargets.h"
 
 // ============================================================================
@@ -40,3 +41,18 @@ struct PushConstants {
 bool CreateTrianglePipeline(const VulkanDevice& dev,
                             RenderTargetFormats formats,
                             Pipeline* out) noexcept;
+
+// 전체화면 패스용. **첫 패스의 결과를 텍스처로 읽어 스왑체인에 그린다.**
+//
+// 삼각형 파이프라인과 다른 점이 계약에서 드러난다:
+//   colorFormat   스왑체인 포맷이다 (우리 렌더 타겟 포맷이 아니다)
+//   뎁스          없다 - 전체화면 사각형에 깊이는 의미가 없다
+//   정점 입력     없다 - 셰이더가 gl_VertexIndex로 세 점을 만든다
+//   setLayout     있다 - 이미지를 읽으므로 파이프라인 레이아웃이 비지 않는다
+//
+// **일부러 CreateTrianglePipeline을 복제해서 썼다.** 무엇이 실제로 공통인지는
+// 둘을 나란히 놓고 봐야 알 수 있고, 미리 추측해서 인자로 빼면 근거 없는 인터페이스가 된다.
+bool CreateFullscreenPipeline(const VulkanDevice& dev,
+                              VkFormat colorFormat,
+                              VkDescriptorSetLayout setLayout,
+                              Pipeline* out) noexcept;

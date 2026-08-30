@@ -1,6 +1,7 @@
 ﻿#include "Vulkan/Frame.h"
 
 bool CreateFrame(const VulkanDevice& dev, const Commands& commands,
+                 const Descriptors& descriptors,
                  RenderTargetFormats formats, Frame* out) noexcept {
     out->dev = &dev;
 
@@ -35,6 +36,10 @@ bool CreateFrame(const VulkanDevice& dev, const Commands& commands,
     if (!CreateRenderTargets(dev, renderExtent, formats, &out->targets)) {
         return false;
     }
+
+    // 타겟이 생긴 뒤에야 그것을 가리키는 셋을 만들 수 있다.
+    out->colorSet = AllocateImageSet(descriptors, out->targets.color.view);
+    if (out->colorSet == VK_NULL_HANDLE) { return false; }
     return true;
 }
 
@@ -124,9 +129,9 @@ bool SubmitFrame(const VulkanDevice& dev,
                  VkSemaphore signalWhenDone) noexcept {
     // acquire가 끝나야 이미지에 쓸 수 있고(wait), 다 쓰면 present가 알아야 한다(signal).
     //
-    // **대기 지점은 스왑체인 이미지를 처음 만지는 곳이다.** 오프스크린이 되면서 그게
-    // 색 첨부 쓰기가 아니라 블릿으로 바뀌었다. 앞의 렌더링은 우리 이미지에만 그리므로
-    // acquire를 안 기다려도 안전하다.
+    // **대기 지점은 스왑체인 이미지를 처음 만지는 곳이다.** 두 번째 패스가 스왑체인에
+    // 직접 그리므로 다시 COLOR_ATTACHMENT_OUTPUT이다 (블릿을 쓰던 동안은 BLIT이었다).
+    // 첫 패스는 우리 이미지에만 그리므로 acquire를 안 기다려도 안전하다.
     // (이론상 그만큼 겹쳐 돌 수 있지만 **재보지 않았다.** FIFO에 프레임 시간의 92%가
     //  acquire 대기라 지금 구성으로는 관측이 안 된다.)
     //
@@ -138,7 +143,7 @@ bool SubmitFrame(const VulkanDevice& dev,
     // 원래 버그였던 barrier=TOP_OF_PIPE가 마지막 경우다.
     VkSemaphoreSubmitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
     wait.semaphore = frame.imageAvailable;
-    wait.stageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
+    wait.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
 
     VkSemaphoreSubmitInfo signal{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
     signal.semaphore = signalWhenDone;
