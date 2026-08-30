@@ -70,30 +70,14 @@
 //
 // **bool인 이유**: vkBegin/EndCommandBuffer는 실패할 수 있고(메모리 부족), 실패하면
 // 커맨드 버퍼가 무효 상태다. 그걸 제출하는 것은 스펙 위반이라 호출자가 알아야 한다.
-bool RecordFrame(const VolkDeviceTable& vk,
-                 VkCommandBuffer cmd,
-                 const FrameTarget& target,
-                 const Pipeline& pipeline,
-                 const Buffer& vertexBuffer,
-                 const Pipeline& fullscreen,
-                 VkDescriptorSet colorSet) noexcept {
-    const RenderTargets& draw = *target.draw;
+// ---- 패스 1: 우리 이미지에 장면을 그린다 ----
+//
+// **스왑체인이 인자에 없다.** 창이 없어도 이 함수는 성립한다.
+static void RecordScenePass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
+                            const RenderTargets& draw,
+                            const Pipeline& pipeline,
+                            const Buffer& vertexBuffer) noexcept {
     const VkExtent2D extent = draw.extent;   // **창 크기가 아니다.** Config.h가 정한다
-    // 풀을 VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT로 만들었기에 버퍼 하나만
-    // 되감을 수 있다. 그 플래그가 없으면 풀 전체를 리셋해야 한다.
-    if (vk.vkResetCommandBuffer(cmd, 0) != VK_SUCCESS) {
-        LOG("[vk] vkResetCommandBuffer failed\n");
-        return false;
-    }
-
-    VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-    // ONE_TIME_SUBMIT: 한 번 제출하고 버릴 기록이라고 드라이버에 알린다.
-    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    if (vk.vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS) {
-        LOG("[vk] vkBeginCommandBuffer failed\n");
-        return false;
-    }
-
     // ---- 그릴 수 있는 레이아웃으로 ----
     // oldLayout이 UNDEFINED인 것은 이전 내용을 안 쓰기 때문이다 - 어차피 loadOp=CLEAR로
     // 덮는다. 보존을 요구하면 드라이버가 실제로 복사를 해야 한다.
@@ -196,6 +180,18 @@ bool RecordFrame(const VolkDeviceTable& vk,
 
     vk.vkCmdEndRendering(cmd);
 
+}
+
+// ---- 패스 2: 패스 1의 결과를 읽어 스왑체인에 그린다 ----
+//
+// **draw를 받는 것이 "앞 패스의 결과를 읽는다"는 뜻이다.** 여기에 쓰지 않고 읽기만 한다:
+//   draw.color   전이시켜서(SHADER_READ_ONLY) 샘플링한다
+//   draw.colorSet 그 이미지를 가리키는 셋 - 같은 draw에서 나오니 짝이 어긋날 수 없다
+static void RecordPresentPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
+                              const RenderTargets& draw,
+                              const SwapchainImage& present,
+                              VkExtent2D presentExtent,
+                              const Pipeline& fullscreen) noexcept {
     // ========================================================================
     // 여기까지가 첫 패스다. **스왑체인이 한 번도 안 나왔다.**
     // ========================================================================
@@ -215,7 +211,7 @@ bool RecordFrame(const VolkDeviceTable& vk,
     // **다시 색 첨부다** (블릿을 쓰던 동안은 TRANSFER_DST였다).
     // srcStage가 SubmitFrame의 wait.stageMask와 겹쳐야 한다 - 안 겹치면 이 전이가
     // acquire를 앞질러 실행될 수 있다 (동기화 검증이 잡아준 자리).
-    RecordLayoutTransition(vk, cmd, target.present->image, VK_IMAGE_ASPECT_COLOR_BIT,
+    RecordLayoutTransition(vk, cmd, present.image, VK_IMAGE_ASPECT_COLOR_BIT,
                            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, 0,
                            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
@@ -227,30 +223,30 @@ bool RecordFrame(const VolkDeviceTable& vk,
     // 첫 패스와 다른 것: **첨부가 스왑체인이고, 뎁스가 없고, 정점 버퍼가 없다.**
     // 크기도 다르다 - 여기는 창 크기(presentExtent)로 그린다. 렌더 해상도와 창 크기가
     // 다르면 샘플러의 LINEAR가 늘리거나 줄인다 (블릿이 하던 일이다).
-    VkRenderingAttachmentInfo present{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-    present.imageView = target.present->view;
-    present.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    present.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;   // 전체를 덮으니 지울 필요가 없다
-    present.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    VkRenderingAttachmentInfo swapColor{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    swapColor.imageView = present.view;
+    swapColor.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    swapColor.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;   // 전체를 덮으니 지울 필요가 없다
+    swapColor.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 
     VkRenderingInfo presentPass{VK_STRUCTURE_TYPE_RENDERING_INFO};
-    presentPass.renderArea.extent = target.presentExtent;
+    presentPass.renderArea.extent = presentExtent;
     presentPass.layerCount = 1;
     presentPass.colorAttachmentCount = 1;
-    presentPass.pColorAttachments = &present;
+    presentPass.pColorAttachments = &swapColor;
 
     vk.vkCmdBeginRendering(cmd, &presentPass);
 
     // **y를 안 뒤집는다.** 첫 패스는 GLM 규약을 맞추려고 뒤집었지만, 여기는 셰이더가
     // uv를 직접 만들어 쓰므로 뒤집으면 화면이 상하로 뒤집힌다.
     VkViewport presentViewport{};
-    presentViewport.width = static_cast<float>(target.presentExtent.width);
-    presentViewport.height = static_cast<float>(target.presentExtent.height);
+    presentViewport.width = static_cast<float>(presentExtent.width);
+    presentViewport.height = static_cast<float>(presentExtent.height);
     presentViewport.maxDepth = 1.0f;
     vk.vkCmdSetViewport(cmd, 0, 1, &presentViewport);
 
     VkRect2D presentScissor{};
-    presentScissor.extent = target.presentExtent;
+    presentScissor.extent = presentExtent;
     vk.vkCmdSetScissor(cmd, 0, 1, &presentScissor);
 
     vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, fullscreen.handle);
@@ -258,7 +254,7 @@ bool RecordFrame(const VolkDeviceTable& vk,
     // **푸시 상수 대신 디스크립터 셋을 건다.** 값이 아니라 이미지라 커맨드에 실을 수 없고,
     // "이 셋을 0번 자리에 붙여라"만 명령으로 나간다.
     vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, fullscreen.layout,
-                               0, 1, &colorSet, 0, nullptr);
+                               0, 1, &draw.colorSet, 0, nullptr);
 
     // 정점 3개, 정점 버퍼 없음. 셰이더가 gl_VertexIndex로 만든다.
     vk.vkCmdDraw(cmd, 3, 1, 0, 0);
@@ -266,12 +262,40 @@ bool RecordFrame(const VolkDeviceTable& vk,
     vk.vkCmdEndRendering(cmd);
 
     // ---- present 가능한 레이아웃으로 ----
-    RecordLayoutTransition(vk, cmd, target.present->image, VK_IMAGE_ASPECT_COLOR_BIT,
+    RecordLayoutTransition(vk, cmd, present.image, VK_IMAGE_ASPECT_COLOR_BIT,
                            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                            VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0,
                            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                            VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+
+}
+
+// 한 프레임의 기록. **패스 둘을 순서대로 부르는 것이 전부다.**
+bool RecordFrame(const VolkDeviceTable& vk,
+                 VkCommandBuffer cmd,
+                 const FrameTarget& target,
+                 const Pipeline& pipeline,
+                 const Buffer& vertexBuffer,
+                 const Pipeline& fullscreen) noexcept {
+    // 풀을 VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT로 만들었기에 버퍼 하나만
+    // 되감을 수 있다. 그 플래그가 없으면 풀 전체를 리셋해야 한다.
+    if (vk.vkResetCommandBuffer(cmd, 0) != VK_SUCCESS) {
+        LOG("[vk] vkResetCommandBuffer failed\n");
+        return false;
+    }
+
+    VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    // ONE_TIME_SUBMIT: 한 번 제출하고 버릴 기록이라고 드라이버에 알린다.
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    if (vk.vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS) {
+        LOG("[vk] vkBeginCommandBuffer failed\n");
+        return false;
+    }
+
+    RecordScenePass(vk, cmd, *target.draw, pipeline, vertexBuffer);
+    RecordPresentPass(vk, cmd, *target.draw, *target.present,
+                      target.presentExtent, fullscreen);
 
     if (vk.vkEndCommandBuffer(cmd) != VK_SUCCESS) {
         LOG("[vk] vkEndCommandBuffer failed\n");
@@ -425,7 +449,7 @@ int main() {
         // 스펙 위반이고, 여기서 continue하면 이미 신호된 imageAvailable을 기다릴 사람이
         // 없어진 채로 다음 acquire가 같은 세마포어를 다시 신호하게 된다.
         if (!RecordFrame(dev.table, frame.cmd, target, pipeline, vertexBuffer,
-                         fullscreen, frame.colorSet)) {
+                         fullscreen)) {
             break;
         }
 

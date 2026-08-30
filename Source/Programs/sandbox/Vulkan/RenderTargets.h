@@ -26,7 +26,7 @@
 //   그릴 곳의 구성을 바꾸면(HDR · MSAA · G-buffer) -> 여기
 // ---------------------------------------------------------------------------
 
-#include "Vulkan/Device.h"
+#include "Vulkan/Descriptors.h"
 
 // 우리가 만들고 우리가 지우는 이미지 한 장 + 그 뷰.
 //
@@ -44,6 +44,16 @@ struct RenderTargets {
     Image color;
     Image depth;
     VkExtent2D extent{};
+
+    // **color를 셰이더가 읽는 손잡이.** 두 번째 패스가 이걸 바인딩한다.
+    //
+    // 여기 있는 이유: 이 셋은 **위 color.view를 가리킨다.** 따로 들고 다니면 다른
+    // 프레임의 이미지를 가리켜도 컴파일된다 - image와 imageIndex를 묶은 것과 같다.
+    // 같은 draw에서 "여기 그린다(color.view)"와 "이걸 읽는다(colorSet)"가 나오면
+    // 패스 사이의 연결이 코드에 보인다.
+    //
+    // 풀이 죽을 때 같이 사라지므로 소멸자가 따로 안 지운다.
+    VkDescriptorSet colorSet = VK_NULL_HANDLE;
 
     RenderTargets() = default;
     ~RenderTargets();
@@ -71,5 +81,6 @@ struct RenderTargetFormats {
 RenderTargetFormats ChooseRenderTargetFormats(const VulkanInstance& inst,
                                               VkPhysicalDevice gpu) noexcept;
 
-bool CreateRenderTargets(const VulkanDevice& dev, VkExtent2D extent,
-                         RenderTargetFormats formats, RenderTargets* out) noexcept;
+bool CreateRenderTargets(const VulkanDevice& dev, const Descriptors& descriptors,
+                         VkExtent2D extent, RenderTargetFormats formats,
+                         RenderTargets* out) noexcept;

@@ -89,8 +89,9 @@ RenderTargetFormats ChooseRenderTargetFormats(const VulkanInstance& inst,
     return formats;
 }
 
-bool CreateRenderTargets(const VulkanDevice& dev, VkExtent2D extent,
-                         RenderTargetFormats formats, RenderTargets* out) noexcept {
+bool CreateRenderTargets(const VulkanDevice& dev, const Descriptors& descriptors,
+                         VkExtent2D extent, RenderTargetFormats formats,
+                         RenderTargets* out) noexcept {
     out->dev = &dev;
     out->extent = extent;
 
@@ -108,6 +109,10 @@ bool CreateRenderTargets(const VulkanDevice& dev, VkExtent2D extent,
                        VK_IMAGE_ASPECT_DEPTH_BIT, &out->depth)) {
         return false;
     }
+
+    // 색 이미지가 생긴 뒤에야 그것을 가리키는 셋을 만들 수 있다.
+    out->colorSet = AllocateImageSet(descriptors, out->color.view);
+    if (out->colorSet == VK_NULL_HANDLE) { return false; }
     return true;
 }
 

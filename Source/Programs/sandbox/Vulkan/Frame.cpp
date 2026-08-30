@@ -33,13 +33,9 @@ bool CreateFrame(const VulkanDevice& dev, const Commands& commands,
     // **그릴 곳은 창을 안 보고 만든다.** Config.h가 정한 고정 해상도다.
     // 스왑체인이 아직 없어도(최소화된 채로 실행) 여기는 성립한다 - 그게 요점이다.
     const VkExtent2D renderExtent{kRenderWidth, kRenderHeight};
-    if (!CreateRenderTargets(dev, renderExtent, formats, &out->targets)) {
+    if (!CreateRenderTargets(dev, descriptors, renderExtent, formats, &out->targets)) {
         return false;
     }
-
-    // 타겟이 생긴 뒤에야 그것을 가리키는 셋을 만들 수 있다.
-    out->colorSet = AllocateImageSet(descriptors, out->targets.color.view);
-    if (out->colorSet == VK_NULL_HANDLE) { return false; }
     return true;
 }
 
