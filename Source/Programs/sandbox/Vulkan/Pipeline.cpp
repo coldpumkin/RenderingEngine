@@ -61,15 +61,48 @@ VkShaderModule LoadShader(const VulkanDevice& dev, const char* path) noexcept {
     return module;
 }
 
-// 파이프라인 + 레이아웃. 둘이 같이 태어나고 같이 죽는다.
-bool CreateTrianglePipeline(const VulkanDevice& dev,
-                            RenderTargetFormats formats,
-                            Pipeline* out) noexcept {
+// ============================================================================
+// 두 파이프라인이 실제로 무엇이 다른가
+// ============================================================================
+//
+// 삼각형용과 전체화면용을 **일부러 복제해서 써본 뒤** diff를 재봤다.
+// 주석·빈줄 빼고 123줄 중 **74줄(60%)이 같았고**, 다른 것은 다섯뿐이었다:
+//
+//   셰이더 경로 · 정점 입력 · 뎁스 · 파이프라인 레이아웃의 내용 · 첨부 포맷
+//
+// 나머지 차이는 전부 주석과 로그 문구였다. inputAssembly·rasterization·multisample·
+// 블렌딩·뷰포트·동적 상태는 값이 완전히 같았다 - **아직 달라질 이유가 없어서**
+// 인자로 안 뺐다. MSAA를 켜거나 와이어프레임을 그리게 되면 그때 하나씩 올라온다.
+//
+// 복제해두지 않았으면 무엇이 진짜 공통인지 추측해야 했다. 예를 들어 "셰이더 스테이지
+// 두 개"는 공통일 것 같지만 실제로는 경로만 다르고 나머지가 같았고, "정점 입력"은
+// 파라미터화할 것 같았지만 전체화면 쪽은 **아예 없는** 것이라 bool로 갈리지 않았다.
+struct GraphicsPipelineDesc {
+    const char* vertPath = nullptr;
+    const char* fragPath = nullptr;
+
+    // nullptr이면 정점 버퍼를 안 쓴다 (셰이더가 gl_VertexIndex로 만든다).
+    const VkPipelineVertexInputStateCreateInfo* vertexInput = nullptr;
+
+    VkFormat colorFormat = VK_FORMAT_UNDEFINED;
+    // **UNDEFINED면 뎁스 첨부도 뎁스 테스트도 없다.** 둘을 따로 두면 "포맷은 줬는데
+    // 테스트는 껐다" 같은 어긋난 조합이 생긴다.
+    VkFormat depthFormat = VK_FORMAT_UNDEFINED;
+
+    // 셰이더가 정점 말고 무엇을 받나. 둘 다 없어도, 둘 다 있어도 된다.
+    const VkPushConstantRange* pushConstants = nullptr;
+    VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
+};
+
+// 위 다섯을 뺀 나머지 - 두 파이프라인이 똑같이 쓰는 것들이 여기 한 번만 있다.
+static bool CreateGraphicsPipeline(const VulkanDevice& dev,
+                                   const GraphicsPipelineDesc& desc,
+                                   Pipeline* out) noexcept {
     Pipeline& pipeline = *out;
     pipeline.dev = &dev;
 
-    VkShaderModule vs = LoadShader(dev, "Shaders/triangle.vert.spv");
-    VkShaderModule fs = LoadShader(dev, "Shaders/triangle.frag.spv");
+    VkShaderModule vs = LoadShader(dev, desc.vertPath);
+    VkShaderModule fs = LoadShader(dev, desc.fragPath);
     if (vs == VK_NULL_HANDLE || fs == VK_NULL_HANDLE) {
         if (vs != VK_NULL_HANDLE) { dev.table.vkDestroyShaderModule(dev.handle, vs, nullptr); }
         if (fs != VK_NULL_HANDLE) { dev.table.vkDestroyShaderModule(dev.handle, fs, nullptr); }
@@ -86,36 +119,9 @@ bool CreateTrianglePipeline(const VulkanDevice& dev,
     stages[1].module = fs;
     stages[1].pName = "main";
 
-    // ---- 정점 입력: GPU에게 "정점 데이터를 어떻게 읽어라"를 알려준다 ----
-    //
-    // binding  버퍼 슬롯 하나. stride는 한 정점의 크기, inputRate는 정점마다 넘길지
-    //          인스턴스마다 넘길지. 여러 버퍼로 나눠 담으면 binding이 늘어난다.
-    // attribute 그 안의 필드 하나. location은 셰이더의 layout(location=N) in과 짝이다.
-    //
-    // **format이 크기까지 정한다**: R32G32_SFLOAT = float 2개. 셰이더가 vec3으로 받아도
-    // 여기가 vec2면 z는 0이 된다 - 조용히 틀리는 자리라 offsetof로 묶어둔다.
-    VkVertexInputBindingDescription binding{};
-    binding.binding = 0;
-    binding.stride = sizeof(Vertex);
-    binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-
-    VkVertexInputAttributeDescription attributes[2]{};
-    attributes[0].location = 0;                             // layout(location = 0) in vec3
-    attributes[0].binding = 0;
-    attributes[0].format = VK_FORMAT_R32G32B32_SFLOAT;      // 뎁스가 생기며 vec2 -> vec3
-    attributes[0].offset = offsetof(Vertex, position);
-    attributes[1].location = 1;                             // layout(location = 1) in vec3
-    attributes[1].binding = 0;
-    attributes[1].format = VK_FORMAT_R32G32B32_SFLOAT;
-    attributes[1].offset = offsetof(Vertex, color);
-
-    VkPipelineVertexInputStateCreateInfo vertexInput{
+    // 안 준 경우를 위한 빈 것. 정점 버퍼를 안 쓴다는 뜻이다.
+    const VkPipelineVertexInputStateCreateInfo emptyVertexInput{
         VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
-    vertexInput.vertexBindingDescriptionCount = 1;
-    vertexInput.pVertexBindingDescriptions = &binding;
-    vertexInput.vertexAttributeDescriptionCount =
-        static_cast<uint32_t>(std::size(attributes));
-    vertexInput.pVertexAttributeDescriptions = attributes;
 
     VkPipelineInputAssemblyStateCreateInfo inputAssembly{
         VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
@@ -123,9 +129,6 @@ bool CreateTrianglePipeline(const VulkanDevice& dev,
 
     // **뷰포트와 시저를 동적 상태로 둔다.** 여기 값을 박으면 창 크기가 바뀔 때마다
     // 파이프라인을 다시 만들어야 한다. 동적으로 두면 매 프레임 vkCmdSetViewport로 준다.
-    //
-    // (여기서 말하는 "뷰포트"는 창이 아니라 **렌더 타겟 안의 사각 영역 + 깊이 범위**다.
-    //  같은 단어의 다른 뜻이다.)
     VkPipelineViewportStateCreateInfo viewportState{
         VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
     viewportState.viewportCount = 1;
@@ -143,7 +146,7 @@ bool CreateTrianglePipeline(const VulkanDevice& dev,
     VkPipelineRasterizationStateCreateInfo rasterization{
         VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
     rasterization.polygonMode = VK_POLYGON_MODE_FILL;
-    rasterization.cullMode = VK_CULL_MODE_NONE;   // 뒷면도 그린다. 삼각형 하나뿐이라 상관없다
+    rasterization.cullMode = VK_CULL_MODE_NONE;   // 뒷면도 그린다
     rasterization.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     rasterization.lineWidth = 1.0f;               // **0이면 검증 레이어가 잡는다**
 
@@ -162,65 +165,54 @@ bool CreateTrianglePipeline(const VulkanDevice& dev,
     colorBlend.attachmentCount = 1;
     colorBlend.pAttachments = &blendAttachment;
 
-    // ---- 뎁스 테스트 ----
-    //
-    // 이게 없으면(pDepthStencilState = nullptr) 뎁스 첨부를 붙여도 아무 일도 안 일어난다.
-    //
-    // **compareOp = LESS + 클리어 값 1.0**: 뎁스는 0(가까움)~1(멈)이고, 새 픽셀의 깊이가
-    // 기존보다 **작을 때만** 통과한다. 그래서 가까운 것이 먼 것을 덮는다.
-    // (역방향 뎁스 - 1.0으로 클리어하지 않고 GREATER를 쓰는 - 는 부동소수 정밀도가
-    //  0 근처에 몰리는 것을 먼 쪽에 쓰는 기법인데, 지금 필요하지 않다.)
-    //
-    // **depthWriteEnable**: 통과한 픽셀이 자기 깊이를 기록한다. 반투명을 그릴 때는
-    // 이걸 끄고 정렬해서 그린다 - 그때 이 두 스위치가 갈린다.
+    // **compareOp = LESS + 클리어 1.0**: 새 픽셀의 깊이가 기존보다 작을 때만 통과한다.
+    // 그래서 가까운 것이 먼 것을 덮는다. depthWriteEnable을 끄고 정렬해 그리는 것이
+    // 반투명을 다루는 방법이고, 그때 이 두 스위치가 갈린다.
+    const bool useDepth = desc.depthFormat != VK_FORMAT_UNDEFINED;
     VkPipelineDepthStencilStateCreateInfo depthStencil{
         VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
     depthStencil.depthTestEnable = VK_TRUE;
     depthStencil.depthWriteEnable = VK_TRUE;
     depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
-    depthStencil.depthBoundsTestEnable = VK_FALSE;
-    depthStencil.stencilTestEnable = VK_FALSE;
 
-    // 레이아웃: 셰이더가 받는 외부 자원(유니폼, 푸시 상수)의 모양.
-    //
-    // **stageFlags가 실제로 읽는 스테이지와 맞아야 한다.** 정점 셰이더만 쓰는데
-    // FRAGMENT까지 켜면 낭비고, 반대로 빠뜨리면 검증 레이어가 잡는다.
-    VkPushConstantRange pushRange{};
-    pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-    pushRange.offset = 0;
-    pushRange.size = sizeof(PushConstants);
-
+    // 레이아웃: 셰이더가 받는 외부 자원(푸시 상수, 디스크립터)의 모양.
+    // 둘 다 없으면 비어 있는 채로 만든다 - 그래도 만들어야 한다.
     VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-    layoutInfo.pushConstantRangeCount = 1;
-    layoutInfo.pPushConstantRanges = &pushRange;
+    if (desc.pushConstants != nullptr) {
+        layoutInfo.pushConstantRangeCount = 1;
+        layoutInfo.pPushConstantRanges = desc.pushConstants;
+    }
+    if (desc.setLayout != VK_NULL_HANDLE) {
+        layoutInfo.setLayoutCount = 1;
+        layoutInfo.pSetLayouts = &desc.setLayout;
+    }
     if (dev.table.vkCreatePipelineLayout(dev.handle, &layoutInfo, nullptr, &pipeline.layout)
             != VK_SUCCESS) {
-        LOG("[vk] vkCreatePipelineLayout failed\n");
+        LOG("[vk] vkCreatePipelineLayout failed: %s\n", desc.vertPath);
         dev.table.vkDestroyShaderModule(dev.handle, vs, nullptr);
         dev.table.vkDestroyShaderModule(dev.handle, fs, nullptr);
         return false;
     }
 
-    // **다이나믹 렌더링**: VkRenderPass 객체를 안 만드는 대신, 그릴 대상의 포맷을
-    // 여기에 미리 알려준다. 파이프라인이 스왑체인 포맷에 묶이는 지점이 정확히 여기다.
+    // **다이나믹 렌더링**: VkRenderPass 객체를 안 만드는 대신 그릴 대상의 포맷을
+    // 여기에 미리 알려준다. 파이프라인이 렌더 타겟 포맷에 묶이는 지점이 정확히 여기다.
     VkPipelineRenderingCreateInfo pipelineRendering{
         VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
     pipelineRendering.colorAttachmentCount = 1;
-    pipelineRendering.pColorAttachmentFormats = &formats.color;
-    // 뎁스도 여기 적는다. **RecordFrame이 붙이는 뎁스 뷰의 포맷과 같아야 한다** -
-    // 어긋나면 파이프라인 생성이 아니라 렌더링 시점에 검증 레이어가 잡는다.
-    pipelineRendering.depthAttachmentFormat = formats.depth;
+    pipelineRendering.pColorAttachmentFormats = &desc.colorFormat;
+    pipelineRendering.depthAttachmentFormat = desc.depthFormat;   // UNDEFINED면 뎁스 없음
 
     VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
     info.pNext = &pipelineRendering;
     info.stageCount = 2;
     info.pStages = stages;
-    info.pVertexInputState = &vertexInput;
+    info.pVertexInputState =
+        desc.vertexInput != nullptr ? desc.vertexInput : &emptyVertexInput;
     info.pInputAssemblyState = &inputAssembly;
     info.pViewportState = &viewportState;
     info.pRasterizationState = &rasterization;
     info.pMultisampleState = &multisample;
-    info.pDepthStencilState = &depthStencil;
+    info.pDepthStencilState = useDepth ? &depthStencil : nullptr;
     info.pColorBlendState = &colorBlend;
     info.pDynamicState = &dynamicState;
     info.layout = pipeline.layout;
@@ -230,16 +222,86 @@ bool CreateTrianglePipeline(const VulkanDevice& dev,
         dev.handle, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline.handle);
 
     // **셰이더 모듈은 파이프라인이 만들어지고 나면 필요 없다.** 코드가 파이프라인 안으로
-    // 컴파일돼 들어갔다. 계속 들고 있을 이유가 없다.
+    // 컴파일돼 들어갔다.
     dev.table.vkDestroyShaderModule(dev.handle, vs, nullptr);
     dev.table.vkDestroyShaderModule(dev.handle, fs, nullptr);
 
     if (created != VK_SUCCESS) {
-        LOG("[vk] vkCreateGraphicsPipelines failed (%d)\n", created);
+        LOG("[vk] vkCreateGraphicsPipelines failed (%d): %s\n", created, desc.vertPath);
         return false;   // layout은 ~Pipeline이 정리한다
     }
+    return true;
+}
 
+// ---- 장면용: 정점 버퍼를 읽고 뎁스 테스트를 한다 ----
+bool CreateTrianglePipeline(const VulkanDevice& dev,
+                            RenderTargetFormats formats,
+                            Pipeline* out) noexcept {
+    // ---- 정점 입력: GPU에게 "정점 데이터를 어떻게 읽어라"를 알려준다 ----
+    //
+    // binding  버퍼 슬롯 하나. stride는 한 정점의 크기.
+    // attribute 그 안의 필드 하나. location은 셰이더의 layout(location=N) in과 짝이다.
+    //
+    // **format이 크기까지 정한다**: 셰이더가 vec3으로 받아도 여기가 vec2면 z는 0이 된다 -
+    // 조용히 틀리는 자리라 offsetof로 묶어둔다.
+    VkVertexInputBindingDescription binding{};
+    binding.binding = 0;
+    binding.stride = sizeof(Vertex);
+    binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+    VkVertexInputAttributeDescription attributes[2]{};
+    attributes[0].location = 0;                             // layout(location = 0) in vec3
+    attributes[0].binding = 0;
+    attributes[0].format = VK_FORMAT_R32G32B32_SFLOAT;
+    attributes[0].offset = offsetof(Vertex, position);
+    attributes[1].location = 1;                             // layout(location = 1) in vec3
+    attributes[1].binding = 0;
+    attributes[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+    attributes[1].offset = offsetof(Vertex, color);
+
+    VkPipelineVertexInputStateCreateInfo vertexInput{
+        VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    vertexInput.vertexBindingDescriptionCount = 1;
+    vertexInput.pVertexBindingDescriptions = &binding;
+    vertexInput.vertexAttributeDescriptionCount =
+        static_cast<uint32_t>(std::size(attributes));
+    vertexInput.pVertexAttributeDescriptions = attributes;
+
+    // **stageFlags가 실제로 읽는 스테이지와 맞아야 한다.** 정점 셰이더만 쓰는데
+    // FRAGMENT까지 켜면 낭비고, 빠뜨리면 검증 레이어가 잡는다.
+    VkPushConstantRange pushRange{};
+    pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    pushRange.offset = 0;
+    pushRange.size = sizeof(PushConstants);
+
+    GraphicsPipelineDesc desc;
+    desc.vertPath = "Shaders/triangle.vert.spv";
+    desc.fragPath = "Shaders/triangle.frag.spv";
+    desc.vertexInput = &vertexInput;
+    desc.colorFormat = formats.color;
+    desc.depthFormat = formats.depth;
+    desc.pushConstants = &pushRange;
+
+    if (!CreateGraphicsPipeline(dev, desc, out)) { return false; }
     LOG("[vk] triangle pipeline ready\n");
+    return true;
+}
+
+// ---- 전체화면용: 정점도 뎁스도 없고, 대신 이미지를 읽는다 ----
+bool CreateFullscreenPipeline(const VulkanDevice& dev,
+                              VkFormat colorFormat,
+                              VkDescriptorSetLayout setLayout,
+                              Pipeline* out) noexcept {
+    GraphicsPipelineDesc desc;
+    desc.vertPath = "Shaders/fullscreen.vert.spv";
+    desc.fragPath = "Shaders/fullscreen.frag.spv";
+    // vertexInput 없음   - 셰이더가 gl_VertexIndex로 세 점을 만든다
+    // depthFormat 없음   - 화면을 덮는 삼각형에 깊이 비교는 의미가 없다
+    desc.colorFormat = colorFormat;   // **스왑체인 포맷이다.** 계약의 상대가 다르다
+    desc.setLayout = setLayout;
+
+    if (!CreateGraphicsPipeline(dev, desc, out)) { return false; }
+    LOG("[vk] fullscreen pipeline ready\n");
     return true;
 }
 
@@ -251,132 +313,4 @@ Pipeline::~Pipeline() {
     if (layout != VK_NULL_HANDLE) {
         dev->table.vkDestroyPipelineLayout(dev->handle, layout, nullptr);
     }
-}
-// ============================================================================
-// 전체화면 패스 - 첫 패스의 결과를 텍스처로 읽어 스왑체인에 그린다
-// ============================================================================
-//
-// **삼각형 파이프라인의 복제다.** 무엇이 실제로 공통인지 둘을 나란히 놓고 보려고
-// 일부러 그렇게 뒀다. 다른 부분에만 표시를 해뒀다.
-bool CreateFullscreenPipeline(const VulkanDevice& dev,
-                              VkFormat colorFormat,
-                              VkDescriptorSetLayout setLayout,
-                              Pipeline* out) noexcept {
-    Pipeline& pipeline = *out;
-    pipeline.dev = &dev;
-
-    VkShaderModule vs = LoadShader(dev, "Shaders/fullscreen.vert.spv");
-    VkShaderModule fs = LoadShader(dev, "Shaders/fullscreen.frag.spv");
-    if (vs == VK_NULL_HANDLE || fs == VK_NULL_HANDLE) {
-        if (vs != VK_NULL_HANDLE) { dev.table.vkDestroyShaderModule(dev.handle, vs, nullptr); }
-        if (fs != VK_NULL_HANDLE) { dev.table.vkDestroyShaderModule(dev.handle, fs, nullptr); }
-        return false;
-    }
-
-    VkPipelineShaderStageCreateInfo stages[2]{};
-    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-    stages[0].module = vs;
-    stages[0].pName = "main";
-    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    stages[1].module = fs;
-    stages[1].pName = "main";
-
-    // **[다름] 정점 입력이 비어 있다.** 정점 버퍼를 안 쓰고 셰이더가 gl_VertexIndex로
-    // 세 점을 만든다. 그래서 계약 둘 중 "정점 레이아웃"이 아예 없다.
-    VkPipelineVertexInputStateCreateInfo vertexInput{
-        VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
-
-    VkPipelineInputAssemblyStateCreateInfo inputAssembly{
-        VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
-    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-
-    VkPipelineViewportStateCreateInfo viewportState{
-        VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
-    viewportState.viewportCount = 1;
-    viewportState.scissorCount = 1;
-
-    constexpr VkDynamicState kDynamicStates[] = {
-        VK_DYNAMIC_STATE_VIEWPORT,
-        VK_DYNAMIC_STATE_SCISSOR,
-    };
-    VkPipelineDynamicStateCreateInfo dynamicState{
-        VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
-    dynamicState.dynamicStateCount = static_cast<uint32_t>(std::size(kDynamicStates));
-    dynamicState.pDynamicStates = kDynamicStates;
-
-    VkPipelineRasterizationStateCreateInfo rasterization{
-        VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
-    rasterization.polygonMode = VK_POLYGON_MODE_FILL;
-    rasterization.cullMode = VK_CULL_MODE_NONE;
-    rasterization.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-    rasterization.lineWidth = 1.0f;
-
-    VkPipelineMultisampleStateCreateInfo multisample{
-        VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-    multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-
-    VkPipelineColorBlendAttachmentState blendAttachment{};
-    blendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT
-                                   | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-    blendAttachment.blendEnable = VK_FALSE;
-
-    VkPipelineColorBlendStateCreateInfo colorBlend{
-        VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-    colorBlend.attachmentCount = 1;
-    colorBlend.pAttachments = &blendAttachment;
-
-    // **[다름] 뎁스 상태가 없다.** pDepthStencilState를 안 준다 - 화면을 덮는 사각형
-    // 하나에 깊이 비교는 의미가 없고, 뎁스 첨부도 안 붙인다.
-
-    // **[다름] 레이아웃이 비어 있지 않다.** 셋 레이아웃 하나를 받는다 -
-    // 셰이더가 이미지를 읽으니까. 삼각형 쪽은 푸시 상수만 있었다.
-    VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-    layoutInfo.setLayoutCount = 1;
-    layoutInfo.pSetLayouts = &setLayout;
-    if (dev.table.vkCreatePipelineLayout(dev.handle, &layoutInfo, nullptr, &pipeline.layout)
-            != VK_SUCCESS) {
-        LOG("[vk] vkCreatePipelineLayout(fullscreen) failed\n");
-        dev.table.vkDestroyShaderModule(dev.handle, vs, nullptr);
-        dev.table.vkDestroyShaderModule(dev.handle, fs, nullptr);
-        return false;
-    }
-
-    // **[다름] 색 포맷이 스왑체인 것이고 뎁스 포맷이 없다.**
-    // 계약의 상대가 우리 렌더 타겟이 아니라 스왑체인 이미지다.
-    VkPipelineRenderingCreateInfo pipelineRendering{
-        VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-    pipelineRendering.colorAttachmentCount = 1;
-    pipelineRendering.pColorAttachmentFormats = &colorFormat;
-
-    VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
-    info.pNext = &pipelineRendering;
-    info.stageCount = 2;
-    info.pStages = stages;
-    info.pVertexInputState = &vertexInput;
-    info.pInputAssemblyState = &inputAssembly;
-    info.pViewportState = &viewportState;
-    info.pRasterizationState = &rasterization;
-    info.pMultisampleState = &multisample;
-    info.pColorBlendState = &colorBlend;
-    info.pDynamicState = &dynamicState;
-    info.layout = pipeline.layout;
-    info.renderPass = VK_NULL_HANDLE;
-
-    const VkResult created = dev.table.vkCreateGraphicsPipelines(
-        dev.handle, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline.handle);
-
-    dev.table.vkDestroyShaderModule(dev.handle, vs, nullptr);
-    dev.table.vkDestroyShaderModule(dev.handle, fs, nullptr);
-
-    if (created != VK_SUCCESS) {
-        LOG("[vk] vkCreateGraphicsPipelines(fullscreen) failed (%d)\n", created);
-        dev.table.vkDestroyPipelineLayout(dev.handle, pipeline.layout, nullptr);
-        pipeline.layout = VK_NULL_HANDLE;
-        return false;
-    }
-
-    LOG("[vk] fullscreen pipeline ready\n");
-    return true;
 }
