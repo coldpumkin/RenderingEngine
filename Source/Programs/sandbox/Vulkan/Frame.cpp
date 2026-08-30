@@ -126,8 +126,16 @@ bool SubmitFrame(const VulkanDevice& dev,
     //
     // **대기 지점은 스왑체인 이미지를 처음 만지는 곳이다.** 오프스크린이 되면서 그게
     // 색 첨부 쓰기가 아니라 블릿으로 바뀌었다. 앞의 렌더링은 우리 이미지에만 그리므로
-    // acquire를 안 기다려도 된다 - 그만큼 겹쳐서 돈다.
-    // 이 값은 RecordFrame의 "스왑체인 -> TRANSFER_DST" 배리어의 srcStageMask와 같아야 한다.
+    // acquire를 안 기다려도 안전하다.
+    // (이론상 그만큼 겹쳐 돌 수 있지만 **재보지 않았다.** FIFO에 프레임 시간의 92%가
+    //  acquire 대기라 지금 구성으로는 관측이 안 된다.)
+    //
+    // 이 값은 RecordFrame의 "스왑체인 -> TRANSFER_DST" 배리어 srcStageMask와
+    // **겹쳐야 한다.** 같을 필요는 없다 - 동기화 검증으로 확인했다:
+    //   wait=BLIT,           barrier=BLIT|COPY   -> 0건
+    //   wait=BLIT|COLOR_OUT, barrier=BLIT        -> 0건
+    //   wait=BLIT,           barrier=COPY        -> **20건** (겹치는 게 없다)
+    // 원래 버그였던 barrier=TOP_OF_PIPE가 마지막 경우다.
     VkSemaphoreSubmitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
     wait.semaphore = frame.imageAvailable;
     wait.stageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
