@@ -51,22 +51,25 @@ struct RenderTargets {
     RenderTargets& operator=(const RenderTargets&) = delete;
 };
 
-// 색은 항상 이 포맷으로 그린다. **스왑체인 포맷과 독립이다** - 블릿이 변환해준다.
+// **우리 렌더 타겟의 포맷 계약.** 값 둘이 아니라 하나다.
 //
-// UNORM인 이유: 지금 셰이더가 이미 sRGB 값을 내놓는 것처럼 동작하고 있었다
-// (스왑체인이 _SRGB라 하드웨어가 변환해줬다). 오프스크린을 _SRGB로 두면 변환이
-// 두 번 일어난다. 나중에 HDR로 갈 때 여기가 R16G16B16A16_SFLOAT가 되는 자리다.
-constexpr VkFormat kRenderColorFormat = VK_FORMAT_R8G8B8A8_SRGB;
-
-// 뎁스는 상수로 못 박는다. 스펙이 보장하는 것은 D32_SFLOAT와 X8_D24_UNORM_PACK32 중
-// **최소 하나**지 특정 하나가 아니다. 그래서 물어보고 고른다.
+// 만드는 쪽(CreateRenderTargets)과 맞추는 쪽(파이프라인)이 **같은 것을 봐야 한다** -
+// 다이나믹 렌더링은 포맷을 파이프라인에 박기 때문이다. 따로 넘기면 어긋나도 컴파일된다.
+// (image와 imageIndex를 묶은 것과 같은 이유다.)
 //
 // **왜 Device가 아니라 여기 있나**: 후보 목록과 그 우선순위는 우리 렌더 타겟의
 // 정책이지 GPU의 성질이 아니다. GPU는 "지원하나"에만 답한다.
-// (스텐실 없는 것을 먼저 보는 이유도 "우리가 스텐실을 안 쓴다"이지 GPU와 무관하다.)
 //
-// 실패하면 VK_FORMAT_UNDEFINED. 조회가 인스턴스 레벨이라 inst를 받는다.
-VkFormat ChooseDepthFormat(const VulkanInstance& inst, VkPhysicalDevice gpu) noexcept;
+// 커지는 자리이기도 하다 - MSAA 샘플 수, HDR 색 포맷, G-buffer의 첨부 여럿.
+struct RenderTargetFormats {
+    VkFormat color = VK_FORMAT_UNDEFINED;
+    VkFormat depth = VK_FORMAT_UNDEFINED;
+};
+
+// 이 GPU에서 쓸 포맷 한 쌍을 고른다. 실패하면 depth가 VK_FORMAT_UNDEFINED.
+// 조회가 인스턴스 레벨이라 inst를 받는다.
+RenderTargetFormats ChooseRenderTargetFormats(const VulkanInstance& inst,
+                                              VkPhysicalDevice gpu) noexcept;
 
 bool CreateRenderTargets(const VulkanDevice& dev, VkExtent2D extent,
-                         VkFormat depthFormat, RenderTargets* out) noexcept;
+                         RenderTargetFormats formats, RenderTargets* out) noexcept;

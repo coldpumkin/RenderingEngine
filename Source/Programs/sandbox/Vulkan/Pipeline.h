@@ -1,6 +1,6 @@
 ﻿#pragma once
 
-#include "Vulkan/Device.h"
+#include "Vulkan/RenderTargets.h"
 
 // ============================================================================
 // 7. 그래픽스 파이프라인 - **무엇으로 그리는가**
@@ -35,10 +35,8 @@ struct PushConstants {
     float aspect;   // width / height. **없으면 리사이즈할 때 도형이 늘어난다**
 };
 
-// colorFormat: 이 파이프라인이 어떤 포맷의 렌더 타겟에 그릴지. 창에서 온다.
-//
-// **포맷 둘 다 인자다.** 다이나믹 렌더링은 포맷을 파이프라인에 박으므로, 이 값들이
-// RenderTargets가 실제로 만든 것과 같아야 한다. 같은 곳에서 와야 어긋나지 않는다.
+// **RenderTargets가 실제로 만든 것과 같은 계약을 받는다.** 다이나믹 렌더링은 포맷을
+// 파이프라인에 박으므로 어긋나면 렌더링 시점에 실패한다.
 bool CreateTrianglePipeline(const VulkanDevice& dev,
-                            VkFormat colorFormat, VkFormat depthFormat,
+                            RenderTargetFormats formats,
                             Pipeline* out) noexcept;

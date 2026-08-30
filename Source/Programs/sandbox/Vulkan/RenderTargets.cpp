@@ -57,7 +57,18 @@ static bool CreateImage2D(const VulkanDevice& dev,
     return true;
 }
 
-VkFormat ChooseDepthFormat(const VulkanInstance& inst, VkPhysicalDevice gpu) noexcept {
+// 색은 항상 이 포맷이다. **스왑체인 포맷과 독립이다** - 블릿이 변환해준다.
+// 나중에 HDR로 갈 때 여기가 R16G16B16A16_SFLOAT가 되는 자리다.
+//
+// **헤더에 안 내놓는다.** 공개돼 있으면 계약을 우회해 직접 읽게 되고, 실제로 그래서
+// "색은 직접 읽고 뎁스는 인자로 받는" 비대칭이 생겼었다.
+static constexpr VkFormat kRenderColorFormat = VK_FORMAT_R8G8B8A8_SRGB;
+
+RenderTargetFormats ChooseRenderTargetFormats(const VulkanInstance& inst,
+                                              VkPhysicalDevice gpu) noexcept {
+    RenderTargetFormats formats;
+    formats.color = kRenderColorFormat;
+
     // 정밀도 높은 순서. 스텐실 없는 것을 먼저 보는 이유는 우리가 스텐실을 안 쓰기
     // 때문이다 - 붙어 있으면 메모리를 더 쓰고, 배리어/뷰의 aspectMask에 STENCIL까지
     // 얹어야 해서 실수할 자리가 는다.
@@ -71,27 +82,28 @@ VkFormat ChooseDepthFormat(const VulkanInstance& inst, VkPhysicalDevice gpu) noe
         inst.table.vkGetPhysicalDeviceFormatProperties(gpu, candidate, &props);
         if ((props.optimalTilingFeatures
              & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0) {
-            return candidate;
+            formats.depth = candidate;
+            break;
         }
     }
-    return VK_FORMAT_UNDEFINED;
+    return formats;
 }
 
 bool CreateRenderTargets(const VulkanDevice& dev, VkExtent2D extent,
-                         VkFormat depthFormat, RenderTargets* out) noexcept {
+                         RenderTargetFormats formats, RenderTargets* out) noexcept {
     out->dev = &dev;
     out->extent = extent;
 
     // TRANSFER_SRC가 붙는 것이 오프스크린의 표식이다 - 여기에 그린 다음
     // **다른 곳으로 복사해 나간다**. 스왑체인 이미지에는 이게 필요 없었다.
-    if (!CreateImage2D(dev, extent, kRenderColorFormat,
+    if (!CreateImage2D(dev, extent, formats.color,
                        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                        VK_IMAGE_ASPECT_COLOR_BIT, &out->color)) {
         return false;
     }
 
     // 뎁스는 아무 데도 안 나간다. 이 프레임 안에서만 쓰이고 버려진다.
-    if (!CreateImage2D(dev, extent, depthFormat,
+    if (!CreateImage2D(dev, extent, formats.depth,
                        VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
                        VK_IMAGE_ASPECT_DEPTH_BIT, &out->depth)) {
         return false;

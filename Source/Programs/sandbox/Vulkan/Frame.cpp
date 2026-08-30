@@ -1,7 +1,7 @@
 ﻿#include "Vulkan/Frame.h"
 
 bool CreateFrame(const VulkanDevice& dev, const Commands& commands,
-                 VkFormat depthFormat, Frame* out) noexcept {
+                 RenderTargetFormats formats, Frame* out) noexcept {
     out->dev = &dev;
 
     // PRIMARY: 큐에 직접 제출할 수 있다. SECONDARY는 다른 버퍼 안에서만 실행된다.
@@ -32,7 +32,7 @@ bool CreateFrame(const VulkanDevice& dev, const Commands& commands,
     // **그릴 곳은 창을 안 보고 만든다.** Config.h가 정한 고정 해상도다.
     // 스왑체인이 아직 없어도(최소화된 채로 실행) 여기는 성립한다 - 그게 요점이다.
     const VkExtent2D renderExtent{kRenderWidth, kRenderHeight};
-    if (!CreateRenderTargets(dev, renderExtent, depthFormat, &out->targets)) {
+    if (!CreateRenderTargets(dev, renderExtent, formats, &out->targets)) {
         return false;
     }
     return true;

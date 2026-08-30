@@ -40,10 +40,10 @@ struct Frame {
     Frame& operator=(const Frame&) = delete;
 };
 
-// depthFormat: 이 프레임의 렌더 타겟이 쓸 뎁스 포맷. main이 ChooseDepthFormat으로
-// 한 번 정해서 파이프라인과 여기에 같이 준다 - 둘이 어긋나면 렌더링이 실패한다.
+// formats: 이 프레임의 렌더 타겟이 쓸 포맷 계약. **파이프라인이 받는 것과 같은 것**이라야
+// 한다 - 그래서 main이 한 번 고르고 양쪽에 같은 값을 준다.
 bool CreateFrame(const VulkanDevice& dev, const Commands& commands,
-                 VkFormat depthFormat, Frame* out) noexcept;
+                 RenderTargetFormats formats, Frame* out) noexcept;
 
 // 이번 프레임의 **그릴 곳과 내보낼 곳**. BeginFrame이 정하고 뒤가 쓴다.
 //
