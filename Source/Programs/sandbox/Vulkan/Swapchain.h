@@ -4,28 +4,29 @@
 
 #include <vector>
 
+// Swapchain - 여기만 수명이 있다
+// ============================================================================
+//
+// 다른 것들은 한 번 만들고 끝까지 가는데 swapchain만 창 크기가 바뀔 때마다 다시
+// 만든다. "같이 바뀌는가" 축에서 유일하게 혼자 움직이는 덩어리다.
+
 // 앞 선언: EnsureSwapchain이 창을 받는다. Window가 Swapchain을 품으므로
 // Window.h가 이 파일을 include하고, 여기서는 역방향으로 이름만 안다.
 struct Window;
 
 struct SwapchainImage {
-    VkImage image = VK_NULL_HANDLE;               // 스왑체인이 소유. 우리가 파괴하지 않는다
+    VkImage image = VK_NULL_HANDLE;               // swapchain이 소유. 우리가 안 지운다
 
-    // **present가 이 값을 요구한다.** 배열 위치와 같은 값이라 중복이지만, 밖에서
-    // 이미지와 인덱스를 따로 들고 다니면 **짝이 어긋나도 컴파일이 된다.**
-    // 여기 두면 그 실수가 불가능해진다.
+    // Present가 요구하는 값. 배열 위치와 같아 중복이지만, 밖에서 image와 index를
+    // 따로 들고 다니면 짝이 어긋나도 컴파일된다.
     uint32_t index = 0;
-    VkImageView view = VK_NULL_HANDLE;            // 우리가 만들었다 -> 우리가 파괴한다
-    VkSemaphore renderFinished = VK_NULL_HANDLE;  // 우리가 만들었다. **이미지당 하나**
 
-    // **뎁스가 여기 있었다가 나갔다.** 재생성 경로가 이미 여기 있어서 편하다는 이유로
-    // 넣었는데, 그건 자원의 성질이 아니라 편의였다. 개수도 이미지 수(3)가 되어
-    // 2개면 충분한 것을 하나 더 만들고 있었다. 지금은 RenderTargets에 있다.
+    VkImageView view = VK_NULL_HANDLE;            // 우리가 만들었다 -> 우리가 지운다
+    VkSemaphore renderFinished = VK_NULL_HANDLE;  // image당 하나 (이유는 .cpp에)
 };
 
 struct Swapchain {
-    // 파괴에 필요한 비소유 상태 - 소멸자는 인자를 못 받는다.
-    const struct VulkanDevice* dev = nullptr;
+    const struct VulkanDevice* dev = nullptr;   // 파괴에 필요한 non-owning 상태
 
     VkSwapchainKHR handle = VK_NULL_HANDLE;
     VkFormat format = VK_FORMAT_UNDEFINED;
@@ -38,16 +39,6 @@ struct Swapchain {
     Swapchain& operator=(const Swapchain&) = delete;
 };
 
-// 5. 스왑체인 - **여기만 수명이 있다**
-// ============================================================================
-//
-// 다른 것들은 전부 한 번 만들고 끝까지 간다. 스왑체인만 창 크기가 바뀔 때마다
-// 다시 만든다. **"같이 바뀌는가" 축에서 유일하게 혼자 움직이는 덩어리**라
-// 클래스로 뺄 근거가 이미 가장 뚜렷하다.
-
-// SRGB를 우선하는 이유: 모니터는 선형이 아니라 감마 곡선으로 빛을 낸다. 포맷에 _SRGB가
-// 붙어 있으면 GPU가 그 변환을 하드웨어로 해준다. UNORM을 쓰면 셰이더에서 직접 감마
-// 보정을 해야 하고, 안 하면 화면이 어둡게 나온다.
 // 실패 또는 "지금은 만들 수 없음"(최소화)이면 handle이 VK_NULL_HANDLE인 채로 돌아온다.
 bool CreateSwapchain(const VulkanInstance& inst,
                      const VulkanDevice& dev,
@@ -56,10 +47,9 @@ bool CreateSwapchain(const VulkanInstance& inst,
                      VkSwapchainKHR oldSwapchain,
                      Swapchain* out) noexcept;
 
-// 그릴 곳을 보장한다. 낡았거나 없으면 다시 만든다.
-// **false는 실패가 아니라 "지금은 그릴 곳이 없다"** (최소화 중)이다.
+// Effect: 낡았거나 없으면 window->swapchain을 다시 만든다
+// Output: false는 실패가 아니라 "지금은 그릴 곳이 없다"(최소화 중)
 //
-// **인스턴스를 인자로 받지 않는다.** window가 이미 자기를 만든 인스턴스를 들고 있다.
-// 밖에서 또 받으면 *다른* 인스턴스를 넘길 수 있는 구멍이 생기는데, 그건 컴파일러가
-// 못 잡는다. 아예 안 받으면 그 실수가 불가능해진다.
+// Instance를 안 받는다 - window가 자기를 만든 instance를 들고 있다. 밖에서 또 받으면
+// 다른 instance를 넘길 수 있는 구멍이 생기고, 그건 컴파일러가 못 잡는다.
 bool EnsureSwapchain(const VulkanDevice& dev, Window* window) noexcept;
