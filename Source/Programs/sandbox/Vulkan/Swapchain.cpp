@@ -54,15 +54,6 @@ Swapchain::~Swapchain() {
     d.table.vkDestroySwapchainKHR(d.handle, handle, nullptr);
 }
 
-// 실패 또는 "지금은 만들 수 없음"(최소화)이면 handle이 VK_NULL_HANDLE인 채로 돌아온다.
-//
-// oldSwapchain을 넘겨야 하는 이유: **한 서피스에 스왑체인 둘이 동시에 존재할 수 없다.**
-// 안 넘기면 재생성 자체가 실패한다. 넘기면 그 순간 이전 것은 "은퇴" 상태가 되고,
-// **파괴는 여전히 우리 몫이다.**
-//
-// **인자가 다섯이고 테이블이 둘이다.** 서피스 조회는 인스턴스 레벨(it), 스왑체인 생성은
-// 디바이스 레벨(vk)이라 양쪽이 다 필요하다. 스왑체인이 두 층의 경계에 서 있다는 뜻이고,
-// 클래스가 되면 그 경계가 인자 둘로 줄어든다 (2단계 증거).
 bool SelectSurfaceFormat(const VulkanInstance& inst,
                          VkPhysicalDevice gpu,
                          Window* window) noexcept {
@@ -80,6 +71,14 @@ bool SelectSurfaceFormat(const VulkanInstance& inst,
     return true;
 }
 
+// 실패 또는 "지금은 만들 수 없음"(최소화)이면 handle이 VK_NULL_HANDLE인 채로 돌아온다.
+//
+// oldSwapchain을 넘겨야 하는 이유: **한 서피스에 스왑체인 둘이 동시에 존재할 수 없다.**
+// 안 넘기면 재생성 자체가 실패한다. 넘기면 그 순간 이전 것은 "은퇴" 상태가 되고,
+// **파괴는 여전히 우리 몫이다.**
+//
+// **테이블이 둘이다.** 서피스 조회는 인스턴스 레벨(inst.table), 스왑체인 생성은
+// 디바이스 레벨(dev.table)이라 양쪽이 다 필요하다 - 스왑체인이 두 층의 경계에 서 있다.
 bool CreateSwapchain(const VulkanInstance& inst,
                      const VulkanDevice& dev,
                      VkSurfaceKHR surface,

@@ -110,7 +110,7 @@ FrameResult BeginFrame(const VulkanDevice& dev,
     }
 
     // **펜스는 여기서 리셋하지 않는다.** 리셋의 짝은 acquire가 아니라 제출이다
-    // (EndFrame 참고). 여기서 리셋하면 그 뒤에 실패할 수 있는 것이 남아 있다.
+    // (SubmitFrame 참고). 여기서 리셋하면 그 뒤에 실패할 수 있는 것이 남아 있다.
 
     // 그릴 곳은 acquire와 무관하다 - 프레임이 자기 것을 들고 있다.
     // acquire가 정하는 것은 **내보낼 곳**뿐이다.
@@ -131,7 +131,7 @@ bool SubmitFrame(const VulkanDevice& dev,
     // (이론상 그만큼 겹쳐 돌 수 있지만 **재보지 않았다.** FIFO에 프레임 시간의 92%가
     //  acquire 대기라 지금 구성으로는 관측이 안 된다.)
     //
-    // 이 값은 RecordFrame의 "스왑체인 -> TRANSFER_DST" 배리어 srcStageMask와
+    // 이 값은 RecordPresentPass의 "스왑체인 -> COLOR_ATTACHMENT" 배리어 srcStageMask와
     // **겹쳐야 한다.** 같을 필요는 없다 - 동기화 검증으로 확인했다:
     //   wait=BLIT,           barrier=BLIT|COPY   -> 0건
     //   wait=BLIT|COLOR_OUT, barrier=BLIT        -> 0건

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 // ============================================================================
 // 이미지 레이아웃 전이 - **언제 무엇이 보이는가**
@@ -10,11 +10,11 @@
 // 보이는가)도 처리한다.
 //
 // **왜 main.cpp에서 나왔나**: 오프스크린이 들어오면서 한 프레임의 전이가 다섯이 됐다.
-//   1. 우리 색 이미지   UNDEFINED         -> COLOR_ATTACHMENT_OPTIMAL   (그리기 전)
+//   1. 우리 색 이미지   UNDEFINED         -> COLOR_ATTACHMENT_OPTIMAL   (패스 1 전)
 //   2. 우리 뎁스        UNDEFINED         -> DEPTH_ATTACHMENT_OPTIMAL
-//   3. 우리 색 이미지   COLOR_ATTACHMENT  -> TRANSFER_SRC_OPTIMAL       (복사 전)
-//   4. 스왑체인 이미지  UNDEFINED         -> TRANSFER_DST_OPTIMAL
-//   5. 스왑체인 이미지  TRANSFER_DST      -> PRESENT_SRC_KHR            (내보내기 전)
+//   3. 우리 색 이미지   COLOR_ATTACHMENT  -> SHADER_READ_ONLY_OPTIMAL   (패스 2가 읽는다)
+//   4. 스왑체인 이미지  UNDEFINED         -> COLOR_ATTACHMENT_OPTIMAL   (패스 2가 그린다)
+//   5. 스왑체인 이미지  COLOR_ATTACHMENT  -> PRESENT_SRC_KHR            (내보내기 전)
 // 전이 하나하나에 스테이지·액세스 조합이 붙어서 RecordFrame이 배리어 코드로 덮였다.
 
 #include "Vulkan/Core.h"

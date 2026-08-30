@@ -45,7 +45,7 @@ struct RenderTargets {
     Image depth;
     VkExtent2D extent{};
 
-    // **color를 셰이더가 읽는 손잡이.** 두 번째 패스가 이걸 바인딩한다.
+    // **color를 셰이더가 읽게 하는 것.** 두 번째 패스가 이걸 바인딩한다.
     //
     // 여기 있는 이유: 이 셋은 **위 color.view를 가리킨다.** 따로 들고 다니면 다른
     // 프레임의 이미지를 가리켜도 컴파일된다 - image와 imageIndex를 묶은 것과 같다.

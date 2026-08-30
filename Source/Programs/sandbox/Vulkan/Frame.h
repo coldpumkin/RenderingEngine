@@ -7,7 +7,7 @@
 //   Commands   큐 패밀리마다 하나 (풀이 패밀리에 묶인다)
 //   Frame      frames-in-flight마다 한 벌
 //
-// **왜 여기에 BeginFrame/EndFrame이 있나**: 루프에서 그리는 것과 동기화는
+// **왜 여기에 프레임 여닫기가 있나**: 루프에서 그리는 것과 동기화는
 // **바뀌는 이유가 다르다.**
 //   드로우·텍스처·디스크립터를 추가하면  -> RecordFrame만 바뀐다
 //   frames-in-flight·present 모드·큐를 바꾸면 -> 여기만 바뀐다

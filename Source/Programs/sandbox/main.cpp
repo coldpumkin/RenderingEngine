@@ -4,8 +4,8 @@
 //
 // Vulkan/ 은 **개념당 한 쌍**이다 (언리얼 VulkanRHI와 같은 축):
 //   Core.h       두 함수 테이블 · 요구사항 · RAII 규약
-//   Instance     Window      Swapchain    Commands
-//   Device       Frame       Pipeline     Buffer
+//   Instance   Window   Swapchain   Commands   Barrier
+//   Device     Frame    Pipeline    Buffer     RenderTargets   Descriptors
 // 자원이 늘어도 기존 파일이 안 자란다 - 새 쌍이 하나 생길 뿐이다.
 //
 // **초기화와 런타임은 지켜야 할 규칙이 다르다:**
@@ -47,26 +47,31 @@
 //   파이프라인 <-> 정점 버퍼   **정점 레이아웃** (VkVertexInputAttributeDescription <-> Vertex)
 //
 // **패스는 vkCmdBeginRendering ~ vkCmdEndRendering 구간**이고, 그동안 그릴 대상이
-// 고정된다. 아래 블릿은 패스가 아니다 - 그리기가 아니라 복사다.
+// 고정된다. 한 프레임에 패스가 둘이고, **뒤가 앞의 결과를 읽는다:**
 //
-//   배리어 x2
-//   +- BeginRendering ------------- 패스 시작
-//   |    첨부 = target.draw의 color / depth
-//   |    BindPipeline        <- 포맷이 첨부와 같아야 한다
-//   |    BindVertexBuffers   <- 레이아웃이 파이프라인과 같아야 한다
-//   |    PushConstants       <- 계약이 아니라 그냥 값
-//   |    Draw
-//   +- EndRendering --------------- 패스 끝
-//   배리어 x2 + 블릿
+//   [RecordScenePass]  창을 모른다
+//     배리어 x2 (우리 색·뎁스)
+//     +- BeginRendering --- 첨부 = draw.color / draw.depth
+//     |    BindPipeline        <- 포맷이 첨부와 같아야 한다
+//     |    BindVertexBuffers   <- 레이아웃이 파이프라인과 같아야 한다
+//     |    PushConstants       <- 계약이 아니라 그냥 값
+//     |    Draw
+//     +- EndRendering
+//
+//   [RecordPresentPass]  draw를 **읽기만** 한다
+//     배리어 (draw.color -> SHADER_READ_ONLY)   앞 패스의 결과를 읽을 수 있게
+//     배리어 (스왑체인   -> COLOR_ATTACHMENT)
+//     +- BeginRendering --- 첨부 = 스왑체인 이미지
+//     |    BindPipeline        <- 이쪽 포맷은 **스왑체인 것**이다
+//     |    BindDescriptorSets  <- draw.colorSet = draw.color를 가리킨다
+//     |    Draw                   정점 버퍼 없음 (셰이더가 세 점을 만든다)
+//     +- EndRendering
+//     배리어 (스왑체인 -> PRESENT_SRC)
 // ---------------------------------------------------------------------------
 //
 // **동기화(펜스·세마포어·acquire·present)가 하나도 안 들어온다** - 그건 전부
-// BeginFrame/EndFrame에 있다. 기록과 동기화는 서로 모르는 채로 돌아간다.
+// BeginFrame/SubmitFrame/PresentFrame에 있다. 기록과 동기화는 서로 모르는 채로 돌아간다.
 // 이게 "기록하는 쪽"과 "제출하는 쪽"이 갈리는 선이다.
-//
-// **인자가 오히려 줄었다** (6 -> 5). 스왑체인 이미지와 extent를 따로 받던 것이
-// FrameTarget 하나로 합쳐졌다 - 그릴 곳과 내보낼 곳이 갈리면서 오히려 한 덩어리로
-// 다룰 이유가 생겼다.
 //
 // **bool인 이유**: vkBegin/EndCommandBuffer는 실패할 수 있고(메모리 부족), 실패하면
 // 커맨드 버퍼가 무효 상태다. 그걸 제출하는 것은 스펙 위반이라 호출자가 알아야 한다.
@@ -385,7 +390,7 @@ int main() {
 
     // 파이프라인은 **포맷**에 묶인다 (크기는 동적 상태라 안 묶인다).
     // **창 포맷이 아니라 우리 렌더 타겟 포맷이다.** 파이프라인이 그리는 곳은
-    // 오프스크린 이미지고, 스왑체인 포맷과는 블릿이 매개한다.
+    // 오프스크린 이미지고, 스왑체인 포맷과는 두 번째 패스가 매개한다.
     if (!CreateTrianglePipeline(dev, formats, &pipeline)) {
         return 1;
     }
@@ -428,7 +433,7 @@ int main() {
     // ---- 루프 ----
     //
     // **여덟 줄이다.** 동기화(그릴 곳 확보 · 대기 · acquire · 제출 · present)는 전부
-    // BeginFrame/EndFrame 안으로 갔다. 여기 남은 것은 프레임의 **모양**뿐이다.
+    // BeginFrame/SubmitFrame/PresentFrame 안으로 갔다. 여기 남은 것은 프레임의 **모양**뿐이다.
     //
     // 둘을 가른 근거: **바뀌는 이유가 다르다.**
     //   드로우·텍스처·디스크립터를 추가하면  -> RecordFrame만 바뀐다

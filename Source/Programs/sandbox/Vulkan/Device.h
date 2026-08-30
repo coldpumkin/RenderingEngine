@@ -49,8 +49,6 @@ struct PhysicalDeviceSelection {
 
 // GPU 고르기. 자격을 통과한 것 중 외장을 선호한다.
 // 실패하면 gpu가 VK_NULL_HANDLE인 채로 돌아온다.
-// GPU 고르기. 자격을 통과한 것 중 외장을 선호한다.
-// 실패하면 gpu가 VK_NULL_HANDLE인 채로 돌아온다.
 PhysicalDeviceSelection PickPhysicalDevice(const VulkanInstance& inst,
                                            VkSurfaceKHR surface) noexcept;
 
@@ -136,9 +134,6 @@ struct VulkanDevice {
 // 논리 디바이스 + 함수 테이블 + 큐들.
 // 실패하면 handle이 VK_NULL_HANDLE인 채로 돌아온다.
 //
-// **inst를 받는 이유**: vkCreateDevice는 **인스턴스 레벨 함수**다. 만드는 함수와
-// 파괴하는 함수(vkDestroyDevice, 디바이스 레벨)의 층이 다르다는 Vulkan API의 비대칭이고,
-// 그래서 "이 클래스가 무슨 레벨이냐"가 아니라 "이 호출이 무슨 레벨이냐"로 봐야 한다.
 // 논리 디바이스 + 함수 테이블 + 큐들.
 // 실패하면 handle이 VK_NULL_HANDLE인 채로 돌아온다.
 //
