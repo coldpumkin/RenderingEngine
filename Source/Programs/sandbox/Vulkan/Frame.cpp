@@ -119,25 +119,21 @@ FrameResult BeginFrame(const VulkanDevice& dev,
     return FrameResult::Ready;
 }
 
-bool EndFrame(const VulkanDevice& dev,
-              Window* window,
-              const Frame& frame,
-              const FrameTarget& target) noexcept {
-    // ---- 12. 제출 ----
+bool SubmitFrame(const VulkanDevice& dev,
+                 const Frame& frame,
+                 VkSemaphore signalWhenDone) noexcept {
     // acquire가 끝나야 이미지에 쓸 수 있고(wait), 다 쓰면 present가 알아야 한다(signal).
-    // 기다리는 지점을 COLOR_ATTACHMENT_OUTPUT으로 좁히면 그 앞 스테이지는 미리 돈다.
-    // **대기 지점은 스왑체인 이미지를 처음 만지는 곳이다.** 오프스크린이 되면서
-    // 그게 색 첨부 쓰기가 아니라 블릿으로 바뀌었다. 앞의 렌더링은 우리 이미지에만
-    // 그리므로 acquire를 안 기다려도 된다 - 그만큼 겹쳐서 돈다.
     //
-    // 이 값은 RecordFrame의 "스왑체인 -> TRANSFER_DST" 배리어의 srcStageMask와
-    // **같아야 한다.** 다르면 배리어가 세마포어 대기를 앞질러 실행될 수 있다.
+    // **대기 지점은 스왑체인 이미지를 처음 만지는 곳이다.** 오프스크린이 되면서 그게
+    // 색 첨부 쓰기가 아니라 블릿으로 바뀌었다. 앞의 렌더링은 우리 이미지에만 그리므로
+    // acquire를 안 기다려도 된다 - 그만큼 겹쳐서 돈다.
+    // 이 값은 RecordFrame의 "스왑체인 -> TRANSFER_DST" 배리어의 srcStageMask와 같아야 한다.
     VkSemaphoreSubmitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
     wait.semaphore = frame.imageAvailable;
     wait.stageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
 
     VkSemaphoreSubmitInfo signal{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
-    signal.semaphore = target.present->renderFinished;
+    signal.semaphore = signalWhenDone;
     signal.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
 
     VkCommandBufferSubmitInfo cmdInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
@@ -153,58 +149,58 @@ bool EndFrame(const VulkanDevice& dev,
 
     // **펜스 리셋은 제출 바로 앞이다.**
     //
-    // 펜스를 신호하는 것은 제출뿐이고, 제출은 비신호 펜스만 받는다. 그래서 리셋과 제출
+    // 펜스를 신호하는 것은 제출뿐이고 제출은 비신호 펜스만 받는다. 그래서 리셋과 제출
     // 사이에 실패할 수 있는 것이 끼면, 그 프레임의 펜스는 비신호로 남고 신호할 사람이
     // 없어진다 - 다음 순회의 vkWaitForFences(UINT64_MAX)가 영원히 걸린다.
     //
-    // 리셋이 acquire 직후에 있던 때는 그 사이에 RecordFrame 전체와 이 함수의 앞부분이
-    // 들어 있었다. 여기로 내리면 그 창이 0이 된다.
-    //
-    // **남는 것은 제출 자체의 실패 하나뿐이고, 그건 못 되돌린다** - 일반 펜스를 CPU에서
-    // 신호하는 API가 없다(타임라인 세마포어에만 있다). 그래서 실패하면 false를 돌려
-    // 호출자가 루프를 **빠져나가게** 한다. 어차피 OUT_OF_MEMORY / DEVICE_LOST뿐이라
-    // 다음 프레임을 시도할 상황이 아니다.
-    // 리셋이 실패하면 펜스가 신호된 채로 남는다. **신호된 펜스로 제출하는 것은 스펙 위반**
-    // (에러로 보고되는 게 아니라 무효 사용이라, 검증 레이어를 끄면 조용히 UB가 된다).
+    // 리셋 실패도 봐야 한다. 신호된 펜스로 제출하는 것은 에러가 아니라 **무효 사용**이라
+    // 검증 레이어를 끄면 조용히 UB가 된다.
     if (dev.table.vkResetFences(dev.handle, 1, &frame.inFlight) != VK_SUCCESS) {
         LOG("[vk] vkResetFences failed\n");
         return false;
     }
 
+    // 실패하면 못 되돌린다 - 일반 펜스를 CPU에서 신호하는 API가 없다(타임라인
+    // 세마포어에만 있다). 어차피 OUT_OF_MEMORY / DEVICE_LOST뿐이라 루프를 끝낸다.
     if (dev.table.vkQueueSubmit2(dev.queues.graphics, 1, &submit, frame.inFlight)
             != VK_SUCCESS) {
         LOG("[vk] vkQueueSubmit2 failed\n");
         return false;
     }
+    return true;
+}
 
-    // ---- 13. 화면에 내보낸다 ----
+bool PresentFrame(const VulkanDevice& dev,
+                  Window* window,
+                  const FrameTarget& target) noexcept {
     const VkSwapchainKHR swapchainHandle = window->swapchain->handle;
 
     VkPresentInfoKHR present{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
     present.waitSemaphoreCount = 1;
     present.pWaitSemaphores = &target.present->renderFinished;
+    // **배열인 것에 주목.** 창이 여럿이면 한 번에 내보낸다 - present가 늘어나는 축이
+    // 창 개수라는 뜻이고, 제출(큐 개수)과 다르다.
     present.swapchainCount = 1;
     present.pSwapchains = &swapchainHandle;
     present.pImageIndices = &target.imageIndex;
 
     const VkResult presented = dev.table.vkQueuePresentKHR(dev.queues.present, &present);
 
-    // ---- present 결과를 두 부류로 가른다 ----
+    // 어느 쪽이든 **제출은 이미 됐고 펜스는 신호된다.** 다음 프레임이 대기에 걸릴
+    // 걱정은 없다. 갈리는 건 **다시 만들면 고쳐지는가**다.
     //
-    // 어느 쪽이든 **제출은 이미 됐고 펜스는 신호된다.** 그래서 다음 프레임이 대기에
-    // 걸릴 걱정은 없다. 갈리는 건 **다시 만들면 고쳐지는가**다.
-    //
-    // 회복 가능: 창 크기가 달라졌을 뿐이다. 다음 프레임 시작에 스왑체인을 다시 만든다.
+    // 회복 가능: 창 크기가 달라졌을 뿐이다. 다음 프레임 시작에 다시 만든다.
     if (presented == VK_ERROR_OUT_OF_DATE_KHR || presented == VK_SUBOPTIMAL_KHR) {
         window->swapchainOutOfDate = true;
         return true;
     }
 
-    // 회복 불가: 스펙이 여기서 DEVICE_LOST, SURFACE_LOST_KHR, 메모리 부족,
-    // FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT도 준다. **스왑체인을 다시 만들어도 안 고쳐진다**
+    // 회복 불가: DEVICE_LOST, SURFACE_LOST_KHR, 메모리 부족 등. 다시 만들어도 안 고쳐진다
     // (SURFACE_LOST면 그 서피스로는 생성 자체가 실패한다).
-    // 한때 이걸 로그도 없이 true로 흘려보냈다 - "present 실패는 재생성으로 해결된다"고
-    // 뭉뚱그렸는데, 그건 위의 둘에만 맞는 말이었다.
+    //
+    // **언리얼은 SURFACE_LOST도 재생성으로 4번까지 시도한다**(DoCheckedSwapChainJob).
+    // 출하 엔진은 어떻게든 살아남아야 하기 때문이고, 우리는 이유를 말하고 끝내는 쪽을
+    // 골랐다 - 몰라서가 아니라 골라서다.
     if (presented != VK_SUCCESS) {
         LOG("[vk] vkQueuePresentKHR failed (%d)\n", presented);
         return false;

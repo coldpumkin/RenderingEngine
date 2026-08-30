@@ -78,12 +78,37 @@ FrameResult BeginFrame(const VulkanDevice& dev,
                        const Frame& frame,
                        FrameTarget* out) noexcept;
 
-// 프레임을 닫는다: 펜스 리셋 -> 제출 -> 화면에 표시.
-// **BeginFrame이 Ready를 준 프레임에만 부른다.**
+// ---------------------------------------------------------------------------
+// 프레임의 끝 - **여기서 창과 프레임이 갈라진다**
 //
-// 결과가 실제로 둘뿐이라(계속 / 그만) bool이다. Skip이 나올 자리가 없으므로
-// 억지로 FrameResult를 쓰지 않는다.
-bool EndFrame(const VulkanDevice& dev,
-              Window* window,
-              const Frame& frame,
-              const FrameTarget& target) noexcept;
+// 한때 EndFrame 하나가 제출과 present를 다 했다. 나눈 근거:
+//
+//   스펙이 이미 갈라놨다.  vkQueueSubmit2      코어 1.3
+//                          vkQueuePresentKHR   확장 VK_KHR_swapchain
+//     스왑체인 확장을 안 켜도 그리고 제출하는 프로그램이 성립한다.
+//
+//   VkPresentInfoKHR가 받는 것: 세마포어 · 스왑체인 · 이미지 인덱스.
+//     **커맨드 버퍼도 펜스도 없다.** 제출과 공유하는 건 세마포어 하나뿐이다.
+//
+//   늘어나는 축이 다르다.  present는 창 개수(pSwapchains가 배열),
+//                          제출은 큐 개수.
+//
+// **시작은 왜 안 갈라지나**: acquire가 창의 이미지 인덱스와 프레임 소유 세마포어를
+// 동시에 만진다. 진짜 만남이라 못 가른다. 끝은 그 만남이 풀리는 자리다.
+// ---------------------------------------------------------------------------
+
+// 펜스 리셋 -> 제출. **스왑체인을 모른다.**
+//
+// 창과 이어지는 것은 세마포어 둘뿐이다: frame.imageAvailable(기다림)과
+// signalWhenDone(신호). 스왑체인도 이미지 인덱스도 extent도 안 받는다.
+// 언리얼도 같은 모양이다 - 뷰포트가 Context.AddSignalSemaphore()로 건네주고,
+// 컨텍스트는 그게 어디서 왔는지 모른다.
+bool SubmitFrame(const VulkanDevice& dev,
+                 const Frame& frame,
+                 VkSemaphore signalWhenDone) noexcept;
+
+// 화면에 내보낸다. **프레임을 모른다** - target에서 세마포어와 인덱스만 쓴다.
+// 창이 없으면 이 줄만 빼면 된다.
+bool PresentFrame(const VulkanDevice& dev,
+                  Window* window,
+                  const FrameTarget& target) noexcept;

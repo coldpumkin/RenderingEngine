@@ -360,10 +360,16 @@ int main() {
             break;
         }
 
-        // **여기는 continue가 아니라 break다.** 제출이 실패하면 이 프레임의 펜스를
-        // 신호할 사람이 없어 다음 순회가 영원히 걸린다. present의 회복 불가 에러도
-        // 여기로 온다 (Frame.cpp 참고).
-        if (!EndFrame(dev, &window, frame, target)) {
+        // **제출과 present가 갈라져 있다.** 스펙이 그렇게 생겼기 때문이다 -
+        // vkQueueSubmit2는 코어, vkQueuePresentKHR은 VK_KHR_swapchain 확장이다.
+        // 창이 없으면 아래 두 줄만 빠진다.
+        //
+        // 둘 다 continue가 아니라 break다. 제출 실패는 펜스를 신호할 사람이 없다는
+        // 뜻이고, present의 회복 불가 에러는 다시 만들어도 안 고쳐진다는 뜻이다.
+        if (!SubmitFrame(dev, frame, target.present->renderFinished)) {
+            break;
+        }
+        if (!PresentFrame(dev, &window, target)) {
             break;
         }
 
