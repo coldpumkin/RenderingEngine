@@ -2,15 +2,12 @@
 
 #include <initializer_list>   // 소멸자의 for (Image* : {...})
 
-// 이미지 + 메모리 + 뷰를 한 번에.
+// Image + memory + view를 한 번에.
 //
-// **이제 호출자가 둘이라 함수가 됐다** (색, 뎁스). 한때 뎁스 하나뿐이라
-// 스왑체인 생성 루프 안에 인라인으로 있었고, 그때는 그게 맞았다.
-// 텍스처가 오면 세 번째 호출자가 되는데, 그때는 usage에 SAMPLED가 붙고
-// 업로드 경로가 따라오므로 이 함수를 그대로 쓸 수 있는지 다시 볼 자리다.
+// 호출자가 둘(color, depth)이라 함수가 됐다. Texture가 오면 세 번째가 되는데 usage에
+// SAMPLED가 붙고 upload 경로가 따라오므로 그때 이 함수를 그대로 쓸 수 있는지 다시 본다.
 //
-// aspect가 인자인 이유: 뷰의 subresourceRange는 색이면 COLOR, 뎁스면 DEPTH다.
-// usage와 aspect가 서로 맞아야 하는데 컴파일러가 못 잡아준다.
+// Contract: usage와 aspect가 서로 맞아야 하는데 컴파일러가 못 잡는다.
 static bool CreateImage2D(const VulkanDevice& dev,
                           VkExtent2D extent,
                           VkFormat format,
@@ -23,15 +20,15 @@ static bool CreateImage2D(const VulkanDevice& dev,
     info.extent = VkExtent3D{extent.width, extent.height, 1};
     info.mipLevels = 1;
     info.arrayLayers = 1;
-    info.samples = VK_SAMPLE_COUNT_1_BIT;   // 파이프라인의 MSAA 설정과 맞아야 한다
+    info.samples = VK_SAMPLE_COUNT_1_BIT;   // pipeline의 MSAA 설정과 맞아야 한다
     info.tiling = VK_IMAGE_TILING_OPTIMAL;
     info.usage = usage;
     info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
-    // GPU만 읽고 쓴다. CPU가 볼 일이 없다.
+    // GPU만 읽고 쓴다. priority 1.0 - render target이라 쫓겨나면 매 frame 손해다.
     VmaAllocationCreateInfo alloc{};
     alloc.usage = VMA_MEMORY_USAGE_AUTO;
-    alloc.priority = 1.0f;   // 렌더 타겟이다. 쫓겨나면 매 프레임 손해다
+    alloc.priority = 1.0f;
 
     const VkResult created =
         vmaCreateImage(dev.allocator, &info, &alloc, &out->handle, &out->allocation, nullptr);
@@ -57,11 +54,11 @@ static bool CreateImage2D(const VulkanDevice& dev,
     return true;
 }
 
-// 색은 항상 이 포맷이다. **스왑체인 포맷과 독립이다** - 두 번째 패스가 매개한다.
-// 나중에 HDR로 갈 때 여기가 R16G16B16A16_SFLOAT가 되는 자리다.
+// Swapchain format과 독립이다 - present pass가 매개한다. HDR로 갈 때 여기가
+// R16G16B16A16_SFLOAT가 되는 자리다.
 //
-// **헤더에 안 내놓는다.** 공개돼 있으면 계약을 우회해 직접 읽게 되고, 실제로 그래서
-// "색은 직접 읽고 뎁스는 인자로 받는" 비대칭이 생겼었다.
+// Header에 안 내놓는다. 공개돼 있으면 RenderTargetFormats를 우회해 직접 읽게 되고,
+// 실제로 그래서 "color는 직접 읽고 depth는 인자로 받는" 비대칭이 생겼었다.
 static constexpr VkFormat kRenderColorFormat = VK_FORMAT_R8G8B8A8_SRGB;
 
 RenderTargetFormats ChooseRenderTargetFormats(const VulkanInstance& inst,
@@ -69,11 +66,10 @@ RenderTargetFormats ChooseRenderTargetFormats(const VulkanInstance& inst,
     RenderTargetFormats formats;
     formats.color = kRenderColorFormat;
 
-    // 정밀도 높은 순서. 스텐실 없는 것을 먼저 보는 이유는 우리가 스텐실을 안 쓰기
-    // 때문이다 - 붙어 있으면 메모리를 더 쓰고, 배리어/뷰의 aspectMask에 STENCIL까지
-    // 얹어야 해서 실수할 자리가 는다.
-    //
-    // **optimalTilingFeatures를 본다.** 렌더 타겟은 linear로 두지 않는다.
+    // 정밀도 높은 순서. Stencil 없는 것을 먼저 보는 이유는 우리가 stencil을 안 쓰기
+    // 때문이다 - 붙어 있으면 메모리를 더 쓰고 barrier/view의 aspectMask에 STENCIL까지
+    // 얹어야 해서 실수할 자리가 는다. optimalTilingFeatures를 보는 이유는 render target을
+    // linear로 두지 않기 때문이다.
     for (const VkFormat candidate : {VK_FORMAT_D32_SFLOAT,
                                      VK_FORMAT_X8_D24_UNORM_PACK32,
                                      VK_FORMAT_D32_SFLOAT_S8_UINT,
@@ -95,29 +91,28 @@ bool CreateRenderTargets(const VulkanDevice& dev, const Descriptors& descriptors
     out->dev = &dev;
     out->extent = extent;
 
-    // **SAMPLED가 붙는 것이 오프스크린의 표식이다** - 여기에 그린 다음 두 번째 패스가
-    // 이것을 텍스처로 읽는다. 한때 TRANSFER_SRC였다(블릿으로 내보냈다).
+    // SAMPLED가 붙는 것이 off-screen의 표식이다 - present pass가 이걸 texture로 읽는다.
     if (!CreateImage2D(dev, extent, formats.color,
                        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                        VK_IMAGE_ASPECT_COLOR_BIT, &out->color)) {
         return false;
     }
 
-    // 뎁스는 아무 데도 안 나간다. 이 프레임 안에서만 쓰이고 버려진다.
+    // Depth는 아무 데도 안 나간다. 이 frame 안에서만 쓰이고 버려진다.
     if (!CreateImage2D(dev, extent, formats.depth,
                        VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
                        VK_IMAGE_ASPECT_DEPTH_BIT, &out->depth)) {
         return false;
     }
 
-    // 색 이미지가 생긴 뒤에야 그것을 가리키는 셋을 만들 수 있다.
+    // Color image가 생긴 뒤에야 그것을 가리키는 set을 만들 수 있다.
     out->colorSet = AllocateImageSet(descriptors, out->color.view);
     if (out->colorSet == VK_NULL_HANDLE) { return false; }
     return true;
 }
 
 // 반쯤 만들어진 상태도 견딘다 - vkDestroy~는 VK_NULL_HANDLE에 no-op이다(스펙 보장).
-// 그래서 CreateRenderTargets의 중간 실패 경로에 되돌리기 코드가 없다.
+// 그래서 CreateRenderTargets에 되돌리기 코드가 없다.
 RenderTargets::~RenderTargets() {
     if (dev == nullptr) { return; }
     const VulkanDevice& d = *dev;
