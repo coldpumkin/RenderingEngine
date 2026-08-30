@@ -183,8 +183,13 @@ bool RecordFrame(const VolkDeviceTable& vk,
 
     // ---- 스왑체인 이미지를 전송지로 ----
     // UNDEFINED에서 시작하는 이유는 색 첨부 때와 같다 - 블릿이 전부 덮어쓴다.
+    //
+    // **srcStage가 TOP_OF_PIPE가 아니라 BLIT이다.** TOP_OF_PIPE는 "앞선 작업 없음"이라
+    // 아무것도 안 기다리고, 그러면 이 레이아웃 전이(= 이미지 쓰기)가 acquire 세마포어
+    // 대기를 앞질러 실행될 수 있다. 동기화 검증이 WRITE_AFTER_READ로 잡아준 자리다.
+    // EndFrame의 wait.stageMask와 같은 값이어야 한다.
     RecordLayoutTransition(vk, cmd, target.present->image, VK_IMAGE_ASPECT_COLOR_BIT,
-                           VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                           VK_PIPELINE_STAGE_2_BLIT_BIT, 0,
                            VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                            VK_IMAGE_LAYOUT_UNDEFINED,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);

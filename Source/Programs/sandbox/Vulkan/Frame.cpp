@@ -126,9 +126,15 @@ bool EndFrame(const VulkanDevice& dev,
     // ---- 12. 제출 ----
     // acquire가 끝나야 이미지에 쓸 수 있고(wait), 다 쓰면 present가 알아야 한다(signal).
     // 기다리는 지점을 COLOR_ATTACHMENT_OUTPUT으로 좁히면 그 앞 스테이지는 미리 돈다.
+    // **대기 지점은 스왑체인 이미지를 처음 만지는 곳이다.** 오프스크린이 되면서
+    // 그게 색 첨부 쓰기가 아니라 블릿으로 바뀌었다. 앞의 렌더링은 우리 이미지에만
+    // 그리므로 acquire를 안 기다려도 된다 - 그만큼 겹쳐서 돈다.
+    //
+    // 이 값은 RecordFrame의 "스왑체인 -> TRANSFER_DST" 배리어의 srcStageMask와
+    // **같아야 한다.** 다르면 배리어가 세마포어 대기를 앞질러 실행될 수 있다.
     VkSemaphoreSubmitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
     wait.semaphore = frame.imageAvailable;
-    wait.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    wait.stageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
 
     VkSemaphoreSubmitInfo signal{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
     signal.semaphore = target.present->renderFinished;
