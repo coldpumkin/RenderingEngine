@@ -18,6 +18,7 @@
 
 #include "Config.h"
 #include "Vulkan/Commands.h"
+#include "Vulkan/RenderTargets.h"
 #include "Vulkan/Window.h"
 
 // 개수는 Config.h의 kFramesInFlight가 정한다.
@@ -29,6 +30,10 @@ struct Frame {
 
     VkSemaphore imageAvailable = VK_NULL_HANDLE;
     VkFence inFlight = VK_NULL_HANDLE;
+
+    // **이 프레임이 그려 넣을 곳.** 스왑체인이 아니라 우리 이미지다.
+    // 개수의 근거가 Frame과 같아서(동시에 그려지는 프레임 수) 여기 있다.
+    RenderTargets targets;
     Frame() = default;
     ~Frame();
     Frame(const Frame&) = delete;
@@ -37,13 +42,20 @@ struct Frame {
 
 bool CreateFrame(const VulkanDevice& dev, const Commands& commands, Frame* out) noexcept;
 
-// 이번 프레임에 그릴 대상. **BeginFrame이 정하고 RecordFrame과 EndFrame이 쓴다.**
+// 이번 프레임의 **그릴 곳과 내보낼 곳**. BeginFrame이 정하고 뒤가 쓴다.
+//
+// **둘이 갈라진 것이 오프스크린의 전부다.** 전에는 스왑체인 이미지 하나가 두 역할을
+// 겸했다 - 거기에 직접 그리고 그대로 내보냈으니 구분할 이유가 없었다.
+//
+//   draw     우리 이미지. 여기에 그린다. 스왑체인이 없어도 성립한다
+//   present  스왑체인 이미지. 다 그린 결과를 여기로 복사해 내보낸다
 //
 // imageIndex를 들고 있는 이유: acquire가 준 값을 present가 다시 써야 하는데,
 // 그 사이에 RecordFrame이 끼어 있어 지역 변수로는 건널 수 없다.
 struct FrameTarget {
-    const SwapchainImage* image = nullptr;
-    VkExtent2D extent{};
+    const RenderTargets* draw = nullptr;
+    const SwapchainImage* present = nullptr;
+    VkExtent2D presentExtent{};   // 창 크기. draw->extent와 다를 수 있다
     uint32_t imageIndex = 0;
 };
 

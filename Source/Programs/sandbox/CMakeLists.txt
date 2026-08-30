@@ -1,4 +1,4 @@
-# **개념당 한 쌍.** 언리얼 VulkanRHI와 같은 축이다 - 자원이 늘어도 기존 파일이
+﻿# **개념당 한 쌍.** 언리얼 VulkanRHI와 같은 축이다 - 자원이 늘어도 기존 파일이
 # 안 자라고 새 쌍이 하나 생긴다. 추상화 층은 없다 (struct + 자유 함수뿐).
 #
 # 의존은 한 방향으로만 흐른다:
@@ -14,6 +14,8 @@ add_executable(sandbox
     Vulkan/Device.h      Vulkan/Device.cpp      # + 큐 패밀리 · 큐 · GPU 선택 · VMA 할당자
     Vulkan/Window.h      Vulkan/Window.cpp      # 창 시스템 · 창 · 서피스
     Vulkan/Swapchain.h   Vulkan/Swapchain.cpp
+    Vulkan/RenderTargets.h Vulkan/RenderTargets.cpp  # 우리가 그리는 곳 (스왑체인과 무관)
+    Vulkan/Barrier.h     Vulkan/Barrier.cpp     # 이미지 레이아웃 전이
     Vulkan/Commands.h    Vulkan/Commands.cpp    # 커맨드 풀 (큐 패밀리마다)
     Vulkan/Frame.h       Vulkan/Frame.cpp       # 프레임 자원(프레임마다) + 프레임 여닫기
     Vulkan/Pipeline.h    Vulkan/Pipeline.cpp

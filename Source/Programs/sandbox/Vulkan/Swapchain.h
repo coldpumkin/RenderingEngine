@@ -13,25 +13,9 @@ struct SwapchainImage {
     VkImageView view = VK_NULL_HANDLE;            // 우리가 만들었다 -> 우리가 파괴한다
     VkSemaphore renderFinished = VK_NULL_HANDLE;  // 우리가 만들었다. **이미지당 하나**
 
-    // ---- 뎁스 버퍼 ----
-    //
-    // **왜 스왑체인 안에 있나**: 크기가 extent와 같아야 하고 리사이즈마다 다시 만들어야
-    // 한다. 즉 **스왑체인과 수명이 같다.** 재생성 경로가 이미 여기 있으므로 따로 만들면
-    // 같은 경로를 하나 더 관리하게 된다.
-    //
-    // **왜 이미지당 하나인가** (프레임당도, 통틀어 하나도 아니고):
-    //   통틀어 하나면 frames-in-flight가 2 이상일 때 겹친다. 뎁스 쓰기는
-    //   EARLY/LATE_FRAGMENT_TESTS에서 일어나는데, 이건 다음 프레임의 세마포어 대기
-    //   지점(COLOR_ATTACHMENT_OUTPUT)보다 **앞**이다. 그래서 프레임 N+1의 뎁스 쓰기가
-    //   프레임 N의 것과 겹칠 수 있다. 색 첨부에서는 안 생기는 문제다.
-    //
-    //   이미지당이면 안 겹친다: acquire는 표시 엔진이 아직 쥐고 있는 이미지를 주지
-    //   않으므로, 동시에 날아가는 두 프레임은 **항상 다른 인덱스**를 갖는다.
-    //   프레임당(2개)으로 해도 맞지만, Frame은 extent를 모르고 리사이즈에 반응하지
-    //   않아서 재생성 경로를 새로 만들어야 한다.
-    VkImage depthImage = VK_NULL_HANDLE;
-    VmaAllocation depthAllocation = VK_NULL_HANDLE;
-    VkImageView depthView = VK_NULL_HANDLE;
+    // **뎁스가 여기 있었다가 나갔다.** 재생성 경로가 이미 여기 있어서 편하다는 이유로
+    // 넣었는데, 그건 자원의 성질이 아니라 편의였다. 개수도 이미지 수(3)가 되어
+    // 2개면 충분한 것을 하나 더 만들고 있었다. 지금은 RenderTargets에 있다.
 };
 
 struct Swapchain {

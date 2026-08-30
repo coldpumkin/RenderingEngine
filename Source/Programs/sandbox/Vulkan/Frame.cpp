@@ -27,6 +27,13 @@ bool CreateFrame(const VulkanDevice& dev, const Commands& commands, Frame* out) 
         LOG("[vk] vkCreateFence(inFlight) failed\n");
         return false;
     }
+
+    // **그릴 곳은 창을 안 보고 만든다.** Config.h가 정한 고정 해상도다.
+    // 스왑체인이 아직 없어도(최소화된 채로 실행) 여기는 성립한다 - 그게 요점이다.
+    const VkExtent2D renderExtent{kRenderWidth, kRenderHeight};
+    if (!CreateRenderTargets(dev, renderExtent, &out->targets)) {
+        return false;
+    }
     return true;
 }
 
@@ -103,8 +110,11 @@ FrameResult BeginFrame(const VulkanDevice& dev,
     // **펜스는 여기서 리셋하지 않는다.** 리셋의 짝은 acquire가 아니라 제출이다
     // (EndFrame 참고). 여기서 리셋하면 그 뒤에 실패할 수 있는 것이 남아 있다.
 
-    out->image = &swapchain.images[imageIndex];
-    out->extent = swapchain.extent;
+    // 그릴 곳은 acquire와 무관하다 - 프레임이 자기 것을 들고 있다.
+    // acquire가 정하는 것은 **내보낼 곳**뿐이다.
+    out->draw = &frame.targets;
+    out->present = &swapchain.images[imageIndex];
+    out->presentExtent = swapchain.extent;
     out->imageIndex = imageIndex;
     return FrameResult::Ready;
 }
@@ -121,7 +131,7 @@ bool EndFrame(const VulkanDevice& dev,
     wait.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
 
     VkSemaphoreSubmitInfo signal{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
-    signal.semaphore = target.image->renderFinished;
+    signal.semaphore = target.present->renderFinished;
     signal.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
 
     VkCommandBufferSubmitInfo cmdInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
@@ -166,7 +176,7 @@ bool EndFrame(const VulkanDevice& dev,
 
     VkPresentInfoKHR present{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
     present.waitSemaphoreCount = 1;
-    present.pWaitSemaphores = &target.image->renderFinished;
+    present.pWaitSemaphores = &target.present->renderFinished;
     present.swapchainCount = 1;
     present.pSwapchains = &swapchainHandle;
     present.pImageIndices = &target.imageIndex;

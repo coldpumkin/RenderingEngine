@@ -19,6 +19,7 @@
 // 그게 파일을 나눈 기준이다.
 
 #include "Config.h"
+#include "Vulkan/Barrier.h"
 #include "Vulkan/Buffer.h"
 #include "Vulkan/Commands.h"
 #include "Vulkan/Frame.h"
@@ -30,55 +31,25 @@
 // 8. 한 프레임 기록하기
 // ============================================================================
 
-// 이미지 레이아웃 전이. 프레임에 두 번 나오는데 방향만 다르다.
-//
-// GPU 이미지는 **용도마다 내부 배치가 다르다.** "렌더 타겟으로 쓸 때 빠른 배치"와
-// "화면에 내보낼 때의 배치"가 다르고, 그 사이를 명시적으로 바꿔줘야 한다.
-// 배리어는 그 전환과 함께 **메모리 가시성**(앞의 쓰기가 뒤의 읽기에 보이는가)도 처리한다.
-// aspect가 인자로 올라온 이유: 뎁스 이미지는 COLOR가 아니라 DEPTH로 전이해야 한다.
-// 배리어 셋 중 둘이 색, 하나가 뎁스다.
-void RecordLayoutTransition(const VolkDeviceTable& vk, VkCommandBuffer cmd, VkImage image,
-                            VkImageAspectFlags aspect,
-                            VkPipelineStageFlags2 srcStage, VkAccessFlags2 srcAccess,
-                            VkPipelineStageFlags2 dstStage, VkAccessFlags2 dstAccess,
-                            VkImageLayout oldLayout, VkImageLayout newLayout) noexcept {
-    VkImageMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-    barrier.srcStageMask = srcStage;
-    barrier.srcAccessMask = srcAccess;
-    barrier.dstStageMask = dstStage;
-    barrier.dstAccessMask = dstAccess;
-    barrier.oldLayout = oldLayout;
-    barrier.newLayout = newLayout;
-    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = image;
-    barrier.subresourceRange.aspectMask = aspect;
-    barrier.subresourceRange.levelCount = 1;
-    barrier.subresourceRange.layerCount = 1;
-
-    VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-    dep.imageMemoryBarrierCount = 1;
-    dep.pImageMemoryBarriers = &barrier;
-    vk.vkCmdPipelineBarrier2(cmd, &dep);
-}
-
 // 프레임의 6~11단계: 배리어 -> 렌더링 시작 -> **드로우** -> 렌더링 끝 -> 배리어 -> 기록 끝.
 //
 // **동기화(펜스·세마포어·acquire·present)가 하나도 안 들어온다** - 그건 전부
 // BeginFrame/EndFrame에 있다. 기록과 동기화는 서로 모르는 채로 돌아간다.
 // 이게 "기록하는 쪽"과 "제출하는 쪽"이 갈리는 선이다.
 //
-// 뎁스가 들어와도 **인자가 안 늘었다.** 뎁스 이미지·뷰가 SwapchainImage 안에 있어서
-// target 하나로 같이 온다. 자원을 수명이 같은 것끼리 묶어두면 이런 게 공짜가 된다.
-// (인자 묶기 트리거는 아직 안 울렸다.)
+// **인자가 오히려 줄었다** (6 -> 5). 스왑체인 이미지와 extent를 따로 받던 것이
+// FrameTarget 하나로 합쳐졌다 - 그릴 곳과 내보낼 곳이 갈리면서 오히려 한 덩어리로
+// 다룰 이유가 생겼다.
+//
 // **bool인 이유**: vkBegin/EndCommandBuffer는 실패할 수 있고(메모리 부족), 실패하면
 // 커맨드 버퍼가 무효 상태다. 그걸 제출하는 것은 스펙 위반이라 호출자가 알아야 한다.
 bool RecordFrame(const VolkDeviceTable& vk,
                  VkCommandBuffer cmd,
-                 const SwapchainImage& target,
-                 VkExtent2D extent,
+                 const FrameTarget& target,
                  const Pipeline& pipeline,
                  const Buffer& vertexBuffer) noexcept {
+    const RenderTargets& draw = *target.draw;
+    const VkExtent2D extent = draw.extent;   // **창 크기가 아니다.** Config.h가 정한다
     // 풀을 VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT로 만들었기에 버퍼 하나만
     // 되감을 수 있다. 그 플래그가 없으면 풀 전체를 리셋해야 한다.
     if (vk.vkResetCommandBuffer(cmd, 0) != VK_SUCCESS) {
@@ -97,7 +68,7 @@ bool RecordFrame(const VolkDeviceTable& vk,
     // ---- 그릴 수 있는 레이아웃으로 ----
     // oldLayout이 UNDEFINED인 것은 이전 내용을 안 쓰기 때문이다 - 어차피 loadOp=CLEAR로
     // 덮는다. 보존을 요구하면 드라이버가 실제로 복사를 해야 한다.
-    RecordLayoutTransition(vk, cmd, target.image, VK_IMAGE_ASPECT_COLOR_BIT,
+    RecordLayoutTransition(vk, cmd, draw.color.handle, VK_IMAGE_ASPECT_COLOR_BIT,
                            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
@@ -111,7 +82,7 @@ bool RecordFrame(const VolkDeviceTable& vk,
     // 색 배리어의 스테이지를 그대로 쓰면 뎁스 쓰기가 배리어보다 먼저 일어날 수 있다.
     //
     // oldLayout이 UNDEFINED인 것은 색과 같은 이유다 - loadOp=CLEAR로 어차피 덮는다.
-    RecordLayoutTransition(vk, cmd, target.depthImage, VK_IMAGE_ASPECT_DEPTH_BIT,
+    RecordLayoutTransition(vk, cmd, draw.depth.handle, VK_IMAGE_ASPECT_DEPTH_BIT,
                            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                            VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT
                                | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
@@ -122,7 +93,7 @@ bool RecordFrame(const VolkDeviceTable& vk,
     // ---- 렌더링 시작 ----
     // 다이나믹 렌더링: VkRenderPass/VkFramebuffer 객체를 미리 만들지 않는다.
     VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-    color.imageView = target.view;
+    color.imageView = draw.color.view;
     color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -134,7 +105,7 @@ bool RecordFrame(const VolkDeviceTable& vk,
     // storeOp가 DONT_CARE인 이유: 뎁스는 이 프레임 안에서만 쓰인다. 다음 프레임에
     // 필요하면(SSAO 같은 후처리) STORE로 바꿔야 한다.
     VkRenderingAttachmentInfo depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-    depth.imageView = target.depthView;
+    depth.imageView = draw.depth.view;
     depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
     depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -196,14 +167,59 @@ bool RecordFrame(const VolkDeviceTable& vk,
 
     vk.vkCmdEndRendering(cmd);
 
-    // ---- present 가능한 레이아웃으로 ----
-    // **뎁스는 여기서 전이하지 않는다.** present는 색 이미지만 본다. 뎁스는 다음 프레임에
-    // 다시 UNDEFINED에서 시작하므로 되돌릴 이유가 없다.
-    RecordLayoutTransition(vk, cmd, target.image, VK_IMAGE_ASPECT_COLOR_BIT,
+    // ========================================================================
+    // 여기까지가 렌더링이다. **스왑체인이 한 번도 안 나왔다.**
+    // 아래는 결과를 화면으로 내보내는 일이고, 창이 없으면 통째로 없어도 되는 부분이다.
+    // ========================================================================
+
+    // ---- 우리 색 이미지를 전송원으로 ----
+    // 그리기가 끝나야(COLOR_ATTACHMENT_OUTPUT) 읽을 수 있다(TRANSFER + TRANSFER_READ).
+    RecordLayoutTransition(vk, cmd, draw.color.handle, VK_IMAGE_ASPECT_COLOR_BIT,
                            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                           VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0,
+                           VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
                            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+    // ---- 스왑체인 이미지를 전송지로 ----
+    // UNDEFINED에서 시작하는 이유는 색 첨부 때와 같다 - 블릿이 전부 덮어쓴다.
+    RecordLayoutTransition(vk, cmd, target.present->image, VK_IMAGE_ASPECT_COLOR_BIT,
+                           VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                           VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                           VK_IMAGE_LAYOUT_UNDEFINED,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+    // ---- 블릿 ----
+    //
+    // **복사(vkCmdCopyImage)가 아니라 블릿인 이유**: 크기와 포맷이 다를 수 있다.
+    // 복사는 둘 다 같아야 하는데, 렌더 해상도는 Config.h가 정하고 창 크기는 사용자가
+    // 정한다. 블릿은 필터링하며 늘리거나 줄여준다 - 창을 리사이즈해도 렌더 해상도가
+    // 그대로인 것이 여기서 흡수된다.
+    //
+    // (전제: 두 포맷이 BLIT_SRC / BLIT_DST를 지원해야 한다. 8비트 RGBA류는 사실상
+    //  모든 구현이 지원하고, 아니면 검증 레이어가 크게 알려준다.)
+    VkImageBlit region{};
+    region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.srcSubresource.layerCount = 1;
+    region.srcOffsets[1] = VkOffset3D{static_cast<int32_t>(extent.width),
+                                      static_cast<int32_t>(extent.height), 1};
+    region.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.dstSubresource.layerCount = 1;
+    region.dstOffsets[1] = VkOffset3D{static_cast<int32_t>(target.presentExtent.width),
+                                      static_cast<int32_t>(target.presentExtent.height), 1};
+
+    vk.vkCmdBlitImage(cmd,
+                      draw.color.handle, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                      target.present->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                      1, &region, VK_FILTER_LINEAR);
+
+    // ---- present 가능한 레이아웃으로 ----
+    // **뎁스는 아무 전이도 안 한다.** 화면에 나갈 일이 없고 다음 프레임에 다시
+    // UNDEFINED에서 시작한다.
+    RecordLayoutTransition(vk, cmd, target.present->image, VK_IMAGE_ASPECT_COLOR_BIT,
+                           VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                           VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                            VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 
     if (vk.vkEndCommandBuffer(cmd) != VK_SUCCESS) {
@@ -268,8 +284,9 @@ int main() {
     }
 
     // 파이프라인은 **포맷**에 묶인다 (크기는 동적 상태라 안 묶인다).
-    // 포맷이 창에 있으므로 스왑체인을 기다릴 필요가 없다.
-    if (!CreateTrianglePipeline(dev, window.surfaceFormat.format, &pipeline)) { return 1; }
+    // **창 포맷이 아니라 우리 렌더 타겟 포맷이다.** 파이프라인이 그리는 곳은
+    // 오프스크린 이미지고, 스왑체인 포맷과는 블릿이 매개한다.
+    if (!CreateTrianglePipeline(dev, kRenderColorFormat, &pipeline)) { return 1; }
 
     // 정점 데이터. y-up 규약이다.
     //
@@ -334,8 +351,7 @@ int main() {
         // 기록이 실패하면 **제출하지 않고 끝낸다.** 무효한 커맨드 버퍼를 제출하는 것은
         // 스펙 위반이고, 여기서 continue하면 이미 신호된 imageAvailable을 기다릴 사람이
         // 없어진 채로 다음 acquire가 같은 세마포어를 다시 신호하게 된다.
-        if (!RecordFrame(dev.table, frame.cmd, *target.image, target.extent,
-                         pipeline, vertexBuffer)) {
+        if (!RecordFrame(dev.table, frame.cmd, target, pipeline, vertexBuffer)) {
             break;
         }
 
