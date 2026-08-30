@@ -1,4 +1,4 @@
-#include "Vulkan/RenderTargets.h"
+﻿#include "Vulkan/RenderTargets.h"
 
 #include <initializer_list>   // 소멸자의 for (Image* : {...})
 
@@ -57,8 +57,28 @@ static bool CreateImage2D(const VulkanDevice& dev,
     return true;
 }
 
+VkFormat ChooseDepthFormat(const VulkanInstance& inst, VkPhysicalDevice gpu) noexcept {
+    // 정밀도 높은 순서. 스텐실 없는 것을 먼저 보는 이유는 우리가 스텐실을 안 쓰기
+    // 때문이다 - 붙어 있으면 메모리를 더 쓰고, 배리어/뷰의 aspectMask에 STENCIL까지
+    // 얹어야 해서 실수할 자리가 는다.
+    //
+    // **optimalTilingFeatures를 본다.** 렌더 타겟은 linear로 두지 않는다.
+    for (const VkFormat candidate : {VK_FORMAT_D32_SFLOAT,
+                                     VK_FORMAT_X8_D24_UNORM_PACK32,
+                                     VK_FORMAT_D32_SFLOAT_S8_UINT,
+                                     VK_FORMAT_D24_UNORM_S8_UINT}) {
+        VkFormatProperties props{};
+        inst.table.vkGetPhysicalDeviceFormatProperties(gpu, candidate, &props);
+        if ((props.optimalTilingFeatures
+             & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0) {
+            return candidate;
+        }
+    }
+    return VK_FORMAT_UNDEFINED;
+}
+
 bool CreateRenderTargets(const VulkanDevice& dev, VkExtent2D extent,
-                         RenderTargets* out) noexcept {
+                         VkFormat depthFormat, RenderTargets* out) noexcept {
     out->dev = &dev;
     out->extent = extent;
 
@@ -71,7 +91,7 @@ bool CreateRenderTargets(const VulkanDevice& dev, VkExtent2D extent,
     }
 
     // 뎁스는 아무 데도 안 나간다. 이 프레임 안에서만 쓰이고 버려진다.
-    if (!CreateImage2D(dev, extent, dev.depthFormat,
+    if (!CreateImage2D(dev, extent, depthFormat,
                        VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
                        VK_IMAGE_ASPECT_DEPTH_BIT, &out->depth)) {
         return false;

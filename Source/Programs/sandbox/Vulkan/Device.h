@@ -114,15 +114,10 @@ struct VulkanDevice {
     // 대신, 안 변하는 값이니 여기 한 번 담아둔다.
     VkPhysicalDeviceMemoryProperties memoryProperties{};
 
-    // 뎁스 버퍼가 쓸 포맷. **GPU가 정한다** - 서피스와 무관하다.
-    //
-    // **왜 여기 있나**: 색 포맷을 Window에 둔 것과 같은 이유다. 파이프라인이
-    // 스왑체인보다 먼저 만들어지는데(다이나믹 렌더링은 포맷을 파이프라인에 박는다),
-    // 그때 이미 알 수 있어야 한다. 스왑체인에 두면 파이프라인이 스왑체인을 기다린다.
-    //
-    // **하나로 고정할 수 없다.** 스펙은 D32_SFLOAT와 X8_D24_UNORM_PACK32 중 최소 하나만
-    // 보장하지 특정 하나를 보장하지 않는다. 그래서 CreateDevice가 후보를 물어서 고른다.
-    VkFormat depthFormat = VK_FORMAT_UNDEFINED;
+    // **뎁스 포맷은 여기 없다.** 한때 있었는데, 후보 목록과 그 우선순위는 우리
+    // 렌더 타겟의 정책이지 GPU의 성질이 아니다 - GPU는 "지원하나"에만 답한다.
+    // memoryProperties가 GPU가 말한 것이라면 그건 그중에서 우리가 고른 것이다.
+    // 지금은 RenderTargets.h의 ChooseDepthFormat에 있다.
 
     // GPU 메모리 할당자. **디바이스가 만들고 디바이스와 함께 죽는다.**
     //

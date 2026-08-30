@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 // ============================================================================
 // 우리가 그리는 곳 - **스왑체인과 무관하다**
@@ -58,5 +58,15 @@ struct RenderTargets {
 // 두 번 일어난다. 나중에 HDR로 갈 때 여기가 R16G16B16A16_SFLOAT가 되는 자리다.
 constexpr VkFormat kRenderColorFormat = VK_FORMAT_R8G8B8A8_SRGB;
 
+// 뎁스는 상수로 못 박는다. 스펙이 보장하는 것은 D32_SFLOAT와 X8_D24_UNORM_PACK32 중
+// **최소 하나**지 특정 하나가 아니다. 그래서 물어보고 고른다.
+//
+// **왜 Device가 아니라 여기 있나**: 후보 목록과 그 우선순위는 우리 렌더 타겟의
+// 정책이지 GPU의 성질이 아니다. GPU는 "지원하나"에만 답한다.
+// (스텐실 없는 것을 먼저 보는 이유도 "우리가 스텐실을 안 쓴다"이지 GPU와 무관하다.)
+//
+// 실패하면 VK_FORMAT_UNDEFINED. 조회가 인스턴스 레벨이라 inst를 받는다.
+VkFormat ChooseDepthFormat(const VulkanInstance& inst, VkPhysicalDevice gpu) noexcept;
+
 bool CreateRenderTargets(const VulkanDevice& dev, VkExtent2D extent,
-                         RenderTargets* out) noexcept;
+                         VkFormat depthFormat, RenderTargets* out) noexcept;

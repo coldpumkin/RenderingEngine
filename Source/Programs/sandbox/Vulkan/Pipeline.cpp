@@ -62,7 +62,8 @@ VkShaderModule LoadShader(const VulkanDevice& dev, const char* path) noexcept {
 }
 
 // 파이프라인 + 레이아웃. 둘이 같이 태어나고 같이 죽는다.
-bool CreateTrianglePipeline(const VulkanDevice& dev, VkFormat colorFormat,
+bool CreateTrianglePipeline(const VulkanDevice& dev,
+                            VkFormat colorFormat, VkFormat depthFormat,
                             Pipeline* out) noexcept {
     Pipeline& pipeline = *out;
     pipeline.dev = &dev;
@@ -208,7 +209,7 @@ bool CreateTrianglePipeline(const VulkanDevice& dev, VkFormat colorFormat,
     pipelineRendering.pColorAttachmentFormats = &colorFormat;
     // 뎁스도 여기 적는다. **RecordFrame이 붙이는 뎁스 뷰의 포맷과 같아야 한다** -
     // 어긋나면 파이프라인 생성이 아니라 렌더링 시점에 검증 레이어가 잡는다.
-    pipelineRendering.depthAttachmentFormat = dev.depthFormat;
+    pipelineRendering.depthAttachmentFormat = depthFormat;
 
     VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
     info.pNext = &pipelineRendering;

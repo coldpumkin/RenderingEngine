@@ -37,7 +37,8 @@ struct PushConstants {
 
 // colorFormat: 이 파이프라인이 어떤 포맷의 렌더 타겟에 그릴지. 창에서 온다.
 //
-// **뎁스 포맷은 인자가 아니다** - dev.depthFormat에서 온다. 색 포맷은 (GPU, 서피스)
-// 쌍이 정해서 창이 들고 있지만, 뎁스는 GPU만 보면 정해지므로 디바이스가 안다.
-bool CreateTrianglePipeline(const VulkanDevice& dev, VkFormat colorFormat,
+// **포맷 둘 다 인자다.** 다이나믹 렌더링은 포맷을 파이프라인에 박으므로, 이 값들이
+// RenderTargets가 실제로 만든 것과 같아야 한다. 같은 곳에서 와야 어긋나지 않는다.
+bool CreateTrianglePipeline(const VulkanDevice& dev,
+                            VkFormat colorFormat, VkFormat depthFormat,
                             Pipeline* out) noexcept;

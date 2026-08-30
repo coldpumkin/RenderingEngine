@@ -229,30 +229,6 @@ bool CreateDevice(const VulkanInstance& inst,
     // 메모리 타입 목록을 여기서 한 번 물어 담는다 (인스턴스 레벨 조회다).
     inst.table.vkGetPhysicalDeviceMemoryProperties(dev.gpu, &dev.memoryProperties);
 
-    // ---- 뎁스 포맷 고르기 ----
-    //
-    // 정밀도 높은 순서로 묻고 첫 번째로 되는 것을 쓴다. 스텐실 없는 것을 먼저 보는 이유는
-    // 우리가 스텐실을 안 쓰기 때문이다 - 붙어 있으면 메모리를 더 쓰고, 배리어/뷰의
-    // aspectMask에 STENCIL까지 얹어야 해서 실수할 자리가 는다.
-    //
-    // **optimalTilingFeatures를 본다.** 렌더 타겟은 linear로 두지 않는다.
-    for (const VkFormat candidate : {VK_FORMAT_D32_SFLOAT,
-                                     VK_FORMAT_X8_D24_UNORM_PACK32,
-                                     VK_FORMAT_D32_SFLOAT_S8_UINT,
-                                     VK_FORMAT_D24_UNORM_S8_UINT}) {
-        VkFormatProperties props{};
-        inst.table.vkGetPhysicalDeviceFormatProperties(dev.gpu, candidate, &props);
-        if ((props.optimalTilingFeatures
-             & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0) {
-            dev.depthFormat = candidate;
-            break;
-        }
-    }
-    if (dev.depthFormat == VK_FORMAT_UNDEFINED) {
-        LOG("[vk] no usable depth format\n");
-        return false;
-    }
-
     // ---- VMA 할당자 ----
     //
     // **함수 포인터를 손으로 채운다.** volk 때문이다: VK_NO_PROTOTYPES라 전역 vk* 심볼이

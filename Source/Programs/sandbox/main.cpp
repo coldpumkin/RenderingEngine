@@ -278,6 +278,15 @@ int main() {
     // selection은 여기서 dev 안으로 흡수되고 더 이상 쓰이지 않는다.
     if (!CreateDevice(inst, selection, &dev)) { return 1; }
 
+    // **렌더 타겟 포맷 한 쌍을 여기서 정한다.** 색은 상수고(kRenderColorFormat) 뎁스는
+    // GPU에 물어봐야 한다. 아래에서 프레임(실제 이미지)과 파이프라인(포맷을 박음)에
+    // **같은 값**을 준다 - 어긋나면 렌더링 시점에 검증 레이어가 잡는다.
+    const VkFormat depthFormat = ChooseDepthFormat(inst, dev.gpu);
+    if (depthFormat == VK_FORMAT_UNDEFINED) {
+        LOG("[vk] no usable depth format\n");
+        return 1;
+    }
+
     // 이 창이 받는 포맷을 확정한다. **GPU가 정해진 뒤에만 알 수 있다** -
     // 어떤 포맷을 받는지는 (GPU, 서피스) 쌍이 정한다. 리사이즈로는 안 바뀐다.
     if (!SelectSurfaceFormat(inst, dev, &window)) { return 1; }
@@ -287,13 +296,15 @@ int main() {
 
     // frames-in-flight마다 한 벌.
     for (Frame& f : frames) {
-        if (!CreateFrame(dev, commands, &f)) { return 1; }
+        if (!CreateFrame(dev, commands, depthFormat, &f)) { return 1; }
     }
 
     // 파이프라인은 **포맷**에 묶인다 (크기는 동적 상태라 안 묶인다).
     // **창 포맷이 아니라 우리 렌더 타겟 포맷이다.** 파이프라인이 그리는 곳은
     // 오프스크린 이미지고, 스왑체인 포맷과는 블릿이 매개한다.
-    if (!CreateTrianglePipeline(dev, kRenderColorFormat, &pipeline)) { return 1; }
+    if (!CreateTrianglePipeline(dev, kRenderColorFormat, depthFormat, &pipeline)) {
+        return 1;
+    }
 
     // 정점 데이터. y-up 규약이다.
     //
