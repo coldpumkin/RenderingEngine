@@ -180,17 +180,18 @@ bool SubmitFrame(const VulkanDevice& dev,
 
 bool PresentFrame(const VulkanDevice& dev,
                   Window* window,
-                  const FrameTarget& target) noexcept {
+                  const SwapchainImage& image,
+                  uint32_t imageIndex) noexcept {
     const VkSwapchainKHR swapchainHandle = window->swapchain->handle;
 
     VkPresentInfoKHR present{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
     present.waitSemaphoreCount = 1;
-    present.pWaitSemaphores = &target.present->renderFinished;
+    present.pWaitSemaphores = &image.renderFinished;
     // **배열인 것에 주목.** 창이 여럿이면 한 번에 내보낸다 - present가 늘어나는 축이
     // 창 개수라는 뜻이고, 제출(큐 개수)과 다르다.
     present.swapchainCount = 1;
     present.pSwapchains = &swapchainHandle;
-    present.pImageIndices = &target.imageIndex;
+    present.pImageIndices = &imageIndex;
 
     const VkResult presented = dev.table.vkQueuePresentKHR(dev.queues.present, &present);
 

@@ -107,8 +107,15 @@ bool SubmitFrame(const VulkanDevice& dev,
                  const Frame& frame,
                  VkSemaphore signalWhenDone) noexcept;
 
-// 화면에 내보낸다. **프레임을 모른다** - target에서 세마포어와 인덱스만 쓴다.
-// 창이 없으면 이 줄만 빼면 된다.
+// 화면에 내보낸다. 창이 없으면 이 줄만 빼면 된다.
+//
+// **FrameTarget을 안 받는다.** 한때 받았는데 target.draw(프레임 것)를 받아놓고 안 봤다 -
+// "present는 프레임을 모른다"가 말로만 참이고 시그니처에선 거짓이었다.
+//
+// image를 인덱스로 다시 찾지 않고 **BeginFrame이 고른 것을 그대로 받는다.** 지금은
+// 프레임 도중에 스왑체인이 안 바뀌어서 둘이 같지만, 바뀌게 되면 인덱스는 다른 이미지를
+// 가리키고 참조는 안 그렇다. FrameTarget이 있는 이유가 그 "이미 고른 것"을 나르는 것이다.
 bool PresentFrame(const VulkanDevice& dev,
                   Window* window,
-                  const FrameTarget& target) noexcept;
+                  const SwapchainImage& image,
+                  uint32_t imageIndex) noexcept;

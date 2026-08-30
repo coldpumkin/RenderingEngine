@@ -371,7 +371,7 @@ int main() {
         if (!SubmitFrame(dev, frame, target.present->renderFinished)) {
             break;
         }
-        if (!PresentFrame(dev, &window, target)) {
+        if (!PresentFrame(dev, &window, *target.present, target.imageIndex)) {
             break;
         }
 
