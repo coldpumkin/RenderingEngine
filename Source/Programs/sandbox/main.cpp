@@ -314,26 +314,23 @@ bool RecordFrame(const VolkDeviceTable& vk,
 // ============================================================================
 int main() {
     // ========================================================================
-    // 선언 - **파괴 역순으로 배치한다. 채우는 순서와 다르다.**
+    // 선언 - 파괴의 역순. 아래 채우는 순서와 다르다.
     // ========================================================================
     //
-    // C++은 선언 순서의 역순으로 파괴한다. 그런데 우리의 **생성** 순서와 **파괴** 순서는
-    // 같은 줄에 세울 수가 없다:
+    // C++은 선언의 역순으로 파괴한다. 그런데 만드는 순서와 부수는 순서를 한 줄로
+    // 세울 수가 없다:
     //
-    //   생성: 창/서피스가 디바이스보다 **먼저** (GPU 고를 때 서피스가 필요하다)
-    //   파괴: 창의 스왑체인이 디바이스보다 **먼저** (디바이스가 만든 것이다)
+    //   만들 때: 창/서피스가 디바이스보다 먼저 (GPU를 고를 때 서피스가 필요하다)
+    //   부술 때: 창의 스왑체인이 디바이스보다 먼저 (디바이스가 만든 것이다)
     //
-    // 둘 다 만족시키려면 **선언과 채우기를 떼어야 한다.** 전부 기본 생성 = 비어 있음이고
-    // (그 상태가 합법이다) Create가 out 파라미터로 채우므로 가능하다.
-    //
-    // 여기 순서를 잘못 잡으면 검증 레이어가 잡아준다.
+    // 그래서 선언과 채우기를 뗀다. 전부 비어 있는 채로 선언하고 Create가 채운다.
     WindowSystem   windowSystem;   // 파괴: 마지막. glfwTerminate는 모든 창 뒤에
     VulkanInstance inst;
     VulkanDevice   dev;
     Window         window;         // 스왑체인을 품는다 -> dev보다 먼저 죽어야 한다
     Commands       commands;
-    Descriptors    descriptors;   // frames가 이 풀에서 셋을 받는다 -> frames보다 먼저 선언
-    Frame          frames[kFramesInFlight];   // **한 벌씩. 배열이 된 게 전부다**
+    Descriptors    descriptors;   // frames가 이 풀에서 셋을 받는다 -> 먼저 선언
+    Frame          frames[kFramesInFlight];
     Pipeline       pipeline;
     Pipeline       fullscreen;
     Buffer         vertexBuffer;   // 파괴: 첫 번째
@@ -385,9 +382,9 @@ int main() {
 
     // ---- 그릴 것 ----
     //
-    // **삼각형 둘을 겹치게 두고 그리는 순서를 깊이 순서와 반대로 만들었다.**
-    // 뎁스 테스트가 실제로 도는지 보는 방법이다 - 겹친 곳이 초록이면 켜진 것이고,
-    // 빨강이면(나중에 그린 쪽) 꺼진 것이다. 삼각형 하나로는 이 차이가 안 보인다.
+    // 삼각형 둘을 겹치게 두고 그리는 순서를 깊이 순서와 반대로 만들었다. 뎁스 테스트가
+    // 실제로 도는지 보는 방법이다 - 겹친 곳이 초록이면 켜진 것이고, 빨강이면(나중에
+    // 그린 쪽) 꺼진 것이다. 삼각형 하나로는 이 차이가 안 보인다.
     constexpr Vertex kTriangles[] = {
         // 가까움 (z=0.25), 먼저 그린다 - 초록
         {{-0.7f,  0.5f, 0.25f}, {0.1f, 0.9f, 0.2f}},
@@ -408,8 +405,9 @@ int main() {
 
     // ---- 루프 ----
     //
-    // 동기화(그릴 곳 확보 · 대기 · acquire · 제출 · present)는 전부 Frame.cpp 안이다.
-    // 여기 남은 것은 **프레임 하나의 모양**과, 실패했을 때 무엇을 할지뿐이다.
+    // 프레임을 열고 닫는 일(그릴 곳 확보 · 대기 · acquire · 제출 · present)은 Frame.cpp에,
+    // 무엇을 그리는지는 RecordFrame에 있다. 여기 남은 것은 그 순서와, 실패했을 때
+    // 무엇을 할지뿐이다.
     LOG("close the window to exit.\n");
 
     // 어느 프레임 자원 한 벌을 쓸 차례인가. 매 프레임 돌아간다.
@@ -418,9 +416,9 @@ int main() {
     while (glfwWindowShouldClose(window.handle) == 0) {
         glfwPollEvents();
 
-        // **최소화 중이면 이벤트가 올 때까지 잔다.** 이게 없으면 스왑체인을 못 만드는
-        // 상태에서 매 순회 재생성을 시도하고, present가 없어 수직동기 제동도 없다.
-        // 실측 CPU 10.9% -> 135.9%였다.
+        // 최소화 중이면 이벤트가 올 때까지 잔다. 이게 없으면 스왑체인을 못 만드는
+        // 상태에서 매 순회 재생성을 시도하는데, present가 없어 수직동기 제동도 없다.
+        // 실측 CPU 10.9% -> 135.9%.
         if (!WindowHasDrawableSize(window)) {
             glfwWaitEvents();
             continue;
@@ -433,14 +431,14 @@ int main() {
         if (begun == FrameResult::Fatal) { break; }
         if (begun == FrameResult::Skip) { continue; }
 
-        // 아래 셋은 전부 continue가 아니라 **break**다. acquire까지 갔는데 제출을
-        // 안 하면 신호된 세마포어와 리셋된 펜스를 기다릴 사람이 없어진다.
+        // 아래 셋은 continue가 아니라 break다. acquire까지 갔는데 제출을 안 하면
+        // 신호된 세마포어와 리셋된 펜스를 기다릴 사람이 없어진다.
         if (!RecordFrame(dev.table, frame.cmd, target, pipeline, vertexBuffer,
                          fullscreen)) {
             break;
         }
 
-        // 제출과 present가 갈라진 근거는 Frame.h에. **창이 없으면 아래 둘째 줄만 빠진다.**
+        // 제출과 present가 갈라진 근거는 Frame.h에. 창이 없으면 아래 둘째 줄만 빠진다.
         if (!SubmitFrame(dev, frame, target.present->renderFinished)) {
             break;
         }
@@ -453,17 +451,12 @@ int main() {
 
     // ---- 정리 ----
     //
-    // **한 줄뿐이다.** 나머지는 전부 소멸자가 선언의 역순으로 한다:
-    //   vertexBuffer -> pipeline -> frame -> commands -> window(스왑체인->서피스->창)
-    //   -> dev -> inst -> windowSystem
+    // 파괴는 소멸자가 선언의 역순으로 한다. 한때 여기 열 줄이 있었고, 자원을 늘릴
+    // 때마다 한 줄 더 적어야 했으며 잊으면 샜다.
     //
-    // 한때 여기 열 줄이 있었고, 순서를 틀리면 조용히 깨졌다. 자원을 추가할 때마다
-    // 한 줄 더 적어야 했고 잊으면 샜다. 지금은 필드를 추가하면 정리가 따라온다.
-    //
-    // GPU 대기는 남는다 - ~VulkanDevice가 vkDeviceWaitIdle을 부르지만, 그건
-    // **다른 소멸자들이 다 돈 뒤**다. 스왑체인/커맨드 풀처럼 GPU가 아직 쓰고 있을 수
-    // 있는 것들을 파괴하기 전에 한 번 기다려야 한다.
-    // (각 소멸자가 자기 것을 기다리게 할 수도 있지만, 여기서 한 번이 더 싸고 명확하다.)
+    // 남은 한 줄은 **GPU 대기**다. ~VulkanDevice도 vkDeviceWaitIdle을 부르지만 그건
+    // 다른 소멸자가 다 돈 뒤라서, GPU가 아직 쓰고 있을 수 있는 것들(스왑체인·커맨드 풀)을
+    // 부수기 전에 한 번 기다려야 한다.
     dev.table.vkDeviceWaitIdle(dev.handle);
 
     LOG("[vk] clean shutdown\n");
