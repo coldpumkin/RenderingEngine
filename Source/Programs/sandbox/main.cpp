@@ -1,11 +1,11 @@
-﻿// **한 프레임이 어떻게 도는가** - 런타임 경로.
+﻿// **흐름이 있는 곳.** 무엇을 어떤 순서로 만들고, 한 프레임이 어떻게 도는가.
 //
-// 만들고 부수는 것은 전부 Vulkan/ 아래에 있다. 여기는 매 프레임 도는 코드만 있다.
+// 각 자원을 **어떻게** 만들고 부수는지는 전부 Vulkan/ 아래에 있다. 여기는 순서만 있다.
 //
-// Vulkan/ 은 **개념당 한 쌍**이다 (언리얼 VulkanRHI와 같은 축):
-//   Core.h       두 함수 테이블 · 요구사항 · RAII 규약
-//   Instance   Window   Swapchain   Commands   Barrier
-//   Device     Frame    Pipeline    Buffer     RenderTargets   Descriptors
+// Vulkan/ 은 **개념당 .h/.cpp 한 쌍**이다:
+//   Core.h  함수 테이블 · 요구사항 · RAII 규약
+//   Instance  Device  Window  Swapchain  Commands
+//   Frame  RenderTargets  Descriptors  Pipeline  Buffer  Barrier
 // 자원이 늘어도 기존 파일이 안 자란다 - 새 쌍이 하나 생길 뿐이다.
 //
 // **초기화와 런타임은 지켜야 할 규칙이 다르다:**
@@ -339,31 +339,25 @@ int main() {
     Buffer         vertexBuffer;   // 파괴: 첫 번째
 
     // ========================================================================
-    // 채우기 - **의존 순서로.**
+    // 채우기 - **의존 순서로.** 조기 return이 아무것도 안 샌다.
     // ========================================================================
-    //
-    // 조기 return이 아무것도 안 샌다. 여기까지 채워진 것은 소멸자가 알아서 정리한다.
-    // **플랫폼을 먼저 올린다.** 지금은 둘 사이에 의존이 없지만(우리는 서피스를
-    // vkCreateWin32SurfaceKHR로 직접 만든다), windowSystem이 맨 먼저 선언돼 있으니
-    // 생성도 먼저 하는 것이 맞다 - **강제되지 않은 곳에서 선언과 생성 순서를 맞춰야,
-    // 어긋난 곳이 "진짜 이유가 있는 곳"이라는 표시가 된다.**
+
+    // ---- 플랫폼과 창 ----
+    // glfwInit이 먼저인 것은 의존 때문이 아니다. windowSystem이 맨 먼저 선언돼 있어서
+    // (= 가장 늦게 죽는다) 생성 순서를 거기 맞췄다.
     if (!InitWindowSystem(&windowSystem)) { return 1; }
     if (!CreateInstance(&inst)) { return 1; }
     if (!OpenWindow(inst, 1280, 720, "Lambda Engine", &window)) { return 1; }
 
+    // ---- GPU를 고르고, GPU에게 물어볼 것을 다 묻는다 ----
+    //
+    // 포맷 둘 다 논리 디바이스가 필요 없다 (이유는 각 함수의 헤더에).
+    // 나란히 둔 이유는 **포맷 계약이 둘**이기 때문이다:
+    //   formats                우리 렌더 타겟이 쓸 것
+    //   window.surfaceFormat   스왑체인이 쓸 것 - 두 번째 패스가 여기 맞춘다
     const PhysicalDeviceSelection selection = PickPhysicalDevice(inst, window.surface);
     if (selection.gpu == VK_NULL_HANDLE) { return 1; }
 
-    // selection은 여기서 dev 안으로 흡수되고 더 이상 쓰이지 않는다.
-    // ---- 물리 디바이스에게 물어볼 것을 여기서 다 묻는다 ----
-    //
-    // **둘 다 논리 디바이스가 필요 없다.** 포맷은 GPU와 서피스가 정하는 것이라
-    // vkCreateDevice 전에 답이 나온다. 뒤에 두면 "디바이스가 있어야 한다"고
-    // 순서가 거짓말을 한다.
-    //
-    // 그리고 **포맷 계약이 둘이라는 것**이 여기 나란히 있어야 보인다:
-    //   formats                우리 렌더 타겟이 쓸 것 (색+뎁스)
-    //   window.surfaceFormat   스왑체인이 쓸 것 - 전체화면 패스가 여기에 맞춘다
     const RenderTargetFormats formats = ChooseRenderTargetFormats(inst, selection.gpu);
     if (formats.depth == VK_FORMAT_UNDEFINED) {
         LOG("[vk] no usable depth format\n");
@@ -371,46 +365,29 @@ int main() {
     }
     if (!SelectSurfaceFormat(inst, selection.gpu, &window)) { return 1; }
 
+    // ---- 디바이스와 거기 딸린 것들 ----
+    // selection은 여기서 dev 안으로 흡수된다.
     if (!CreateDevice(inst, selection, &dev)) { return 1; }
-
-
-    // 이 창이 받는 포맷을 확정한다. **GPU가 정해진 뒤에만 알 수 있다** -
-    // 어떤 포맷을 받는지는 (GPU, 서피스) 쌍이 정한다. 리사이즈로는 안 바뀐다.
-
-    // 큐 패밀리마다 풀 하나. 디바이스 수명이다.
     if (!CreateCommands(dev, &commands)) { return 1; }
-
-    // 프레임마다 셋 하나. **풀은 자라지 않아서 최대 개수를 미리 말해야 한다.**
     if (!CreateDescriptors(dev, kFramesInFlight, &descriptors)) { return 1; }
 
-    // frames-in-flight마다 한 벌.
     for (Frame& f : frames) {
         if (!CreateFrame(dev, commands, descriptors, formats, &f)) { return 1; }
     }
 
-    // 파이프라인은 **포맷**에 묶인다 (크기는 동적 상태라 안 묶인다).
-    // **창 포맷이 아니라 우리 렌더 타겟 포맷이다.** 파이프라인이 그리는 곳은
-    // 오프스크린 이미지고, 스왑체인 포맷과는 두 번째 패스가 매개한다.
-    if (!CreateTrianglePipeline(dev, formats, &pipeline)) {
-        return 1;
-    }
-    // **두 번째 파이프라인.** 계약의 상대가 다르다 - 스왑체인 포맷에 그리고,
-    // 뎁스가 없고, 정점 대신 이미지를 읽는다.
+    // ---- 파이프라인 둘 ----
+    // 계약의 상대가 다르다: 장면은 우리 렌더 타겟에, 전체화면은 스왑체인에 그린다.
+    if (!CreateTrianglePipeline(dev, formats, &pipeline)) { return 1; }
     if (!CreateFullscreenPipeline(dev, window.surfaceFormat.format,
                                   descriptors.setLayout, &fullscreen)) {
         return 1;
     }
 
-    // 정점 데이터. y-up 규약이다.
+    // ---- 그릴 것 ----
     //
-    // **삼각형 둘을 겹치게 두고, 그리는 순서를 깊이 순서와 반대로 만들었다.**
-    // 이게 뎁스 테스트가 실제로 도는지 보는 방법이다:
-    //
-    //   뎁스 켜짐 -> 겹친 곳이 **초록**(가까운 쪽). 나중에 그린 빨강이 밀려난다
-    //   뎁스 꺼짐 -> 겹친 곳이 **빨강**(나중에 그린 쪽). 덮어쓰기만 일어난다
-    //
-    // 삼각형 하나로는 이 차이가 안 보인다. 전에 z를 전부 0으로 두고도 잘 그려졌던
-    // 이유이기도 하다.
+    // **삼각형 둘을 겹치게 두고 그리는 순서를 깊이 순서와 반대로 만들었다.**
+    // 뎁스 테스트가 실제로 도는지 보는 방법이다 - 겹친 곳이 초록이면 켜진 것이고,
+    // 빨강이면(나중에 그린 쪽) 꺼진 것이다. 삼각형 하나로는 이 차이가 안 보인다.
     constexpr Vertex kTriangles[] = {
         // 가까움 (z=0.25), 먼저 그린다 - 초록
         {{-0.7f,  0.5f, 0.25f}, {0.1f, 0.9f, 0.2f}},
@@ -426,18 +403,13 @@ int main() {
         return 1;
     }
 
-    // 스왑체인은 루프의 EnsureSwapchain이 만든다 - 최초 생성도 재생성과 같은 경로다.
-    // "지금 그릴 곳이 없다"가 시작 시점에도 정상 상태라(최소화된 채로 실행 가능)
-    // 특별 취급이 필요 없다.
+    // 스왑체인은 여기서 안 만든다. 루프의 EnsureSwapchain이 만들고, 최초 생성도
+    // 재생성과 같은 경로다 - "지금 그릴 곳이 없다"가 시작 시점에도 정상이라서다.
 
     // ---- 루프 ----
     //
-    // **여덟 줄이다.** 동기화(그릴 곳 확보 · 대기 · acquire · 제출 · present)는 전부
-    // BeginFrame/SubmitFrame/PresentFrame 안으로 갔다. 여기 남은 것은 프레임의 **모양**뿐이다.
-    //
-    // 둘을 가른 근거: **바뀌는 이유가 다르다.**
-    //   드로우·텍스처·디스크립터를 추가하면  -> RecordFrame만 바뀐다
-    //   frames-in-flight·present 모드를 바꾸면 -> Frame.cpp만 바뀐다
+    // 동기화(그릴 곳 확보 · 대기 · acquire · 제출 · present)는 전부 Frame.cpp 안이다.
+    // 여기 남은 것은 **프레임 하나의 모양**과, 실패했을 때 무엇을 할지뿐이다.
     LOG("close the window to exit.\n");
 
     // 어느 프레임 자원 한 벌을 쓸 차례인가. 매 프레임 돌아간다.
@@ -461,20 +433,14 @@ int main() {
         if (begun == FrameResult::Fatal) { break; }
         if (begun == FrameResult::Skip) { continue; }
 
-        // 기록이 실패하면 **제출하지 않고 끝낸다.** 무효한 커맨드 버퍼를 제출하는 것은
-        // 스펙 위반이고, 여기서 continue하면 이미 신호된 imageAvailable을 기다릴 사람이
-        // 없어진 채로 다음 acquire가 같은 세마포어를 다시 신호하게 된다.
+        // 아래 셋은 전부 continue가 아니라 **break**다. acquire까지 갔는데 제출을
+        // 안 하면 신호된 세마포어와 리셋된 펜스를 기다릴 사람이 없어진다.
         if (!RecordFrame(dev.table, frame.cmd, target, pipeline, vertexBuffer,
                          fullscreen)) {
             break;
         }
 
-        // **제출과 present가 갈라져 있다.** 스펙이 그렇게 생겼기 때문이다 -
-        // vkQueueSubmit2는 코어, vkQueuePresentKHR은 VK_KHR_swapchain 확장이다.
-        // 창이 없으면 아래 두 줄만 빠진다.
-        //
-        // 둘 다 continue가 아니라 break다. 제출 실패는 펜스를 신호할 사람이 없다는
-        // 뜻이고, present의 회복 불가 에러는 다시 만들어도 안 고쳐진다는 뜻이다.
+        // 제출과 present가 갈라진 근거는 Frame.h에. **창이 없으면 아래 둘째 줄만 빠진다.**
         if (!SubmitFrame(dev, frame, target.present->renderFinished)) {
             break;
         }
