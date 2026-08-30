@@ -64,16 +64,16 @@ Swapchain::~Swapchain() {
 // 디바이스 레벨(vk)이라 양쪽이 다 필요하다. 스왑체인이 두 층의 경계에 서 있다는 뜻이고,
 // 클래스가 되면 그 경계가 인자 둘로 줄어든다 (2단계 증거).
 bool SelectSurfaceFormat(const VulkanInstance& inst,
-                         const VulkanDevice& dev,
+                         VkPhysicalDevice gpu,
                          Window* window) noexcept {
     uint32_t count = 0;
-    inst.table.vkGetPhysicalDeviceSurfaceFormatsKHR(dev.gpu, window->surface, &count, nullptr);
+    inst.table.vkGetPhysicalDeviceSurfaceFormatsKHR(gpu, window->surface, &count, nullptr);
     if (count == 0) {
         LOG("[vk] surface reports no formats\n");
         return false;
     }
     std::vector<VkSurfaceFormatKHR> formats(count);
-    inst.table.vkGetPhysicalDeviceSurfaceFormatsKHR(dev.gpu, window->surface, &count,
+    inst.table.vkGetPhysicalDeviceSurfaceFormatsKHR(gpu, window->surface, &count,
                                                     formats.data());
 
     window->surfaceFormat = ChooseSurfaceFormat(formats);

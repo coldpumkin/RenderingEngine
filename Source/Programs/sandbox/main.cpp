@@ -327,8 +327,8 @@ int main() {
     VulkanDevice   dev;
     Window         window;         // 스왑체인을 품는다 -> dev보다 먼저 죽어야 한다
     Commands       commands;
+    Descriptors    descriptors;   // frames가 이 풀에서 셋을 받는다 -> frames보다 먼저 선언
     Frame          frames[kFramesInFlight];   // **한 벌씩. 배열이 된 게 전부다**
-    Descriptors    descriptors;
     Pipeline       pipeline;
     Pipeline       fullscreen;
     Buffer         vertexBuffer;   // 파괴: 첫 번째
@@ -338,28 +338,39 @@ int main() {
     // ========================================================================
     //
     // 조기 return이 아무것도 안 샌다. 여기까지 채워진 것은 소멸자가 알아서 정리한다.
-    if (!CreateInstance(&inst)) { return 1; }
+    // **플랫폼을 먼저 올린다.** 지금은 둘 사이에 의존이 없지만(우리는 서피스를
+    // vkCreateWin32SurfaceKHR로 직접 만든다), windowSystem이 맨 먼저 선언돼 있으니
+    // 생성도 먼저 하는 것이 맞다 - **강제되지 않은 곳에서 선언과 생성 순서를 맞춰야,
+    // 어긋난 곳이 "진짜 이유가 있는 곳"이라는 표시가 된다.**
     if (!InitWindowSystem(&windowSystem)) { return 1; }
+    if (!CreateInstance(&inst)) { return 1; }
     if (!OpenWindow(inst, 1280, 720, "Lambda Engine", &window)) { return 1; }
 
     const PhysicalDeviceSelection selection = PickPhysicalDevice(inst, window.surface);
     if (selection.gpu == VK_NULL_HANDLE) { return 1; }
 
     // selection은 여기서 dev 안으로 흡수되고 더 이상 쓰이지 않는다.
-    if (!CreateDevice(inst, selection, &dev)) { return 1; }
-
-    // 렌더 타겟 포맷 계약을 한 번 고른다. **main이 정하는 게 아니라 나른다** -
-    // 고르는 것은 ChooseRenderTargetFormats고, 여기는 그것을 만드는 쪽(프레임)과
-    // 맞추는 쪽(파이프라인)에 **같은 것**으로 건네는 조립 지점이다.
-    const RenderTargetFormats formats = ChooseRenderTargetFormats(inst, dev.gpu);
+    // ---- 물리 디바이스에게 물어볼 것을 여기서 다 묻는다 ----
+    //
+    // **둘 다 논리 디바이스가 필요 없다.** 포맷은 GPU와 서피스가 정하는 것이라
+    // vkCreateDevice 전에 답이 나온다. 뒤에 두면 "디바이스가 있어야 한다"고
+    // 순서가 거짓말을 한다.
+    //
+    // 그리고 **포맷 계약이 둘이라는 것**이 여기 나란히 있어야 보인다:
+    //   formats                우리 렌더 타겟이 쓸 것 (색+뎁스)
+    //   window.surfaceFormat   스왑체인이 쓸 것 - 전체화면 패스가 여기에 맞춘다
+    const RenderTargetFormats formats = ChooseRenderTargetFormats(inst, selection.gpu);
     if (formats.depth == VK_FORMAT_UNDEFINED) {
         LOG("[vk] no usable depth format\n");
         return 1;
     }
+    if (!SelectSurfaceFormat(inst, selection.gpu, &window)) { return 1; }
+
+    if (!CreateDevice(inst, selection, &dev)) { return 1; }
+
 
     // 이 창이 받는 포맷을 확정한다. **GPU가 정해진 뒤에만 알 수 있다** -
     // 어떤 포맷을 받는지는 (GPU, 서피스) 쌍이 정한다. 리사이즈로는 안 바뀐다.
-    if (!SelectSurfaceFormat(inst, dev, &window)) { return 1; }
 
     // 큐 패밀리마다 풀 하나. 디바이스 수명이다.
     if (!CreateCommands(dev, &commands)) { return 1; }

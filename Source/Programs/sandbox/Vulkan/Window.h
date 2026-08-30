@@ -122,8 +122,11 @@ bool OpenWindow(const VulkanInstance& inst,
 bool WindowHasDrawableSize(const Window& window) noexcept;
 
 // 이 서피스가 받는 포맷 중 하나를 골라 window->surfaceFormat에 담는다.
-// **GPU가 정해진 뒤에 부른다** - 어떤 포맷을 받는지는 (GPU, 서피스) 쌍이 정한다.
-// 실패하면 false (서피스가 포맷을 하나도 안 준 경우).
+// **어떤 포맷을 받는지는 (GPU, 서피스) 쌍이 정한다.** 실패하면 false.
+//
+// **논리 디바이스가 아니라 물리 디바이스를 받는다.** 이건 GPU에게 묻는 조회라
+// vkCreateDevice 전에도 부를 수 있다. 한때 VulkanDevice 전체를 받으면서 .gpu만 썼는데,
+// 그러면 "디바이스가 있어야 한다"고 시그니처가 거짓말을 한다.
 bool SelectSurfaceFormat(const VulkanInstance& inst,
-                         const struct VulkanDevice& dev,
+                         VkPhysicalDevice gpu,
                          Window* window) noexcept;
