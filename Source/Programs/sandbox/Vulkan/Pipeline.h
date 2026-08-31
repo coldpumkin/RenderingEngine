@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "Vulkan/Descriptors.h"
 #include "Vulkan/RenderTargets.h"

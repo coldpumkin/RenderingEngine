@@ -1,4 +1,4 @@
-#include "Vulkan/Barrier.h"
+﻿#include "Vulkan/Barrier.h"
 
 void RecordLayoutTransition(const VolkDeviceTable& vk, VkCommandBuffer cmd, VkImage image,
                             VkImageAspectFlags aspect,
