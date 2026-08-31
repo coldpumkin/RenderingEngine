@@ -56,9 +56,14 @@ static VkShaderModule LoadShader(const VulkanDevice& dev, const char* path) noex
 //
 //   shader 경로 · vertex input · depth · pipeline layout의 내용 · attachment format
 //
-// 나머지 차이는 전부 주석과 log 문구였다. inputAssembly · rasterization · multisample ·
-// blend · viewport · dynamic state는 값이 완전히 같아서 인자로 안 뺐다. MSAA나
-// wireframe이 필요해지면 그때 하나씩 올라온다.
+// 나머지 차이는 전부 주석과 log 문구였다. inputAssembly · multisample · blend ·
+// dynamic state는 값이 완전히 같아서 인자로 안 뺐다. MSAA나 wireframe이 필요해지면
+// 그때 하나씩 올라온다.
+//
+// **rasterization은 나중에 여섯째로 올라왔다.** 두 pass의 viewport y 부호가 서로
+// 달라서(scene은 뒤집고 present는 안 뒤집는다) frontFace를 공유 상수로 두면 한쪽이
+// 반드시 틀리기 때문이다. 공유 상수였을 때 present 쪽이 틀려 있었고, cullMode가
+// NONE이라 아무 증상이 없었다.
 struct GraphicsPipelineDesc {
     const char* vertPath = nullptr;
     const char* fragPath = nullptr;
@@ -74,7 +79,30 @@ struct GraphicsPipelineDesc {
     // 셰이더가 정점 말고 무엇을 받나. 둘 다 없어도, 둘 다 있어도 된다.
     const VkPushConstantRange* pushConstants = nullptr;
     VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
+
+    // frontFace를 여기서 유도한다 (Pipeline.h). 기록 쪽 viewport와 짝이다.
+    ViewportY viewportY = ViewportY::Down;
+    VkCullModeFlags cullMode = VK_CULL_MODE_NONE;
 };
+
+// Input:  extent, viewport의 y 방향
+// Output: 부호가 맞춰진 viewport
+//
+// y를 뒤집을 때 height만 음수로 만들면 화면 밖으로 나간다. 원점을 아래로 옮기는
+// y까지 같이 움직여야 해서 두 줄이 한 몸이다 - 그래서 함수 안에 같이 있다.
+VkViewport MakeViewport(VkExtent2D extent, ViewportY y) noexcept {
+    const float width = static_cast<float>(extent.width);
+    const float height = static_cast<float>(extent.height);
+
+    VkViewport viewport{};
+    viewport.x = 0.0f;
+    viewport.y = (y == ViewportY::Up) ? height : 0.0f;
+    viewport.width = width;
+    viewport.height = (y == ViewportY::Up) ? -height : height;
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+    return viewport;
+}
 
 // 위 다섯을 뺀 나머지 - 두 파이프라인이 똑같이 쓰는 것들이 여기 한 번만 있다.
 static bool CreateGraphicsPipeline(const VulkanDevice& dev,
@@ -82,6 +110,8 @@ static bool CreateGraphicsPipeline(const VulkanDevice& dev,
                                    Pipeline* out) noexcept {
     Pipeline& pipeline = *out;
     pipeline.dev = &dev;
+    // 기록 쪽이 이걸 읽어 viewport를 만든다. frontFace와 같은 값에서 나온다.
+    pipeline.viewportY = desc.viewportY;
 
     VkShaderModule vs = LoadShader(dev, desc.vertPath);
     VkShaderModule fs = LoadShader(dev, desc.fragPath);
@@ -127,8 +157,9 @@ static bool CreateGraphicsPipeline(const VulkanDevice& dev,
     VkPipelineRasterizationStateCreateInfo rasterization{
         VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
     rasterization.polygonMode = VK_POLYGON_MODE_FILL;
-    rasterization.cullMode = VK_CULL_MODE_NONE;   // 뒷면도 그린다
-    rasterization.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rasterization.cullMode = desc.cullMode;
+    // **손으로 안 적는다.** 반대편이 기록 쪽 viewport라 값으로 두면 어긋난다.
+    rasterization.frontFace = FrontFaceFor(desc.viewportY);
     rasterization.lineWidth = 1.0f;               // 0이면 validation layer가 잡는다
 
     VkPipelineMultisampleStateCreateInfo multisample{
@@ -256,6 +287,9 @@ bool CreateTrianglePipeline(const VulkanDevice& dev,
     desc.colorFormat = formats.color;
     desc.depthFormat = formats.depth;
     desc.pushConstants = &pushRange;
+    // world 좌표가 y-up이라 뒤집는다. frontFace는 여기서 유도된다 (Pipeline.h).
+    desc.viewportY = ViewportY::Up;
+    desc.cullMode = VK_CULL_MODE_BACK_BIT;
 
     if (!CreateGraphicsPipeline(dev, desc, out)) { return false; }
     LOG("[vk] triangle pipeline ready\n");
@@ -274,6 +308,14 @@ bool CreateFullscreenPipeline(const VulkanDevice& dev,
     // depthFormat 없음   - 화면을 덮는 삼각형에 깊이 비교는 의미가 없다
     desc.colorFormat = colorFormat;   // swapchain format이다 - 맞추는 상대가 다르다
     desc.setLayout = setLayout;
+    // 여기는 안 뒤집는다 - shader가 uv를 직접 만들어 쓰므로 뒤집으면 화면이 상하로
+    // 뒤집힌다. 그래서 frontFace가 scene과 반대로 유도된다.
+    //
+    // 삼각형이 하나뿐이라 culling이 성능을 위한 것은 아니다. shader가 내는 winding이
+    // 규약을 벗어나면 화면이 검게 나와 즉시 드러나라고 켠다 - 안 켜면 위의 유도가
+    // 맞았는지 틀렸는지 영원히 알 수 없는 값이 된다.
+    desc.viewportY = ViewportY::Down;
+    desc.cullMode = VK_CULL_MODE_BACK_BIT;
 
     if (!CreateGraphicsPipeline(dev, desc, out)) { return false; }
     LOG("[vk] fullscreen pipeline ready\n");

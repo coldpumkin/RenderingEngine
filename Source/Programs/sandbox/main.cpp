@@ -128,15 +128,9 @@ static void RecordScenePass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
     // Viewport/scissor를 dynamic state로 둔 덕에 창 크기가 바뀌어도 pipeline을 다시
     // 만들 필요가 없다.
     //
-    // y를 뒤집는다: Vulkan clip 좌표는 y가 아래로 향한다. height를 음수로 주고 y를
-    // 아래에서 시작하면 shader 좌표계가 y-up이 된다(VK_KHR_maintenance1, 1.1 core).
-    VkViewport viewport{};
-    viewport.x = 0.0f;
-    viewport.y = static_cast<float>(extent.height);
-    viewport.width = static_cast<float>(extent.width);
-    viewport.height = -static_cast<float>(extent.height);
-    viewport.minDepth = 0.0f;
-    viewport.maxDepth = 1.0f;
+    // 부호를 여기서 안 정한다. pipeline이 든 값을 그대로 넘기므로 그쪽의 frontFace와
+    // 어긋날 수가 없다 (Pipeline.h). 여기는 y-up이라 뒤집혀 나온다.
+    const VkViewport viewport = MakeViewport(extent, pipeline.viewportY);
     vk.vkCmdSetViewport(cmd, 0, 1, &viewport);
 
     // 시저: 이 사각형 밖의 픽셀은 버린다. 지금은 화면 전체다.
@@ -245,12 +239,9 @@ static void RecordPresentPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
 
     vk.vkCmdBeginRendering(cmd, &presentPass);
 
-    // y를 안 뒤집는다. Scene pass는 y-up 규약 때문에 뒤집었지만 여기는 shader가 uv를
-    // 직접 만들어 쓰므로 뒤집으면 화면이 상하로 뒤집힌다.
-    VkViewport presentViewport{};
-    presentViewport.width = static_cast<float>(presentExtent.width);
-    presentViewport.height = static_cast<float>(presentExtent.height);
-    presentViewport.maxDepth = 1.0f;
+    // Scene pass와 같은 자리에서 나오는데 부호가 반대다 - fullscreen pipeline이
+    // ViewportY::Down으로 만들어졌기 때문이다. 그 이유는 그쪽에 적혀 있다.
+    const VkViewport presentViewport = MakeViewport(presentExtent, fullscreen.viewportY);
     vk.vkCmdSetViewport(cmd, 0, 1, &presentViewport);
 
     VkRect2D presentScissor{};
