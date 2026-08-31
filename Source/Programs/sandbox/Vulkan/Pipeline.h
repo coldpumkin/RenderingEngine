@@ -137,7 +137,7 @@ bool CreateTrianglePipeline(const VulkanDevice& dev,
 //   colorFormat  swapchain format이다 (우리 render target format이 아니다)
 //   depth        없다
 //   vertex input 없다 - shader가 gl_VertexIndex로 세 점을 만든다
-//   setLayout    있다 - image를 읽으므로 pipeline layout이 비지 않는다
+//   setLayout    presentLayout이다 - fullscreen.frag가 sampler2D를 하나만 읽는다
 //   viewportY    Down이다 - shader가 uv를 직접 만들어 쓰므로 뒤집으면 안 된다
 bool CreateFullscreenPipeline(const VulkanDevice& dev,
                               VkFormat colorFormat,

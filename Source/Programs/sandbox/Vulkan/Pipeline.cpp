@@ -320,8 +320,8 @@ bool CreateTrianglePipeline(const VulkanDevice& dev,
     desc.colorFormat = formats.color;
     desc.depthFormat = formats.depth;
     desc.pushConstants = &pushRange;
-    // texture가 들어오면서 scene pipeline에도 set이 붙었다. present pipeline과 **같은
-    // setLayout을 쓴다** - 둘 다 "0번은 image+sampler 하나"라 모양이 같기 때문이다.
+    // 호출자가 sceneLayout을 준다. present pipeline과 다른 layout인 이유는
+    // triangle.frag가 sampler2D를 둘 읽어서다 (Descriptors.h).
     desc.setLayout = setLayout;
     // world 좌표가 y-up이라 뒤집는다. frontFace는 여기서 유도된다 (Pipeline.h).
     desc.viewportY = ViewportY::Up;

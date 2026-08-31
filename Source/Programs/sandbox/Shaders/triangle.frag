@@ -4,12 +4,11 @@
 layout(location = 0) in vec3 fragColor;
 layout(location = 1) in vec2 fragUV;
 
-// set = 0, binding = 0. C++의 setLayout과 짝이고 어느 컴파일러도 양쪽을 같이 안 본다.
-// present pass의 fullscreen.frag와 같은 모양이라 setLayout을 공유한다.
+// 아래 둘이 C++의 sceneLayout과 짝이고, 어느 컴파일러도 양쪽을 같이 안 본다.
+// **이쪽이 원본이다** - C++은 여기 적힌 개수와 자리를 받아적는다.
+//
+// fullscreen.frag는 sampler2D가 하나라 presentLayout으로 갈렸다.
 layout(set = 0, binding = 0) uniform sampler2D tex;
-
-// binding = 1. 같은 set의 두 번째 image. fullscreen.frag는 이것을 선언하지 않는다 -
-// shader가 layout보다 적게 쓰는 것은 합법이다.
 layout(set = 0, binding = 1) uniform sampler2D detail;
 
 layout(location = 0) out vec4 outColor;

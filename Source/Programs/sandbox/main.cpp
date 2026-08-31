@@ -380,29 +380,30 @@ int main() {
     if (!CreateDevice(inst, selection, &dev)) { return 1; }
     if (!CreateCommands(dev, &commands)) { return 1; }
 
-    // maxSets: one render target set per frame plus one per texture. The pool never
-    // grows, so a missed increment fails allocation later.
+    // Two set counts, counted from different things: one scene set per texture, one
+    // present set per frame. The pool never grows, so a missed increment fails
+    // allocation later.
     //
     // Contract: kTextureCount must equal the number of Texture declarations above.
     // Deriving it needs the textures in an array, which would turn checker/stripe into
     // indices -- worth it only once textures are chosen by id rather than by name.
     constexpr uint32_t kTextureCount = 2;
-    if (!CreateDescriptors(dev, kFramesInFlight + kTextureCount, &descriptors)) { return 1; }
+    if (!CreateDescriptors(dev, kTextureCount, kFramesInFlight, &descriptors)) { return 1; }
 
     for (Frame& f : frames) {
         if (!CreateFrame(dev, commands, descriptors, formats, &f)) { return 1; }
     }
 
-    // Different things to match: scene draws into our render targets, present into the
-    // swapchain.
-    if (!CreateTrianglePipeline(dev, formats, descriptors.setLayout,
+    // Two things differ per pass, and they differ for different reasons: the format is
+    // what we draw into, the set layout is what the shader reads.
+    if (!CreateTrianglePipeline(dev, formats, descriptors.sceneLayout,
                                 VK_POLYGON_MODE_FILL, Blending::Opaque, &pipeline)) { return 1; }
-    if (!CreateTrianglePipeline(dev, formats, descriptors.setLayout,
+    if (!CreateTrianglePipeline(dev, formats, descriptors.sceneLayout,
                                 VK_POLYGON_MODE_LINE, Blending::Opaque, &wireframe)) { return 1; }
-    if (!CreateTrianglePipeline(dev, formats, descriptors.setLayout,
+    if (!CreateTrianglePipeline(dev, formats, descriptors.sceneLayout,
                                 VK_POLYGON_MODE_FILL, Blending::Translucent, &translucent)) { return 1; }
     if (!CreateFullscreenPipeline(dev, window.surfaceFormat.format,
-                                  descriptors.setLayout, &fullscreen)) {
+                                  descriptors.presentLayout, &fullscreen)) {
         return 1;
     }
 
@@ -481,8 +482,8 @@ int main() {
     // A set now names two images, so it is a pair rather than a property of one texture.
     // Both textures have to exist before either set can be filled, which is why this sits
     // here instead of inside Create*Texture.
-    checker.set = AllocateImageSet(descriptors, checker.image.view, stripe.image.view);
-    stripe.set = AllocateImageSet(descriptors, stripe.image.view, checker.image.view);
+    checker.set = AllocateSceneSet(descriptors, checker.image.view, stripe.image.view);
+    stripe.set = AllocateSceneSet(descriptors, stripe.image.view, checker.image.view);
     if (checker.set == VK_NULL_HANDLE || stripe.set == VK_NULL_HANDLE) { return 1; }
 
     // No swapchain here. The loop's EnsureSwapchain creates it, and the first creation
@@ -555,7 +556,7 @@ int main() {
             dev.table.vkDeviceWaitIdle(dev.handle);
             DestroyPipeline(dev, &fullscreen);
             if (!CreateFullscreenPipeline(dev, window.surfaceFormat.format,
-                                          descriptors.setLayout, &fullscreen)) {
+                                          descriptors.presentLayout, &fullscreen)) {
                 break;
             }
             window.surfaceFormatChanged = false;   // cleared by whoever handled it

@@ -61,10 +61,8 @@ bool CreateRenderTargets(const VulkanDevice& dev, const Descriptors& descriptors
 
     // Color image가 생긴 뒤에야 그것을 가리키는 set을 만들 수 있다.
     //
-    // binding 1에 같은 view를 또 준다. fullscreen.frag는 그 자리를 선언하지 않아서
-    // 무엇이 들어가든 안 읽지만, setLayout이 하나뿐이라 빈 자리를 남길 수 없다.
-    // **여기가 setLayout이 scene용과 present용으로 갈리는 근거다.**
-    out->colorSet = AllocateImageSet(descriptors, out->color.view, out->color.view);
+    // present용이다 - 이 set을 읽는 것은 fullscreen.frag이고 sampler2D가 하나다.
+    out->colorSet = AllocatePresentSet(descriptors, out->color.view);
     if (out->colorSet == VK_NULL_HANDLE) { return false; }
     return true;
 }
