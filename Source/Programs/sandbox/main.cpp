@@ -140,11 +140,7 @@ static void RecordScenePass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
 
     vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.handle);
 
-    // 원점을 도는 z축 회전. 전에는 vertex shader가 손계산 2x2로 하던 것이다.
-    // 축이 z라 깊이가 안 바뀐다 - 회전 중에도 초록이 계속 앞이다.
-    const glm::mat4 model =
-        glm::rotate(glm::mat4(1.0f), static_cast<float>(glfwGetTime()),
-                    glm::vec3(0.0f, 0.0f, 1.0f));
+    const float t = static_cast<float>(glfwGetTime());
 
     // 카메라. 오른손 좌표계라 -z 쪽을 본다.
     //
@@ -175,17 +171,39 @@ static void RecordScenePass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
     const glm::mat4 proj =
         glm::perspective(glm::radians(60.0f), aspect, 0.1f, 100.0f);
 
-    const PushConstants push{proj * view * model};
-    vk.vkCmdPushConstants(cmd, pipeline.layout, VK_SHADER_STAGE_VERTEX_BIT,
-                          0, sizeof(push), &push);
-
     // binding 0은 pipeline의 binding=0과 짝이다. offset은 buffer 안의 시작 바이트 -
     // 여러 mesh를 한 buffer에 담으면 여기가 달라진다.
     const VkDeviceSize offset = 0;
     vk.vkCmdBindVertexBuffers(cmd, 0, 1, &vertexBuffer.handle, &offset);
 
-    // vertex 6개 = 삼각형 2개. 한 draw call로 둘 다 나간다.
-    vk.vkCmdDraw(cmd, 6, 1, 0, 0);
+    // 물체 셋을 일부러 접지 않고 평평하게 적는다. 무엇이 반복되고 무엇이 다른지를
+    // 눈으로 보려는 것이다 - 접는 것은 그 다음이다.
+
+    // 1. 초록. 원점에서 z축 회전 (축이 z라 깊이가 안 바뀐다)
+    const glm::mat4 model0 =
+        glm::rotate(glm::mat4(1.0f), t, glm::vec3(0.0f, 0.0f, 1.0f));
+    const PushConstants push0{proj * view * model0};
+    vk.vkCmdPushConstants(cmd, pipeline.layout, VK_SHADER_STAGE_VERTEX_BIT,
+                          0, sizeof(push0), &push0);
+    vk.vkCmdDraw(cmd, 3, 1, 0, 0);
+
+    // 2. 빨강. 반대 방향으로 더 천천히
+    const glm::mat4 model1 =
+        glm::rotate(glm::mat4(1.0f), -t * 0.5f, glm::vec3(0.0f, 0.0f, 1.0f));
+    const PushConstants push1{proj * view * model1};
+    vk.vkCmdPushConstants(cmd, pipeline.layout, VK_SHADER_STAGE_VERTEX_BIT,
+                          0, sizeof(push1), &push1);
+    vk.vkCmdDraw(cmd, 3, 1, 3, 0);
+
+    // 3. 초록을 한 번 더. **정점을 안 늘리고 물체만 늘었다** - vertex 범위는 1번과
+    //    같고 transform만 다르다.
+    const glm::mat4 model2 =
+        glm::scale(glm::translate(glm::mat4(1.0f), glm::vec3(0.9f, -0.6f, -0.5f)),
+                   glm::vec3(0.5f));
+    const PushConstants push2{proj * view * model2};
+    vk.vkCmdPushConstants(cmd, pipeline.layout, VK_SHADER_STAGE_VERTEX_BIT,
+                          0, sizeof(push2), &push2);
+    vk.vkCmdDraw(cmd, 3, 1, 0, 0);
 
     vk.vkCmdEndRendering(cmd);
 
