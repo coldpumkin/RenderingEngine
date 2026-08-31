@@ -49,7 +49,7 @@ struct RenderTargets {
 // Format 계약. 값 둘이 아니라 하나다.
 //
 // 만드는 쪽(CreateRenderTargets)과 맞추는 쪽(pipeline)이 같은 것을 봐야 한다 -
-// dynamic rendering은 format을 pipeline에 굽기 때문이다. 따로 넘기면 어긋나도 컴파일된다.
+// dynamic rendering은 format을 pipeline에 박기 때문이다. 따로 넘기면 어긋나도 컴파일된다.
 //
 // Device가 아니라 여기 있는 이유: 후보 목록과 우선순위는 우리 render target의
 // 정책이지 GPU의 성질이 아니다. GPU는 "지원하나"에만 답한다.

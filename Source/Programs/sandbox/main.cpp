@@ -40,7 +40,7 @@
 // 테이프고, 뒤는 그 한 벌을 kFramesInFlight개 둬서 CPU가 앞서가게 하는 장치다.
 //
 // 맞아야 하는 것은 둘이고 pipeline이 그 가운데에 있다:
-//   pipeline <-> render target   format (dynamic rendering이 pipeline에 굽는다)
+//   pipeline <-> render target   format (dynamic rendering이 pipeline에 박는다)
 //   pipeline <-> vertex buffer   vertex layout (attribute description <-> Vertex)
 //
 // Pass는 vkCmdBeginRendering ~ vkCmdEndRendering 구간이고 그동안 그릴 대상이
