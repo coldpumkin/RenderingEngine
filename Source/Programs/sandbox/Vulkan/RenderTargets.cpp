@@ -1,5 +1,7 @@
 ﻿#include "Vulkan/RenderTargets.h"
 
+#include "Config.h"
+
 #include <initializer_list>   // 소멸자의 for (Image* : {...})
 
 // Image + memory + view를 한 번에.
@@ -36,6 +38,31 @@ RenderTargetFormats ChooseRenderTargetFormats(const VulkanInstance& inst,
             break;
         }
     }
+
+    // Sample 수는 color와 depth가 같아야 한다 - pipeline의 rasterizationSamples 하나가
+    // 그 pass의 모든 attachment에 적용되기 때문이다. 그래서 교집합을 본다.
+    //
+    // framebuffer~SampleCounts는 format이 아니라 device의 한도다. 그래서 위 반복문과
+    // 달리 format별로 다시 묻지 않는다.
+    VkPhysicalDeviceProperties props{};
+    inst.table.vkGetPhysicalDeviceProperties(gpu, &props);
+    const VkSampleCountFlags supported = props.limits.framebufferColorSampleCounts
+                                         & props.limits.framebufferDepthSampleCounts;
+
+    // 높은 것부터. VkSampleCountFlagBits는 비트값이 곧 sample 수라(4_BIT == 0x4)
+    // 요청값과 그대로 비교된다 - 표를 따로 두지 않는 이유다.
+    for (const VkSampleCountFlagBits candidate : {VK_SAMPLE_COUNT_8_BIT,
+                                                  VK_SAMPLE_COUNT_4_BIT,
+                                                  VK_SAMPLE_COUNT_2_BIT}) {
+        if (static_cast<uint32_t>(candidate) > kDesiredSampleCount) { continue; }
+        if ((supported & candidate) != 0) {
+            formats.samples = candidate;
+            break;
+        }
+    }
+
+    LOG("MSAA: requested %ux, supported mask 0x%x, using %ux\n",
+        kDesiredSampleCount, supported, static_cast<uint32_t>(formats.samples));
     return formats;
 }
 

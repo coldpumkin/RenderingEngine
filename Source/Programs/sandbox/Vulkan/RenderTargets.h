@@ -47,14 +47,23 @@ struct RenderTargets {
 // Device가 아니라 여기 있는 이유: 후보 목록과 우선순위는 우리 render target의
 // 정책이지 GPU의 성질이 아니다. GPU는 "지원하나"에만 답한다.
 //
-// 커지는 자리다 - MSAA sample 수, HDR color format, G-buffer의 attachment 여럿.
+// 커지는 자리다 - HDR color format, G-buffer의 attachment 여럿. MSAA가 첫 번째였다.
+//
+// samples가 여기 있는 이유는 format과 같다: **pipeline에 박히고 image에도 박히는데
+// 둘이 어긋나면 컴파일된다.** 한 값으로 두면 CreateTrianglePipeline이 이 구조체를
+// 통째로 받는 것만으로 짝이 맞는다 - 실제로 samples를 넣어도 그 시그니처가 안 바뀌었다.
 struct RenderTargetFormats {
     VkFormat color = VK_FORMAT_UNDEFINED;
     VkFormat depth = VK_FORMAT_UNDEFINED;
+
+    // Color와 depth 양쪽이 지원하는 것 중 kDesiredSampleCount 이하 최대값.
+    // 1이면 MSAA 없음인데 지금 코드는 그 경우를 안 다룬다 (Config.h).
+    VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
 };
 
 // Input:  inst, gpu
-// Output: 이 GPU에서 쓸 format 한 쌍 (실패하면 depth가 VK_FORMAT_UNDEFINED)
+// Output: 이 GPU에서 쓸 format 한 쌍 + sample 수
+//         (실패하면 depth가 VK_FORMAT_UNDEFINED)
 //
 // 조회가 instance level이라 inst를 받는다. Logical device는 필요 없다.
 RenderTargetFormats ChooseRenderTargetFormats(const VulkanInstance& inst,

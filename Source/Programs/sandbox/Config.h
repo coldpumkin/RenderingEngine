@@ -33,3 +33,15 @@ constexpr uint32_t kDesiredSwapchainImages = 3;
 // 런타임 값이 되고, 그때 재생성 경로가 필요해진다.
 constexpr uint32_t kRenderWidth = 1280;
 constexpr uint32_t kRenderHeight = 720;
+
+// MSAA sample 수. **요청값이다** - GPU가 color와 depth 양쪽에서 지원하는 것만 쓸 수
+// 있어서 ChooseRenderTargetFormats가 이 값 이하로 깎는다. kDesiredSwapchainImages와
+// 같은 모양이다.
+//
+// 왜 render target에만 붙나: swapchain image는 우리가 만드는 것이 아니라 조회해서
+// 받는 것이라 sample 수를 정할 자리가 없다. Present pass는 resolve된 1-sample을
+// 읽어 그대로 옮기므로 MSAA를 몰라도 된다.
+//
+// 1로 내리면 resolve attachment가 불법이 된다 (sample 수가 같으면 resolve할 것이
+// 없다). 그 분기는 안 만들었다 - 우리 기계에서 안 도는 경로라 검증이 불가능하다.
+constexpr uint32_t kDesiredSampleCount = 4;
