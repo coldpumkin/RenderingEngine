@@ -56,14 +56,16 @@ static VkShaderModule LoadShader(const VulkanDevice& dev, const char* path) noex
 //
 //   shader 경로 · vertex input · depth · pipeline layout의 내용 · attachment format
 //
-// 나머지 차이는 전부 주석과 log 문구였다. inputAssembly · multisample · blend ·
-// dynamic state는 값이 완전히 같아서 인자로 안 뺐다. MSAA나 wireframe이 필요해지면
-// 그때 하나씩 올라온다.
+// 나머지 차이는 전부 주석과 log 문구였다. inputAssembly · multisample · dynamic
+// state는 값이 완전히 같아서 인자로 안 뺐다.
 //
-// **rasterization은 나중에 여섯째로 올라왔다.** 두 pass의 viewport y 부호가 서로
-// 달라서(scene은 뒤집고 present는 안 뒤집는다) frontFace를 공유 상수로 두면 한쪽이
-// 반드시 틀리기 때문이다. 공유 상수였을 때 present 쪽이 틀려 있었고, cullMode가
-// NONE이라 아무 증상이 없었다.
+// **나머지 셋은 소비자가 늘 때마다 하나씩 올라왔다.** 전부 같은 모양이다 - 새 소비자가
+// 그 값을 다르게 요구했고, 공유 상수로 두면 한쪽이 반드시 틀린다:
+//
+//   rasterization  두 pass의 viewport y 부호가 반대다. 공유 상수였을 때 present 쪽이
+//                  틀려 있었고 cullMode가 NONE이라 아무 증상이 없었다
+//   polygonMode    같은 정점을 면으로도 선으로도 그린다
+//   blending       반투명은 blend를 켜고 depth write를 끈다 - 한 값에서 둘이 나온다
 struct GraphicsPipelineDesc {
     const char* vertPath = nullptr;
     const char* fragPath = nullptr;
@@ -87,6 +89,9 @@ struct GraphicsPipelineDesc {
     // LINE은 device의 fillModeNonSolid를 요구한다 (Core.h). 안 켜져 있으면
     // 이 pipeline 생성이 실패한다.
     VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL;
+
+    // blendEnable과 depthWriteEnable을 여기서 유도한다 (Pipeline.h).
+    Blending blending = Blending::Opaque;
 };
 
 // Input:  extent, viewport의 y 방향
@@ -172,11 +177,24 @@ static bool CreateGraphicsPipeline(const VulkanDevice& dev,
         VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
     multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;   // MSAA 없음
 
-    // Blending 없음. 그린 색으로 그대로 덮는다.
+    const bool translucent = desc.blending == Blending::Translucent;
+
     VkPipelineColorBlendAttachmentState blendAttachment{};
     blendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT
                                    | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-    blendAttachment.blendEnable = VK_FALSE;
+    blendAttachment.blendEnable = translucent ? VK_TRUE : VK_FALSE;
+    // straight alpha. src*a + dst*(1-a).
+    //
+    // **attachment가 sRGB라 이 곱셈이 linear 공간에서 일어난다** - 하드웨어가 dst를
+    // 풀어서 섞고 다시 sRGB로 저장한다. 저장된 바이트를 반씩 섞은 값과 다르게 나오는
+    // 것이 정상이다.
+    blendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    blendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    blendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+    // alpha 채널은 안 쓴다 - 최종 목적지가 불투명한 우리 render target이다.
+    blendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    blendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    blendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
 
     VkPipelineColorBlendStateCreateInfo colorBlend{
         VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
@@ -188,8 +206,9 @@ static bool CreateGraphicsPipeline(const VulkanDevice& dev,
     const bool useDepth = desc.depthFormat != VK_FORMAT_UNDEFINED;
     VkPipelineDepthStencilStateCreateInfo depthStencil{
         VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-    depthStencil.depthTestEnable = VK_TRUE;
-    depthStencil.depthWriteEnable = VK_TRUE;
+    depthStencil.depthTestEnable = VK_TRUE;   // 반투명도 불투명 뒤에 있으면 가려진다
+    // **손으로 안 적는다.** blend와 짝이라 따로 두면 어긋난 조합이 생긴다.
+    depthStencil.depthWriteEnable = translucent ? VK_FALSE : VK_TRUE;
     depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
 
     // Shader가 받는 외부 자원의 모양. 둘 다 없어도 layout은 만들어야 한다.
@@ -252,6 +271,7 @@ static bool CreateGraphicsPipeline(const VulkanDevice& dev,
 bool CreateTrianglePipeline(const VulkanDevice& dev,
                             RenderTargetFormats formats,
                             VkPolygonMode polygonMode,
+                            Blending blending,
                             Pipeline* out) noexcept {
     // binding   buffer slot 하나. stride는 한 vertex의 크기
     // attribute 그 안의 필드 하나. location은 shader의 layout(location=N) in과 짝
@@ -282,8 +302,9 @@ bool CreateTrianglePipeline(const VulkanDevice& dev,
     vertexInput.pVertexAttributeDescriptions = attributes;
 
     // stageFlags가 실제로 읽는 stage와 맞아야 한다. 빠뜨리면 validation layer가 잡는다.
+    // alpha가 생기면서 fragment도 이 블록을 읽는다 - 둘 다 적어야 한다.
     VkPushConstantRange pushRange{};
-    pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     pushRange.offset = 0;
     pushRange.size = sizeof(PushConstants);
 
@@ -298,9 +319,11 @@ bool CreateTrianglePipeline(const VulkanDevice& dev,
     desc.viewportY = ViewportY::Up;
     desc.cullMode = VK_CULL_MODE_BACK_BIT;
     desc.polygonMode = polygonMode;
+    desc.blending = blending;
 
     if (!CreateGraphicsPipeline(dev, desc, out)) { return false; }
-    LOG("[vk] triangle pipeline ready (polygonMode=%d)\n", static_cast<int>(polygonMode));
+    LOG("[vk] triangle pipeline ready (polygonMode=%d blending=%d)\n",
+        static_cast<int>(polygonMode), static_cast<int>(blending));
     return true;
 }
 

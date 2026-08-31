@@ -45,6 +45,22 @@ constexpr VkFrontFace FrontFaceFor(ViewportY y) noexcept {
 // 위의 frontFace와 어긋날 수가 없다.
 VkViewport MakeViewport(VkExtent2D extent, ViewportY y) noexcept;
 
+// 불투명인가 반투명인가 - 이것도 한 값이 둘을 정한다
+// ============================================================================
+//
+// 반투명은 blend를 켜는 것만으로 안 된다. **depth write를 같이 꺼야 한다** - 켜두면
+// 앞의 반투명이 자기 깊이를 남겨서 그 뒤에 그리는 것이 가려진다. 둘을 따로 두면
+// *"blend는 켰는데 write도 켰다"* 는 어긋난 조합이 표현 가능해진다.
+//
+// **대신 순서를 지키는 책임이 기록 쪽으로 넘어간다.** 불투명을 먼저, 반투명을 뒤에서
+// 앞으로. depth가 대신 해주던 일이 사라지는 것이 이 값의 진짜 대가다.
+//
+// depth test는 끄지 않는다. 반투명이 불투명 뒤에 있으면 가려지는 게 맞다.
+enum class Blending {
+    Opaque,        // blend 끔 · depth write 켬
+    Translucent,   // blend 켬  · depth write 끔
+};
+
 // Graphics pipeline - 무엇으로 그리는가
 // ============================================================================
 //
@@ -78,8 +94,14 @@ struct Pipeline {
 //
 // glm::mat4는 64바이트 column-major이고 GLSL의 mat4와 레이아웃이 같다. 전치도
 // 변환도 없이 그대로 실린다 (`ThirdParty/glm/VERSION.md`가 숫자로 확인해뒀다).
+// alpha가 mvp와 같은 자리에 실리는 이유: **주기가 같다.** 둘 다 물체마다 정해지고
+// draw마다 바뀐다. 주기가 갈리면 그때 자리도 갈린다.
+//
+// Contract: 이 블록을 읽는 stage가 pushRange.stageFlags에 전부 있어야 한다.
+//           alpha를 fragment가 읽으므로 VERTEX만으로는 부족하다.
 struct PushConstants {
     glm::mat4 mvp;   // model -> world -> view -> clip
+    float alpha;     // 1.0이면 불투명. Opaque pipeline에서는 blend가 꺼져 무시된다
 };
 
 // Scene pass용. Vertex buffer를 읽고 depth test를 한다. viewportY = Up.
@@ -94,6 +116,7 @@ struct PushConstants {
 bool CreateTrianglePipeline(const VulkanDevice& dev,
                             RenderTargetFormats formats,
                             VkPolygonMode polygonMode,
+                            Blending blending,
                             Pipeline* out) noexcept;
 
 // Present pass용. Pass 1의 결과를 texture로 읽어 swapchain에 그린다.

@@ -82,6 +82,7 @@ static void RecordScenePass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
                             const RenderTargets& draw,
                             const Pipeline& pipeline,
                             const Pipeline& wireframe,
+                            const Pipeline& translucent,
                             const Buffer& vertexBuffer) noexcept {
     const VkExtent2D extent = draw.extent;   // **창 크기가 아니다.** Config.h가 정한다
     // oldLayout이 UNDEFINED인 이유: 이전 내용을 안 쓴다(loadOp=CLEAR로 덮는다).
@@ -188,16 +189,18 @@ static void RecordScenePass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
     // 1. 초록. 원점에서 z축 회전 (축이 z라 깊이가 안 바뀐다)
     const glm::mat4 model0 =
         glm::rotate(glm::mat4(1.0f), t, glm::vec3(0.0f, 0.0f, 1.0f));
-    const PushConstants push0{proj * view * model0};
-    vk.vkCmdPushConstants(cmd, pipeline.layout, VK_SHADER_STAGE_VERTEX_BIT,
+    const PushConstants push0{proj * view * model0, 1.0f};
+    vk.vkCmdPushConstants(cmd, pipeline.layout,
+                          VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                           0, sizeof(push0), &push0);
     vk.vkCmdDraw(cmd, 3, 1, 0, 0);
 
     // 2. 빨강. 반대 방향으로 더 천천히
     const glm::mat4 model1 =
         glm::rotate(glm::mat4(1.0f), -t * 0.5f, glm::vec3(0.0f, 0.0f, 1.0f));
-    const PushConstants push1{proj * view * model1};
-    vk.vkCmdPushConstants(cmd, pipeline.layout, VK_SHADER_STAGE_VERTEX_BIT,
+    const PushConstants push1{proj * view * model1, 1.0f};
+    vk.vkCmdPushConstants(cmd, pipeline.layout,
+                          VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                           0, sizeof(push1), &push1);
     vk.vkCmdDraw(cmd, 3, 1, 3, 0);
 
@@ -215,12 +218,30 @@ static void RecordScenePass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
     const glm::mat4 model2 =
         glm::scale(glm::translate(glm::mat4(1.0f), glm::vec3(0.9f, -0.6f, -0.5f)),
                    glm::vec3(0.5f));
-    const PushConstants push2{proj * view * model2};
+    const PushConstants push2{proj * view * model2, 1.0f};
     // layout이 pipeline.layout이 아니라 wireframe.layout이다. 둘은 정의가 같아서
     // 호환되지만(값이 살아남는다) 지금 bind된 것을 적는 편이 읽기에 정직하다.
-    vk.vkCmdPushConstants(cmd, wireframe.layout, VK_SHADER_STAGE_VERTEX_BIT,
+    vk.vkCmdPushConstants(cmd, wireframe.layout,
+                          VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                           0, sizeof(push2), &push2);
     vk.vkCmdDraw(cmd, 3, 1, 0, 0);
+
+    // 4. 반투명 파랑. **마지막에 그리는 것이 이 물체의 정확성 조건이다.**
+    //
+    // depth write를 껐으므로 이 물체는 자기 깊이를 안 남긴다. 그래서 뒤에 무엇을
+    // 그리든 이것에 가려지지 않는다 - 순서를 지키는 일이 depth에서 기록 쪽으로
+    // 넘어왔다. 지금은 반투명이 하나뿐이라 "맨 뒤"로 충분하지만, 둘이 되는 순간
+    // 뒤에서 앞으로 정렬해야 한다.
+    //
+    // depth test는 살아 있다. z=0.5라 앞의 셋보다 카메라에 가까워서 다 통과한다.
+    vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, translucent.handle);
+
+    // 안 움직인다. Transform이 아무것도 아닐 수도 있다는 것이 여기서 보인다.
+    const PushConstants push3{proj * view, 0.5f};
+    vk.vkCmdPushConstants(cmd, translucent.layout,
+                          VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                          0, sizeof(push3), &push3);
+    vk.vkCmdDraw(cmd, 3, 1, 6, 0);
 
     vk.vkCmdEndRendering(cmd);
 
@@ -312,6 +333,7 @@ bool RecordFrame(const VolkDeviceTable& vk,
                  const FrameTarget& target,
                  const Pipeline& pipeline,
                  const Pipeline& wireframe,
+                 const Pipeline& translucent,
                  const Buffer& vertexBuffer,
                  const Pipeline& fullscreen) noexcept {
     // Pool에 RESET_COMMAND_BUFFER_BIT을 줬기에 buffer 하나만 되감을 수 있다.
@@ -328,7 +350,8 @@ bool RecordFrame(const VolkDeviceTable& vk,
         return false;
     }
 
-    RecordScenePass(vk, cmd, *target.draw, pipeline, wireframe, vertexBuffer);
+    RecordScenePass(vk, cmd, *target.draw, pipeline, wireframe, translucent,
+                    vertexBuffer);
     RecordPresentPass(vk, cmd, *target.draw, *target.present,
                       target.presentExtent, fullscreen);
 
@@ -356,6 +379,7 @@ int main() {
     Frame          frames[kFramesInFlight];
     Pipeline       pipeline;
     Pipeline       wireframe;     // 같은 정점을 선으로. pipeline이 갈리는 첫 사례
+    Pipeline       translucent;   // blend 켬 + depth write 끔
     Pipeline       fullscreen;
     Buffer         vertexBuffer;   // 파괴: 첫 번째
 
@@ -394,8 +418,12 @@ int main() {
     }
 
     // 맞추는 상대가 다르다: scene은 우리 render target에, present는 swapchain에 그린다.
-    if (!CreateTrianglePipeline(dev, formats, VK_POLYGON_MODE_FILL, &pipeline)) { return 1; }
-    if (!CreateTrianglePipeline(dev, formats, VK_POLYGON_MODE_LINE, &wireframe)) { return 1; }
+    if (!CreateTrianglePipeline(dev, formats, VK_POLYGON_MODE_FILL,
+                                Blending::Opaque, &pipeline)) { return 1; }
+    if (!CreateTrianglePipeline(dev, formats, VK_POLYGON_MODE_LINE,
+                                Blending::Opaque, &wireframe)) { return 1; }
+    if (!CreateTrianglePipeline(dev, formats, VK_POLYGON_MODE_FILL,
+                                Blending::Translucent, &translucent)) { return 1; }
     if (!CreateFullscreenPipeline(dev, window.surfaceFormat.format,
                                   descriptors.setLayout, &fullscreen)) {
         return 1;
@@ -418,6 +446,12 @@ int main() {
         {{ 0.7f,  0.5f, -1.5f}, {0.9f, 0.2f, 0.1f}},
         {{-0.3f,  0.0f, -1.5f}, {0.9f, 0.2f, 0.1f}},
         {{ 0.7f, -0.5f, -1.5f}, {0.9f, 0.2f, 0.1f}},
+
+        // 제일 가까움 (z=0.5, 카메라에서 1.5) - 반투명 파랑.
+        // 앞의 둘과 같은 순서로 적는다(y-up 기준 CCW). 뒤집으면 culling에 잘린다.
+        {{-0.2f,  0.6f,  0.5f}, {0.2f, 0.3f, 0.95f}},
+        {{-0.2f, -0.4f,  0.5f}, {0.2f, 0.3f, 0.95f}},
+        {{ 0.8f,  0.1f,  0.5f}, {0.2f, 0.3f, 0.95f}},
     };
     if (!CreateVertexBuffer(dev, commands, kTriangles, sizeof(kTriangles), &vertexBuffer)) {
         return 1;
@@ -453,7 +487,7 @@ int main() {
         // 아래 셋은 continue가 아니라 break다. acquire까지 갔는데 제출을 안 하면
         // 신호된 세마포어와 리셋된 펜스를 기다릴 사람이 없어진다.
         if (!RecordFrame(dev.table, frame.cmd, target, pipeline, wireframe,
-                         vertexBuffer, fullscreen)) {
+                         translucent, vertexBuffer, fullscreen)) {
             break;
         }
 

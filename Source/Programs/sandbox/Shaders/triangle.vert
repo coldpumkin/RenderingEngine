@@ -18,8 +18,11 @@ layout(location = 1) in vec3 inColor;
 
 // C++의 PushConstants와 필드 순서·타입이 정확히 같아야 한다 (Pipeline.h).
 // GLSL의 mat4도 column-major라 glm::mat4가 전치 없이 그대로 실려 온다.
+// **fragment shader에도 같은 블록이 있다.** GLSL은 stage마다 따로 선언하지만
+// 실제로는 한 덩어리라 필드가 정확히 같아야 한다.
 layout(push_constant) uniform Push {
     mat4 mvp;
+    float alpha;
 } pc;
 
 layout(location = 0) out vec3 fragColor;
