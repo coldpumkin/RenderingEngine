@@ -115,6 +115,7 @@ struct PushConstants {
 //           LINE은 device의 fillModeNonSolid를 요구한다 (Core.h).
 bool CreateTrianglePipeline(const VulkanDevice& dev,
                             RenderTargetFormats formats,
+                            VkDescriptorSetLayout setLayout,
                             VkPolygonMode polygonMode,
                             Blending blending,
                             Pipeline* out) noexcept;

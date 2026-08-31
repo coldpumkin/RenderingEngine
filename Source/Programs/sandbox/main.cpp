@@ -19,6 +19,7 @@
 #include "Vulkan/Descriptors.h"
 #include "Vulkan/Frame.h"
 #include "Vulkan/Pipeline.h"
+#include "Vulkan/Texture.h"
 #include "Vulkan/Window.h"
 
 #include <GLFW/glfw3.h>
@@ -103,6 +104,7 @@ static void RecordScenePass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
                             const RenderTargets& draw,
                             const Buffer& vertexBuffer,
                             const Buffer& indexBuffer,
+                            VkDescriptorSet textureSet,
                             const DrawItem* items, uint32_t itemCount) noexcept {
     const VkExtent2D extent = draw.extent;   // **창 크기가 아니다.** Config.h가 정한다
     // oldLayout이 UNDEFINED인 이유: 이전 내용을 안 쓴다(loadOp=CLEAR로 덮는다).
@@ -187,6 +189,17 @@ static void RecordScenePass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
     // UINT16은 vertex가 65536개 미만일 때 쓴다. 넘으면 UINT32로 바꿔야 하고,
     // **그때 이 인자와 kIndices의 타입이 같이 움직여야 한다.**
     vk.vkCmdBindIndexBuffer(cmd, indexBuffer.handle, 0, VK_INDEX_TYPE_UINT16);
+
+    // Texture는 지금 하나뿐이라 pass 앞에서 한 번 bind한다.
+    //
+    // **pipeline이 바뀌어도 안 풀린다.** scene pipeline 셋이 layout 정의가 같아서
+    // (같은 push range + 같은 setLayout) 호환되기 때문이다. 어느 한 pipeline의
+    // layout으로 bind해도 되는 이유가 그것이다.
+    //
+    // 물체마다 다른 texture를 쓰게 되면 이 줄이 loop 안으로 들어가고, DrawItem이
+    // set을 하나 더 들게 된다 - material이 생기는 자리다.
+    vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                               items[0].pipeline->layout, 0, 1, &textureSet, 0, nullptr);
 
     // 물체마다 따로 적혀 있던 코드를 fold한 결과다. 남은 것은 순서뿐이고,
     // 순서는 호출자가 배열에 적은 그대로다 - 반투명이 마지막이어야 한다는 규칙도
@@ -302,6 +315,7 @@ bool RecordFrame(const VolkDeviceTable& vk,
                  const FrameTarget& target,
                  const Buffer& vertexBuffer,
                  const Buffer& indexBuffer,
+                 VkDescriptorSet textureSet,
                  const DrawItem* items, uint32_t itemCount,
                  const Pipeline& fullscreen) noexcept {
     // Pool에 RESET_COMMAND_BUFFER_BIT을 줬기에 buffer 하나만 되감을 수 있다.
@@ -318,7 +332,8 @@ bool RecordFrame(const VolkDeviceTable& vk,
         return false;
     }
 
-    RecordScenePass(vk, cmd, *target.draw, vertexBuffer, indexBuffer, items, itemCount);
+    RecordScenePass(vk, cmd, *target.draw, vertexBuffer, indexBuffer, textureSet,
+                    items, itemCount);
     RecordPresentPass(vk, cmd, *target.draw, *target.present,
                       target.presentExtent, fullscreen);
 
@@ -348,6 +363,7 @@ int main() {
     Pipeline       wireframe;     // 같은 정점을 선으로. pipeline이 갈리는 첫 사례
     Pipeline       translucent;   // blend 켬 + depth write 끔
     Pipeline       fullscreen;
+    Texture        checker;
     Buffer         vertexBuffer;
     Buffer         indexBuffer;    // 파괴: 첫 번째
 
@@ -379,19 +395,21 @@ int main() {
     // selection은 여기서 dev 안으로 흡수된다.
     if (!CreateDevice(inst, selection, &dev)) { return 1; }
     if (!CreateCommands(dev, &commands)) { return 1; }
-    if (!CreateDescriptors(dev, kFramesInFlight, &descriptors)) { return 1; }
+    // maxSets: frame마다 render target set 하나 + texture set 하나.
+    // pool은 자라지 않아서 여기를 안 늘리면 texture set 할당이 실패한다.
+    if (!CreateDescriptors(dev, kFramesInFlight + 1, &descriptors)) { return 1; }
 
     for (Frame& f : frames) {
         if (!CreateFrame(dev, commands, descriptors, formats, &f)) { return 1; }
     }
 
     // 맞추는 상대가 다르다: scene은 우리 render target에, present는 swapchain에 그린다.
-    if (!CreateTrianglePipeline(dev, formats, VK_POLYGON_MODE_FILL,
-                                Blending::Opaque, &pipeline)) { return 1; }
-    if (!CreateTrianglePipeline(dev, formats, VK_POLYGON_MODE_LINE,
-                                Blending::Opaque, &wireframe)) { return 1; }
-    if (!CreateTrianglePipeline(dev, formats, VK_POLYGON_MODE_FILL,
-                                Blending::Translucent, &translucent)) { return 1; }
+    if (!CreateTrianglePipeline(dev, formats, descriptors.setLayout,
+                                VK_POLYGON_MODE_FILL, Blending::Opaque, &pipeline)) { return 1; }
+    if (!CreateTrianglePipeline(dev, formats, descriptors.setLayout,
+                                VK_POLYGON_MODE_LINE, Blending::Opaque, &wireframe)) { return 1; }
+    if (!CreateTrianglePipeline(dev, formats, descriptors.setLayout,
+                                VK_POLYGON_MODE_FILL, Blending::Translucent, &translucent)) { return 1; }
     if (!CreateFullscreenPipeline(dev, window.surfaceFormat.format,
                                   descriptors.setLayout, &fullscreen)) {
         return 1;
@@ -404,31 +422,32 @@ int main() {
     // 이제는 카메라(z=2)로부터의 거리이고, 그래서 **둘을 같은 크기로 적었는데도 먼 쪽이
     // 작게 보인다** (2/3.5 = 0.57배). 원근이 실제로 도는지 보는 방법이다 -
     // 전에는 z만 다르고 크기가 같았다.
+    // uv는 **y가 아래로 간다** - world는 y-up이라 위쪽 정점이 v=0이다.
     constexpr Vertex kTriangles[] = {
         // 가까움 (z=0, 카메라에서 2), 먼저 그린다 - 초록
-        {{-0.7f,  0.5f,  0.0f}, {0.1f, 0.9f, 0.2f}},
-        {{-0.7f, -0.5f,  0.0f}, {0.1f, 0.9f, 0.2f}},
-        {{ 0.3f,  0.0f,  0.0f}, {0.1f, 0.9f, 0.2f}},
+        {{-0.7f,  0.5f,  0.0f}, {0.1f, 0.9f, 0.2f}, {0.0f, 0.0f}},
+        {{-0.7f, -0.5f,  0.0f}, {0.1f, 0.9f, 0.2f}, {0.0f, 1.0f}},
+        {{ 0.3f,  0.0f,  0.0f}, {0.1f, 0.9f, 0.2f}, {1.0f, 0.5f}},
 
         // 멈 (z=-1.5, 카메라에서 3.5), 나중에 그린다 - 빨강
-        {{ 0.7f,  0.5f, -1.5f}, {0.9f, 0.2f, 0.1f}},
-        {{-0.3f,  0.0f, -1.5f}, {0.9f, 0.2f, 0.1f}},
-        {{ 0.7f, -0.5f, -1.5f}, {0.9f, 0.2f, 0.1f}},
+        {{ 0.7f,  0.5f, -1.5f}, {0.9f, 0.2f, 0.1f}, {1.0f, 0.0f}},
+        {{-0.3f,  0.0f, -1.5f}, {0.9f, 0.2f, 0.1f}, {0.0f, 0.5f}},
+        {{ 0.7f, -0.5f, -1.5f}, {0.9f, 0.2f, 0.1f}, {1.0f, 1.0f}},
 
         // 제일 가까움 (z=0.5, 카메라에서 1.5) - 반투명 파랑.
         // 앞의 둘과 같은 순서로 적는다(y-up 기준 CCW). 뒤집으면 culling에 잘린다.
-        {{-0.2f,  0.6f,  0.5f}, {0.2f, 0.3f, 0.95f}},
-        {{-0.2f, -0.4f,  0.5f}, {0.2f, 0.3f, 0.95f}},
-        {{ 0.8f,  0.1f,  0.5f}, {0.2f, 0.3f, 0.95f}},
+        {{-0.2f,  0.6f,  0.5f}, {0.2f, 0.3f, 0.95f}, {0.0f, 0.0f}},
+        {{-0.2f, -0.4f,  0.5f}, {0.2f, 0.3f, 0.95f}, {0.0f, 1.0f}},
+        {{ 0.8f,  0.1f,  0.5f}, {0.2f, 0.3f, 0.95f}, {1.0f, 0.5f}},
     };
     // Quad. **정점 4개로 삼각형 2개를 그린다** - index buffer가 처음으로 값을 하는
     // 자리다. 정점 둘(9, 11)이 두 번씩 쓰인다.
     // 위 셋과 같은 순서로 적는다(y-up 기준 CCW).
     constexpr Vertex kQuad[] = {
-        {{-1.4f,  0.45f, -0.8f}, {0.95f, 0.75f, 0.15f}},   // 9
-        {{-1.4f, -0.45f, -0.8f}, {0.95f, 0.75f, 0.15f}},   // 10
-        {{-0.5f, -0.45f, -0.8f}, {0.95f, 0.75f, 0.15f}},   // 11
-        {{-0.5f,  0.45f, -0.8f}, {0.95f, 0.75f, 0.15f}},   // 12
+        {{-1.4f,  0.45f, -0.8f}, {0.95f, 0.75f, 0.15f}, {0.0f, 0.0f}},   // 9
+        {{-1.4f, -0.45f, -0.8f}, {0.95f, 0.75f, 0.15f}, {0.0f, 1.0f}},   // 10
+        {{-0.5f, -0.45f, -0.8f}, {0.95f, 0.75f, 0.15f}, {1.0f, 1.0f}},   // 11
+        {{-0.5f,  0.45f, -0.8f}, {0.95f, 0.75f, 0.15f}, {1.0f, 0.0f}},   // 12
     };
 
     Vertex vertices[std::size(kTriangles) + std::size(kQuad)]{};
@@ -456,6 +475,8 @@ int main() {
                                  VK_BUFFER_USAGE_INDEX_BUFFER_BIT, &indexBuffer)) {
         return 1;
     }
+
+    if (!CreateCheckerTexture(dev, commands, descriptors, &checker)) { return 1; }
 
     // Swapchain은 여기서 안 만든다. 루프의 EnsureSwapchain이 만들고 최초 생성도
     // 재생성과 같은 경로다 - "지금 그릴 곳이 없다"가 시작 시점에도 정상이기 때문이다.
@@ -539,7 +560,8 @@ int main() {
         // 아래 셋은 continue가 아니라 break다. acquire까지 갔는데 제출을 안 하면
         // 신호된 세마포어와 리셋된 펜스를 기다릴 사람이 없어진다.
         if (!RecordFrame(dev.table, frame.cmd, target, vertexBuffer, indexBuffer,
-                         items, static_cast<uint32_t>(std::size(items)), fullscreen)) {
+                         checker.set, items,
+                         static_cast<uint32_t>(std::size(items)), fullscreen)) {
             break;
         }
 

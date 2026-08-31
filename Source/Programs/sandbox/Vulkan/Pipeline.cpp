@@ -270,6 +270,7 @@ static bool CreateGraphicsPipeline(const VulkanDevice& dev,
 // Scene pass용
 bool CreateTrianglePipeline(const VulkanDevice& dev,
                             RenderTargetFormats formats,
+                            VkDescriptorSetLayout setLayout,
                             VkPolygonMode polygonMode,
                             Blending blending,
                             Pipeline* out) noexcept {
@@ -283,7 +284,7 @@ bool CreateTrianglePipeline(const VulkanDevice& dev,
     binding.stride = sizeof(Vertex);
     binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
-    VkVertexInputAttributeDescription attributes[2]{};
+    VkVertexInputAttributeDescription attributes[3]{};
     attributes[0].location = 0;                             // layout(location = 0) in vec3
     attributes[0].binding = 0;
     attributes[0].format = VK_FORMAT_R32G32B32_SFLOAT;
@@ -292,6 +293,10 @@ bool CreateTrianglePipeline(const VulkanDevice& dev,
     attributes[1].binding = 0;
     attributes[1].format = VK_FORMAT_R32G32B32_SFLOAT;
     attributes[1].offset = offsetof(Vertex, color);
+    attributes[2].location = 2;                             // layout(location = 2) in vec2
+    attributes[2].binding = 0;
+    attributes[2].format = VK_FORMAT_R32G32_SFLOAT;         // vec2다 - 위 둘과 다르다
+    attributes[2].offset = offsetof(Vertex, uv);
 
     VkPipelineVertexInputStateCreateInfo vertexInput{
         VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
@@ -315,6 +320,9 @@ bool CreateTrianglePipeline(const VulkanDevice& dev,
     desc.colorFormat = formats.color;
     desc.depthFormat = formats.depth;
     desc.pushConstants = &pushRange;
+    // texture가 들어오면서 scene pipeline에도 set이 붙었다. present pipeline과 **같은
+    // setLayout을 쓴다** - 둘 다 "0번은 image+sampler 하나"라 모양이 같기 때문이다.
+    desc.setLayout = setLayout;
     // world 좌표가 y-up이라 뒤집는다. frontFace는 여기서 유도된다 (Pipeline.h).
     desc.viewportY = ViewportY::Up;
     desc.cullMode = VK_CULL_MODE_BACK_BIT;

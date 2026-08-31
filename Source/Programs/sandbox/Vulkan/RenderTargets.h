@@ -16,14 +16,7 @@
 //   그릴 곳의 구성을 바꾸면(HDR · MSAA · G-buffer) -> 여기
 
 #include "Vulkan/Descriptors.h"
-
-// 우리가 만들고 우리가 지우는 image 한 장 + view.
-// Swapchain image와 반대다 - 그쪽은 조회해서 받고 view만 우리가 만든다.
-struct Image {
-    VkImage handle = VK_NULL_HANDLE;
-    VmaAllocation allocation = VK_NULL_HANDLE;
-    VkImageView view = VK_NULL_HANDLE;
-};
+#include "Vulkan/Image.h"
 
 // 한 frame이 그려 넣을 한 벌. kFramesInFlight개 존재한다.
 struct RenderTargets {

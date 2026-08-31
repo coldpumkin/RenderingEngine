@@ -84,67 +84,15 @@ bool CreateDeviceLocalBuffer(const VulkanDevice& dev,
         return false;
     }
 
-    // 현재 정책: graphics queue를 쓴다. Transfer queue의 값어치는 그리는 동안 동시에
-    // 올리는 것인데 이건 루프 전에 한 번뿐이라 겹칠 대상이 없고, queue를 바꾸면
-    // ownership transfer 비용만 낸다.
-    //
-    // 한 번 옮겨봤다가 되돌렸다(b104a27). 필요해지면 그 commit을 꺼내 쓴다 -
-    // release/acquire barrier 한 쌍과 queue 사이를 잇는 semaphore가 거기 다 있다.
-    VkCommandBufferAllocateInfo allocInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-    allocInfo.commandPool = commands.graphics;
-    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    allocInfo.commandBufferCount = 1;
-
-    VkCommandBuffer cmd = VK_NULL_HANDLE;
-    if (dev.table.vkAllocateCommandBuffers(dev.handle, &allocInfo, &cmd) != VK_SUCCESS) {
-        LOG("[vk] vkAllocateCommandBuffers(upload) failed\n");
-        return false;
-    }
-
-    // 반환값을 다 본다. 한때 전부 버렸는데 그러면 복사가 한 줄도 실행되지 않아도
-    // "ready" log가 찍히고 true가 나갔다.
-    //
-    // 실패 경로가 command buffer를 반납해야 해서 lambda로 묶었다.
-    const auto fail = [&](const char* what) {
-        LOG("[vk] %s failed (device-local upload)\n", what);
-        dev.table.vkFreeCommandBuffers(dev.handle, commands.graphics, 1, &cmd);
-        return false;
-    };
-
-    VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    if (dev.table.vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS) {
-        return fail("vkBeginCommandBuffer");
-    }
+    // 절차는 texture upload와 같아서 Commands로 갈라져 나갔다.
+    VkCommandBuffer cmd = BeginOneShot(dev, commands);
+    if (cmd == VK_NULL_HANDLE) { return false; }
 
     VkBufferCopy region{};
     region.size = size;
     dev.table.vkCmdCopyBuffer(cmd, staging.handle, out->handle, 1, &region);
 
-    if (dev.table.vkEndCommandBuffer(cmd) != VK_SUCCESS) {
-        return fail("vkEndCommandBuffer");
-    }
-
-    // 복사가 끝날 때까지 기다린다. 초기화 경로라 기다려도 된다 - 매 frame이면
-    // fence로 넘겨받아야 한다.
-    VkCommandBufferSubmitInfo cmdInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
-    cmdInfo.commandBuffer = cmd;
-
-    VkSubmitInfo2 submit{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
-    submit.commandBufferInfoCount = 1;
-    submit.pCommandBufferInfos = &cmdInfo;
-
-    if (dev.table.vkQueueSubmit2(dev.queues.graphics, 1, &submit, VK_NULL_HANDLE)
-            != VK_SUCCESS) {
-        return fail("vkQueueSubmit2");
-    }
-    // 대기가 실패하면 복사가 끝났는지 알 수 없다. Command buffer 반납도 위험하지만
-    // (GPU가 아직 읽을 수 있다) 여기서 할 수 있는 최선이다.
-    if (dev.table.vkQueueWaitIdle(dev.queues.graphics) != VK_SUCCESS) {
-        return fail("vkQueueWaitIdle");
-    }
-
-    dev.table.vkFreeCommandBuffers(dev.handle, commands.graphics, 1, &cmd);
+    if (!EndOneShotAndWait(dev, commands, cmd, "device-local upload")) { return false; }
     // staging은 여기서 scope를 벗어나며 ~Buffer가 정리한다.
 
     LOG("[vk] vertex buffer ready (%llu bytes, device-local)\n",

@@ -2,6 +2,11 @@
 
 // 정점에서 넘어온 색을 그대로 쓴다. 래스터라이저가 세 정점 사이를 보간해준다.
 layout(location = 0) in vec3 fragColor;
+layout(location = 1) in vec2 fragUV;
+
+// set = 0, binding = 0. C++의 setLayout과 짝이고 어느 컴파일러도 양쪽을 같이 안 본다.
+// present pass의 fullscreen.frag와 같은 모양이라 setLayout을 공유한다.
+layout(set = 0, binding = 0) uniform sampler2D tex;
 
 layout(location = 0) out vec4 outColor;
 
@@ -16,5 +21,7 @@ layout(push_constant) uniform Push {
 void main() {
     // alpha는 blend가 켜진 pipeline에서만 의미가 있다. 불투명 pipeline은
     // blendEnable이 꺼져 있어 이 값이 통째로 무시된다.
-    outColor = vec4(fragColor, pc.alpha);
+    // 곱한다. texture가 흰 칸이면 정점 색 그대로, 어두운 칸이면 어두워진다 -
+    // 물체마다 다른 색을 유지한 채 무늬만 얹힌다.
+    outColor = vec4(fragColor * texture(tex, fragUV).rgb, pc.alpha);
 }

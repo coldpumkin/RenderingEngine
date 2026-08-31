@@ -46,3 +46,60 @@ Commands::~Commands() {
         }
     }
 }
+
+VkCommandBuffer BeginOneShot(const VulkanDevice& dev, const Commands& commands) noexcept {
+    VkCommandBufferAllocateInfo allocInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    allocInfo.commandPool = commands.graphics;
+    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocInfo.commandBufferCount = 1;
+
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    if (dev.table.vkAllocateCommandBuffers(dev.handle, &allocInfo, &cmd) != VK_SUCCESS) {
+        LOG("[vk] vkAllocateCommandBuffers(one-shot) failed\n");
+        return VK_NULL_HANDLE;
+    }
+
+    VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    if (dev.table.vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS) {
+        LOG("[vk] vkBeginCommandBuffer(one-shot) failed\n");
+        dev.table.vkFreeCommandBuffers(dev.handle, commands.graphics, 1, &cmd);
+        return VK_NULL_HANDLE;
+    }
+    return cmd;
+}
+
+bool EndOneShotAndWait(const VulkanDevice& dev, const Commands& commands,
+                       VkCommandBuffer cmd, const char* what) noexcept {
+    // 반환값을 다 본다. 한때 전부 버렸는데 그러면 복사가 한 줄도 실행되지 않아도
+    // "ready" log가 찍히고 true가 나갔다.
+    const auto fail = [&](const char* step) {
+        LOG("[vk] %s failed (%s)\n", step, what);
+        dev.table.vkFreeCommandBuffers(dev.handle, commands.graphics, 1, &cmd);
+        return false;
+    };
+
+    if (dev.table.vkEndCommandBuffer(cmd) != VK_SUCCESS) {
+        return fail("vkEndCommandBuffer");
+    }
+
+    VkCommandBufferSubmitInfo cmdInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
+    cmdInfo.commandBuffer = cmd;
+
+    VkSubmitInfo2 submit{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
+    submit.commandBufferInfoCount = 1;
+    submit.pCommandBufferInfos = &cmdInfo;
+
+    if (dev.table.vkQueueSubmit2(dev.queues.graphics, 1, &submit, VK_NULL_HANDLE)
+            != VK_SUCCESS) {
+        return fail("vkQueueSubmit2");
+    }
+    // 대기가 실패하면 작업이 끝났는지 알 수 없다. Command buffer 반납도 위험하지만
+    // (GPU가 아직 읽을 수 있다) 여기서 할 수 있는 최선이다.
+    if (dev.table.vkQueueWaitIdle(dev.queues.graphics) != VK_SUCCESS) {
+        return fail("vkQueueWaitIdle");
+    }
+
+    dev.table.vkFreeCommandBuffers(dev.handle, commands.graphics, 1, &cmd);
+    return true;
+}

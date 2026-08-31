@@ -50,6 +50,10 @@ struct Vertex {
     // 잘리는데, 그 판단은 투영이 깊이를 [0,1]로 옮긴 뒤에 일어난다.
     float position[3];   // vec3 -> VK_FORMAT_R32G32B32_SFLOAT
     float color[3];      // vec3 -> VK_FORMAT_R32G32B32_SFLOAT
+
+    // texture 좌표. (0,0)이 좌상단, (1,1)이 우하단이다 - **y가 아래로 간다.**
+    // 우리 world 좌표는 y-up인데 여기는 아니라서, 정점을 적을 때 뒤집힌다.
+    float uv[2];         // vec2 -> VK_FORMAT_R32G32_SFLOAT
 };
 
 // Buffer 생성 + 메모리 할당 + binding을 vmaCreateBuffer 한 번으로.

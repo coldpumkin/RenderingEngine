@@ -15,6 +15,7 @@
 // 화면 위치는 아래 mvp가 정한다.
 layout(location = 0) in vec3 inPosition;
 layout(location = 1) in vec3 inColor;
+layout(location = 2) in vec2 inUV;
 
 // C++의 PushConstants와 필드 순서·타입이 정확히 같아야 한다 (Pipeline.h).
 // GLSL의 mat4도 column-major라 glm::mat4가 전치 없이 그대로 실려 온다.
@@ -26,6 +27,7 @@ layout(push_constant) uniform Push {
 } pc;
 
 layout(location = 0) out vec3 fragColor;
+layout(location = 1) out vec2 fragUV;
 
 void main() {
     // **한 줄이 됐다.** 회전(손계산 2x2)과 종횡비 보정(x /= aspect)이 여기 있었는데
@@ -35,4 +37,7 @@ void main() {
     // 그래서 **먼 것이 작아지는 일**이 이 한 줄 다음에 일어난다.
     gl_Position = pc.mvp * vec4(inPosition, 1.0);
     fragColor = inColor;
+    // 그냥 넘긴다. 래스터라이저가 세 정점 사이를 원근 보정해가며 보간한다 -
+    // 화면에서 균등하게 나누는 것이 아니라 깊이를 반영한다.
+    fragUV = inUV;
 }
