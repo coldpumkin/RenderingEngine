@@ -28,8 +28,11 @@
 #include <iterator>   // std::size
 
 // 필요한 것만 하나씩 include한다. <glm/ext.hpp>는 벤더링할 때 뺐다 (VERSION.md).
+#include <glm/common.hpp>                  // clamp
 #include <glm/ext/matrix_clip_space.hpp>   // perspective
 #include <glm/ext/matrix_transform.hpp>    // rotate · lookAt
+#include <glm/geometric.hpp>               // normalize · cross
+#include <glm/trigonometric.hpp>           // radians · cos · sin
 
 // Frame 기록
 // ============================================================================
@@ -546,15 +549,39 @@ int main() {
     const glm::mat4 proj =
         glm::perspective(glm::radians(60.0f), aspect, 0.1f, 100.0f);
 
+    // 프레임 사이를 넘어가는 상태 - 여기 있는 것이 전부다
+    // ========================================================================
+    //
+    // 루프 안의 값들은 전부 매 frame 새로 만들어진다. 넘어가는 것은 아래뿐이고,
+    // 카메라가 들어오기 전에는 frameIndex 하나였다.
+    //
+    // 셋을 struct로 안 묶었다. 관계는 있지만(같이 view를 만든다) 붙어 있고, 읽는
+    // 곳이 lookAt 한 군데뿐이라 묶어도 강제되는 것이 없다. 갈리는 자리: 카메라를
+    // 읽는 두 번째 소비자가 생길 때 - frustum culling · 조명의 시점 · shadow pass.
+
     // 어느 frame 자원 한 벌을 쓸 차례인가.
     uint32_t frameIndex = 0;
+
+    // 시계. dt가 필요해서 마지막으로 읽은 시각을 들고 있어야 한다.
+    double lastTime = glfwGetTime();
+
+    // 카메라. yaw = -90도면 -z를 본다 (아래 forward 식에 넣어보면 (0,0,-1)이다) -
+    // 전에 lookAt에 박아뒀던 시점과 같은 자리에서 시작한다.
+    glm::vec3 eye{0.0f, 0.0f, 2.0f};
+    float yaw = -90.0f;
+    float pitch = 0.0f;
 
     while (glfwWindowShouldClose(window.handle) == 0) {
         glfwPollEvents();
 
         // 최소화 중이면 event가 올 때까지 잔다. 이유는 WindowHasDrawableSize 주석에.
+        //
+        // **깨어난 뒤 시계를 다시 맞춘다.** 안 맞추면 잔 시간이 그대로 다음 dt가 되고
+        // (10초 자면 dt=10초) 복귀하는 순간 카메라가 순간이동한다. 잔 것은 frame이
+        // 아니라서 시간을 버리는 쪽이 맞다 - 아래 Skip과 반대다.
         if (!WindowHasDrawableSize(window)) {
             glfwWaitEvents();
+            lastTime = glfwGetTime();
             continue;
         }
 
@@ -563,6 +590,10 @@ int main() {
         FrameTarget target;
         const FrameResult begun = BeginFrame(dev, &window, frame, &target);
         if (begun == FrameResult::Fatal) { break; }
+
+        // **여기는 시계를 안 건드린다.** 최소화와 반대다 - Skip은 짧고(swapchain
+        // 재생성 한 번) 그동안 시간이 실제로 흘렀다. 버리면 리사이즈 드래그 중에
+        // 카메라가 멈췄다가 튄다.
         if (begun == FrameResult::Skip) { continue; }
 
         // 이번 frame에 그릴 것을 여기서 만든다
@@ -574,18 +605,65 @@ int main() {
         // 카메라와 곱해진 행렬 하나, index 구간, pipeline이 전부다.
         //
         // **여기 남는 기준은 "frame마다 변하는가"다.** aspect와 proj는 그렇지 않아서
-        // 루프 밖으로 나갔다(위 주석). 남은 것은 t와 그것으로 만드는 행렬들이다.
-        const float t = static_cast<float>(glfwGetTime());
+        // 루프 밖으로 나갔다(위 주석). 남은 것은 시계와 그것으로 만드는 것들이다.
 
-        // 카메라. 오른손 좌표계라 -z 쪽을 본다. z=2에 둔 이유는 화면에 차는 크기를
-        // 맞추려는 것뿐이다.
+        // 시계를 한 번만 읽어 값 둘을 만든다.
+        //   t   절대 시간. 물체 회전이 쓴다 (누적이 아니라 시각의 함수다)
+        //   dt  지난 frame과의 간격. 카메라 이동이 쓴다 (속도 x dt를 누적한다)
+        // 둘이 같은 읽기에서 나오므로 서로 어긋날 수 없다.
+        const double now = glfwGetTime();
+        const float t = static_cast<float>(now);
+        const float dt = static_cast<float>(now - lastTime);
+        lastTime = now;
+
+        // 입력 -> 카메라 상태
+        // --------------------------------------------------------------------
         //
-        // **proj와 달리 이건 루프 안에 남는다.** 지금 값이 안 변하는 것은 카메라를
-        // 움직이는 입력이 아직 없어서지, 주기가 프로그램 수명이어서가 아니다. 위로
-        // 올리면 입력이 들어오는 날 다시 내려와야 한다 - 이르게 정하면 낡는다.
-        const glm::mat4 view = glm::lookAt(glm::vec3(0.0f, 0.0f, 2.0f),
-                                           glm::vec3(0.0f, 0.0f, 0.0f),
-                                           glm::vec3(0.0f, 1.0f, 0.0f));
+        // glfwGetKey는 폴링이다. 값은 위 glfwPollEvents가 갱신해둔 것이라, 이 블록이
+        // BeginFrame 앞이든 뒤든 같은 값을 준다. callback을 안 쓴 이유: 리사이즈는
+        // "언제 일어났나"가 중요한 event지만 이동은 "지금 눌려 있나"가 전부다.
+        //
+        // 속도에 dt를 곱한다. 안 곱하면 frame rate가 곧 속도가 된다.
+        constexpr float kMoveSpeed = 2.0f;    // world 단위 / 초
+        constexpr float kTurnSpeed = 90.0f;   // 도 / 초
+
+        const auto held = [&](int key) {
+            return glfwGetKey(window.handle, key) == GLFW_PRESS;
+        };
+
+        if (held(GLFW_KEY_LEFT))  { yaw   -= kTurnSpeed * dt; }
+        if (held(GLFW_KEY_RIGHT)) { yaw   += kTurnSpeed * dt; }
+        if (held(GLFW_KEY_UP))    { pitch += kTurnSpeed * dt; }
+        if (held(GLFW_KEY_DOWN))  { pitch -= kTurnSpeed * dt; }
+
+        // +-90도에서 forward가 world up과 나란해지고 cross가 0 벡터가 된다.
+        // 그러면 right를 normalize할 때 0으로 나눈다.
+        pitch = glm::clamp(pitch, -89.0f, 89.0f);
+
+        // yaw/pitch -> 방향. yaw=-90, pitch=0을 넣으면 (0,0,-1)이다.
+        const glm::vec3 forward = glm::normalize(glm::vec3{
+            glm::cos(glm::radians(yaw)) * glm::cos(glm::radians(pitch)),
+            glm::sin(glm::radians(pitch)),
+            glm::sin(glm::radians(yaw)) * glm::cos(glm::radians(pitch)),
+        });
+
+        // world up으로 유도한다 - forward와 같이 움직이므로 따로 들면 어긋난다.
+        constexpr glm::vec3 kWorldUp{0.0f, 1.0f, 0.0f};
+        const glm::vec3 right = glm::normalize(glm::cross(forward, kWorldUp));
+
+        if (held(GLFW_KEY_W)) { eye += forward * kMoveSpeed * dt; }
+        if (held(GLFW_KEY_S)) { eye -= forward * kMoveSpeed * dt; }
+        if (held(GLFW_KEY_D)) { eye += right   * kMoveSpeed * dt; }
+        if (held(GLFW_KEY_A)) { eye -= right   * kMoveSpeed * dt; }
+        if (held(GLFW_KEY_E)) { eye += kWorldUp * kMoveSpeed * dt; }
+        if (held(GLFW_KEY_Q)) { eye -= kWorldUp * kMoveSpeed * dt; }
+
+        // **proj와 달리 이건 루프 안에 남는다.** 이제 실제로 frame마다 변한다 -
+        // 전에는 "입력이 들어오면 변한다"는 예고였고 값은 죽어 있었다.
+        //
+        // center를 eye + forward로 준다. 절대 좌표를 주면 카메라가 움직일 때
+        // 시선이 그 점에 묶여서 회전이 안 된다.
+        const glm::mat4 view = glm::lookAt(eye, eye + forward, kWorldUp);
         const glm::mat4 camera = proj * view;
 
         // **순서가 규칙이다.** 같은 pipeline끼리 붙어 있으면 bind가 줄고, 반투명은
