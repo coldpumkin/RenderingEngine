@@ -49,3 +49,15 @@ inline VkPhysicalDeviceVulkan13Features RequiredFeatures13() noexcept {
     features.synchronization2 = VK_TRUE;   // barrier/submit API 개정판
     return features;
 }
+
+// core 1.0 feature. 위와 층이 다르다 - 1.3 것은 pNext 체인으로, 이건
+// VkDeviceCreateInfo::pEnabledFeatures로 들어간다.
+//
+// Contract: 위와 같다. 확인할 때와 켤 때 같은 값을 봐야 한다.
+inline VkPhysicalDeviceFeatures RequiredFeaturesCore() noexcept {
+    VkPhysicalDeviceFeatures features{};
+    // POLYGON_MODE_LINE. 없으면 pipeline 생성이 실패한다 - "그려봤더니 이상하다"가
+    // 아니라 만드는 순간 걸린다.
+    features.fillModeNonSolid = VK_TRUE;
+    return features;
+}

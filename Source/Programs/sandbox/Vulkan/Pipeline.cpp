@@ -83,6 +83,10 @@ struct GraphicsPipelineDesc {
     // frontFace를 여기서 유도한다 (Pipeline.h). 기록 쪽 viewport와 짝이다.
     ViewportY viewportY = ViewportY::Down;
     VkCullModeFlags cullMode = VK_CULL_MODE_NONE;
+
+    // LINE은 device의 fillModeNonSolid를 요구한다 (Core.h). 안 켜져 있으면
+    // 이 pipeline 생성이 실패한다.
+    VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL;
 };
 
 // Input:  extent, viewport의 y 방향
@@ -156,11 +160,13 @@ static bool CreateGraphicsPipeline(const VulkanDevice& dev,
 
     VkPipelineRasterizationStateCreateInfo rasterization{
         VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
-    rasterization.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterization.polygonMode = desc.polygonMode;
     rasterization.cullMode = desc.cullMode;
     // **손으로 안 적는다.** 반대편이 기록 쪽 viewport라 값으로 두면 어긋난다.
     rasterization.frontFace = FrontFaceFor(desc.viewportY);
-    rasterization.lineWidth = 1.0f;               // 0이면 validation layer가 잡는다
+    // FILL일 때는 안 쓰이는 값이었는데 LINE pipeline이 생기면서 실제로 쓰인다.
+    // 1.0을 넘기려면 device의 wideLines가 따로 필요하다.
+    rasterization.lineWidth = 1.0f;
 
     VkPipelineMultisampleStateCreateInfo multisample{
         VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
@@ -245,6 +251,7 @@ static bool CreateGraphicsPipeline(const VulkanDevice& dev,
 // Scene pass용
 bool CreateTrianglePipeline(const VulkanDevice& dev,
                             RenderTargetFormats formats,
+                            VkPolygonMode polygonMode,
                             Pipeline* out) noexcept {
     // binding   buffer slot 하나. stride는 한 vertex의 크기
     // attribute 그 안의 필드 하나. location은 shader의 layout(location=N) in과 짝
@@ -290,9 +297,10 @@ bool CreateTrianglePipeline(const VulkanDevice& dev,
     // world 좌표가 y-up이라 뒤집는다. frontFace는 여기서 유도된다 (Pipeline.h).
     desc.viewportY = ViewportY::Up;
     desc.cullMode = VK_CULL_MODE_BACK_BIT;
+    desc.polygonMode = polygonMode;
 
     if (!CreateGraphicsPipeline(dev, desc, out)) { return false; }
-    LOG("[vk] triangle pipeline ready\n");
+    LOG("[vk] triangle pipeline ready (polygonMode=%d)\n", static_cast<int>(polygonMode));
     return true;
 }
 

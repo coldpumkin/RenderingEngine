@@ -83,9 +83,17 @@ struct PushConstants {
 };
 
 // Scene pass용. Vertex buffer를 읽고 depth test를 한다. viewportY = Up.
+//
+// polygonMode를 인자로 받는 유일한 항목인 이유: **호출자에게 실제로 고를 것이
+// 있다.** 같은 정점을 면으로 그릴지 선으로 그릴지는 우리가 정할 수 없다.
+// 나머지(vertex layout · push 크기 · y-up · culling)는 scene pass의 규약이라
+// 호출자가 고를 수 없고, 그래서 안에서 정한다.
+//
 // Contract: formats가 RenderTargets가 실제로 만든 것과 같아야 한다.
+//           LINE은 device의 fillModeNonSolid를 요구한다 (Core.h).
 bool CreateTrianglePipeline(const VulkanDevice& dev,
                             RenderTargetFormats formats,
+                            VkPolygonMode polygonMode,
                             Pipeline* out) noexcept;
 
 // Present pass용. Pass 1의 결과를 texture로 읽어 swapchain에 그린다.

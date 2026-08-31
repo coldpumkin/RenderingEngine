@@ -51,6 +51,8 @@
 //     +- BeginRendering --- attachment = draw.color / draw.depth
 //     |    BindPipeline        format이 attachment와 같아야 한다
 //     |    BindVertexBuffers   layout이 pipeline과 같아야 한다
+//     |    Draw x2             면으로
+//     |    BindPipeline        선으로 바꾼다 - 상태 전환이다
 //     |    Draw
 //     +- EndRendering
 //
@@ -69,13 +71,17 @@
 
 // Scene Pass
 //
-// Input:  cmd, draw, pipeline, vertex buffer
+// Input:  cmd, draw, pipeline 둘, vertex buffer
 // Effect: draw.color / draw.depth에 그리는 명령이 cmd에 append된다
 //
 // Swapchain이 인자에 없다 - 창이 없어도 성립한다.
+//
+// pipeline이 둘이 되면서 **이 층에 처음으로 고를 것이 생겼다.** 어느 물체를 어느
+// pipeline으로 그릴지는 여기서 정한다 - 위에서는 둘을 만들어 넘기기만 한다.
 static void RecordScenePass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
                             const RenderTargets& draw,
                             const Pipeline& pipeline,
+                            const Pipeline& wireframe,
                             const Buffer& vertexBuffer) noexcept {
     const VkExtent2D extent = draw.extent;   // **창 크기가 아니다.** Config.h가 정한다
     // oldLayout이 UNDEFINED인 이유: 이전 내용을 안 쓴다(loadOp=CLEAR로 덮는다).
@@ -196,12 +202,23 @@ static void RecordScenePass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
     vk.vkCmdDraw(cmd, 3, 1, 3, 0);
 
     // 3. 초록을 한 번 더. **정점을 안 늘리고 물체만 늘었다** - vertex 범위는 1번과
-    //    같고 transform만 다르다.
+    //    같고 transform만 다르다. 그리고 이번엔 선으로 그린다.
+    //
+    // **bind가 draw 사이에서 일어난다.** 여기까지 오면 command buffer가 상태 기계라는
+    // 것이 코드에 보인다 - 이 줄 위의 draw 둘은 면으로, 아래는 선으로 나간다.
+    //
+    // 오버레이(같은 물체를 면+선으로 두 번)가 아닌 이유: 깊이가 같아서 compareOp=LESS에
+    // 선이 전부 걸린다. 그러려면 wireframe 쪽만 LESS_OR_EQUAL이어야 하고 그건 pipeline이
+    // 두 값에서 갈린다는 뜻이다 - 지금은 한 값(polygonMode)만 갈린 것을 보려 한다.
+    vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, wireframe.handle);
+
     const glm::mat4 model2 =
         glm::scale(glm::translate(glm::mat4(1.0f), glm::vec3(0.9f, -0.6f, -0.5f)),
                    glm::vec3(0.5f));
     const PushConstants push2{proj * view * model2};
-    vk.vkCmdPushConstants(cmd, pipeline.layout, VK_SHADER_STAGE_VERTEX_BIT,
+    // layout이 pipeline.layout이 아니라 wireframe.layout이다. 둘은 정의가 같아서
+    // 호환되지만(값이 살아남는다) 지금 bind된 것을 적는 편이 읽기에 정직하다.
+    vk.vkCmdPushConstants(cmd, wireframe.layout, VK_SHADER_STAGE_VERTEX_BIT,
                           0, sizeof(push2), &push2);
     vk.vkCmdDraw(cmd, 3, 1, 0, 0);
 
@@ -294,6 +311,7 @@ bool RecordFrame(const VolkDeviceTable& vk,
                  VkCommandBuffer cmd,
                  const FrameTarget& target,
                  const Pipeline& pipeline,
+                 const Pipeline& wireframe,
                  const Buffer& vertexBuffer,
                  const Pipeline& fullscreen) noexcept {
     // Pool에 RESET_COMMAND_BUFFER_BIT을 줬기에 buffer 하나만 되감을 수 있다.
@@ -310,7 +328,7 @@ bool RecordFrame(const VolkDeviceTable& vk,
         return false;
     }
 
-    RecordScenePass(vk, cmd, *target.draw, pipeline, vertexBuffer);
+    RecordScenePass(vk, cmd, *target.draw, pipeline, wireframe, vertexBuffer);
     RecordPresentPass(vk, cmd, *target.draw, *target.present,
                       target.presentExtent, fullscreen);
 
@@ -337,6 +355,7 @@ int main() {
     Descriptors    descriptors;   // frames가 이 pool에서 set을 받는다 -> 먼저 선언
     Frame          frames[kFramesInFlight];
     Pipeline       pipeline;
+    Pipeline       wireframe;     // 같은 정점을 선으로. pipeline이 갈리는 첫 사례
     Pipeline       fullscreen;
     Buffer         vertexBuffer;   // 파괴: 첫 번째
 
@@ -375,7 +394,8 @@ int main() {
     }
 
     // 맞추는 상대가 다르다: scene은 우리 render target에, present는 swapchain에 그린다.
-    if (!CreateTrianglePipeline(dev, formats, &pipeline)) { return 1; }
+    if (!CreateTrianglePipeline(dev, formats, VK_POLYGON_MODE_FILL, &pipeline)) { return 1; }
+    if (!CreateTrianglePipeline(dev, formats, VK_POLYGON_MODE_LINE, &wireframe)) { return 1; }
     if (!CreateFullscreenPipeline(dev, window.surfaceFormat.format,
                                   descriptors.setLayout, &fullscreen)) {
         return 1;
@@ -432,8 +452,8 @@ int main() {
 
         // 아래 셋은 continue가 아니라 break다. acquire까지 갔는데 제출을 안 하면
         // 신호된 세마포어와 리셋된 펜스를 기다릴 사람이 없어진다.
-        if (!RecordFrame(dev.table, frame.cmd, target, pipeline, vertexBuffer,
-                         fullscreen)) {
+        if (!RecordFrame(dev.table, frame.cmd, target, pipeline, wireframe,
+                         vertexBuffer, fullscreen)) {
             break;
         }
 
