@@ -605,9 +605,8 @@ int main() {
         // Scene pipeline 셋은 안 건드린다 - 그쪽 format은 우리 render target 것이라
         // surface와 무관하다. 여기 걸리는 것은 fullscreen 하나뿐이다.
         //
-        // **vkDeviceWaitIdle이 필요하다.** BeginFrame은 이 frame의 fence만 기다렸고,
-        // 다른 frame의 cmd가 아직 실행 중일 수 있다. 그 cmd가 지금 지우려는 pipeline을
-        // bind해 뒀다 - 실행 중인 command buffer가 참조하는 pipeline은 못 지운다.
+        // 아래 waitIdle은 DestroyPipeline의 Contract를 지키는 것이다 (Pipeline.h).
+        // BeginFrame이 기다린 것은 이 frame의 fence 하나뿐이라 그것으로는 부족하다.
         if (window.surfaceFormatChanged) {
             dev.table.vkDeviceWaitIdle(dev.handle);
             DestroyPipeline(dev, &fullscreen);
