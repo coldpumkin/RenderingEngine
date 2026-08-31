@@ -100,12 +100,18 @@ struct IndexRange {
 //
 // **물체가 아니다.** 어떤 움직임에서 나온 행렬인지, 어느 물체의 index인지는 여기
 // 안 남는다. 물체마다 따로 적혀 있던 코드를 배열 하나로 fold하면서 실제로 무엇이
-// 달랐는지가 그대로 필드가 됐다 - 셋뿐이었다.
+// 달랐는지가 그대로 필드가 됐다.
 //
-// pipeline이 값이 아니라 포인터인 이유: 같은 pipeline을 여러 item이 가리키고, loop가
-// **바뀔 때만** bind한다. 지금 물체 다섯에 bind가 셋이다.
+// pipeline과 texture가 값이 아니라 handle/포인터인 이유: 여러 item이 같은 것을
+// 가리키고, loop가 **바뀔 때만** bind한다.
+//
+// **둘이 따로 있는 것이 이 struct가 말하는 전부다.** texture가 하나였을 때는
+// pass 앞에서 한 번 bind하고 끝이라 필드가 없었다. 둘이 되자 물체마다 정해지는
+// 것이 되었고, 그러면서 pipeline과 **다른 순서로** 바뀐다는 것이 드러났다 -
+// 지금 물체 다섯에 pipeline bind가 셋, texture bind가 넷이다. 축이 둘이다.
 struct DrawItem {
     const Pipeline* pipeline = nullptr;
+    VkDescriptorSet texture = VK_NULL_HANDLE;
     PushConstants push{};        // mvp + alpha. 둘 다 물체마다 정해진다
     IndexRange range{};
 };
@@ -119,12 +125,14 @@ struct DrawItem {
 //
 // **카메라도 시간도 안 받는다.** 전에는 여기서 glfwGetTime과 lookAt/perspective를
 // 직접 불렀는데, 그건 장면의 상태지 기록의 일이 아니다. 지금 이 함수가 아는 것은
-// "이 행렬로 이 index 범위를 이 pipeline으로 그려라"뿐이다.
+// "이 행렬로 이 index 구간을 이 pipeline과 이 texture로 그려라"뿐이다.
+//
+// **textureSet 인자가 사라졌다.** 물체마다 다른 texture를 쓰게 되면서 그것이
+// pass 전체의 성질이 아니라 draw마다의 성질이 됐고, DrawItem 안으로 들어갔다.
 static void RecordScenePass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
                             const RenderTargets& draw,
                             const Buffer& vertexBuffer,
                             const Buffer& indexBuffer,
-                            VkDescriptorSet textureSet,
                             const DrawItem* items, uint32_t itemCount) noexcept {
     const VkExtent2D extent = draw.extent;   // **창 크기가 아니다.** Config.h가 정한다
     // oldLayout이 UNDEFINED인 이유: 이전 내용을 안 쓴다(loadOp=CLEAR로 덮는다).
@@ -210,29 +218,35 @@ static void RecordScenePass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
     // **그때 이 인자와 kIndices의 타입이 같이 움직여야 한다.**
     vk.vkCmdBindIndexBuffer(cmd, indexBuffer.handle, 0, VK_INDEX_TYPE_UINT16);
 
-    // Texture는 지금 하나뿐이라 pass 앞에서 한 번 bind한다.
-    //
-    // **pipeline이 바뀌어도 안 풀린다.** scene pipeline 셋이 layout 정의가 같아서
-    // (같은 push range + 같은 setLayout) 호환되기 때문이다. 어느 한 pipeline의
-    // layout으로 bind해도 되는 이유가 그것이다.
-    //
-    // 물체마다 다른 texture를 쓰게 되면 이 줄이 loop 안으로 들어가고, DrawItem이
-    // set을 하나 더 들게 된다 - material이 생기는 자리다.
-    vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                               items[0].pipeline->layout, 0, 1, &textureSet, 0, nullptr);
-
     // 물체마다 따로 적혀 있던 코드를 fold한 결과다. 남은 것은 순서뿐이고,
     // 순서는 호출자가 배열에 적은 그대로다 - 반투명이 마지막이어야 한다는 규칙도
     // 이제 이 함수가 아니라 배열을 만드는 쪽이 진다.
-    const Pipeline* bound = nullptr;
+    //
+    // **bind가 둘로 늘었고 서로 독립이다.** texture가 하나였을 때는 pass 앞에서
+    // 한 번 bind하고 끝이었다. 둘이 되자 pipeline과 같은 모양의 "바뀔 때만" 논리가
+    // 하나 더 생겼는데, **바뀌는 자리가 서로 다르다** - 지금 pipeline 3번,
+    // texture 4번이다. 순서를 한쪽에 맞추면 다른 쪽이 손해를 본다.
+    const Pipeline* boundPipeline = nullptr;
+    VkDescriptorSet boundTexture = VK_NULL_HANDLE;
     for (uint32_t i = 0; i < itemCount; ++i) {
         const DrawItem& item = items[i];
 
         // **바뀔 때만 bind한다.** 같은 pipeline이 이어지면 명령이 안 나간다.
-        if (item.pipeline != bound) {
+        if (item.pipeline != boundPipeline) {
             vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                  item.pipeline->handle);
-            bound = item.pipeline;
+            boundPipeline = item.pipeline;
+        }
+
+        // **pipeline이 바뀌어도 set이 안 풀린다.** scene pipeline 셋이 layout 정의가
+        // 같아서(같은 push range + 같은 setLayout) 호환되기 때문이다. 그래서 위
+        // BindPipeline 뒤에 다시 bind하지 않아도 되고, 이 조건이 pipeline 조건과
+        // 따로 설 수 있다. layout이 갈리는 pipeline이 섞이면 이 전제가 깨진다.
+        if (item.texture != boundTexture) {
+            vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                       item.pipeline->layout, 0, 1, &item.texture,
+                                       0, nullptr);
+            boundTexture = item.texture;
         }
 
         vk.vkCmdPushConstants(cmd, item.pipeline->layout,
@@ -327,7 +341,7 @@ static void RecordPresentPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
 
 }
 
-// Input:  cmd, target, vertex/index buffer, texture set, 그릴 것 목록, fullscreen
+// Input:  cmd, target, vertex/index buffer, 그릴 것 목록, fullscreen
 // Effect: cmd를 리셋하고 pass 둘을 기록한다
 // Output: false면 cmd가 무효 상태다 - 제출하면 안 된다
 bool RecordFrame(const VolkDeviceTable& vk,
@@ -335,7 +349,6 @@ bool RecordFrame(const VolkDeviceTable& vk,
                  const FrameTarget& target,
                  const Buffer& vertexBuffer,
                  const Buffer& indexBuffer,
-                 VkDescriptorSet textureSet,
                  const DrawItem* items, uint32_t itemCount,
                  const Pipeline& fullscreen) noexcept {
     // Pool에 RESET_COMMAND_BUFFER_BIT을 줬기에 buffer 하나만 되감을 수 있다.
@@ -352,7 +365,7 @@ bool RecordFrame(const VolkDeviceTable& vk,
         return false;
     }
 
-    RecordScenePass(vk, cmd, *target.draw, vertexBuffer, indexBuffer, textureSet,
+    RecordScenePass(vk, cmd, *target.draw, vertexBuffer, indexBuffer,
                     items, itemCount);
     RecordPresentPass(vk, cmd, *target.draw, *target.present,
                       target.presentExtent, fullscreen);
@@ -384,6 +397,7 @@ int main() {
     Pipeline       translucent;   // blend 켬 + depth write 끔
     Pipeline       fullscreen;
     Texture        checker;
+    Texture        stripe;        // 물체마다 다른 texture를 붙이려고 둘째가 생겼다
     Buffer         vertexBuffer;
     Buffer         indexBuffer;    // 파괴: 첫 번째
 
@@ -415,9 +429,19 @@ int main() {
     // selection은 여기서 dev 안으로 흡수된다.
     if (!CreateDevice(inst, selection, &dev)) { return 1; }
     if (!CreateCommands(dev, &commands)) { return 1; }
-    // maxSets: frame마다 render target set 하나 + texture set 하나.
-    // pool은 자라지 않아서 여기를 안 늘리면 texture set 할당이 실패한다.
-    if (!CreateDescriptors(dev, kFramesInFlight + 1, &descriptors)) { return 1; }
+    // maxSets: frame마다 render target set 하나 + texture마다 하나.
+    // pool은 자라지 않아서 여기를 안 늘리면 set 할당이 실패한다.
+    //
+    // **texture가 둘이 되면서 이 값을 두 번째로 손으로 고쳤다.** 전에는 `+ 1`이라고
+    // 적혀 있었다 - 소비자 개수를 여기서 세는 구조라 소비자가 늘 때마다 여기가
+    // 같이 안 움직이면 조용히 모자란다(실패는 하니 늦게라도 터진다).
+    // 이름을 붙여 등급을 낮췄다. 위 Texture 선언 개수와 같아야 한다.
+    //
+    // 진짜로 유도하려면 texture들이 배열이 되어야 하는데, 그러면 checker/stripe라는
+    // 이름이 index로 바뀌어 더 나빠진다. **texture에 이름 말고 다른 구분이 생길 때**
+    // (= 이름이 아니라 material id로 고르게 될 때) 그 교환이 이득이 된다.
+    constexpr uint32_t kTextureCount = 2;
+    if (!CreateDescriptors(dev, kFramesInFlight + kTextureCount, &descriptors)) { return 1; }
 
     for (Frame& f : frames) {
         if (!CreateFrame(dev, commands, descriptors, formats, &f)) { return 1; }
@@ -515,6 +539,7 @@ int main() {
     }
 
     if (!CreateCheckerTexture(dev, commands, descriptors, &checker)) { return 1; }
+    if (!CreateStripeTexture(dev, commands, descriptors, &stripe)) { return 1; }
 
     // Swapchain은 여기서 안 만든다. 루프의 EnsureSwapchain이 만들고 최초 생성도
     // 재생성과 같은 경로다 - "지금 그릴 곳이 없다"가 시작 시점에도 정상이기 때문이다.
@@ -688,39 +713,45 @@ int main() {
         const glm::mat4 view = glm::lookAt(eye, eye + forward, kWorldUp);
         const glm::mat4 camera = proj * view;
 
-        // **순서가 규칙이다.** 같은 pipeline끼리 붙어 있으면 bind가 줄고, 반투명은
-        // 맨 뒤여야 한다(depth write를 껐으므로 depth가 순서를 안 지켜준다).
-        // 지금은 물체 5개에 bind가 3번 나간다.
+        // **순서가 규칙이고, 이제 그 규칙이 셋이다.**
+        //   반투명은 맨 뒤     depth write를 껐으므로 depth가 순서를 안 지켜준다
+        //   같은 pipeline끼리  붙어 있으면 BindPipeline이 준다
+        //   같은 texture끼리   붙어 있으면 BindDescriptorSets가 준다
+        //
+        // **앞의 하나는 정확성이고 뒤의 둘은 비용이다.** 그리고 뒤의 둘이 서로
+        // 다른 순서를 원한다 - 지금 배열은 pipeline으로 묶여 있어서 pipeline bind가
+        // 3번, texture bind가 4번이다. texture로 묶으면 반대가 된다.
+        //
+        // 어느 쪽을 우선할지는 재봐야 아는 것이고, 지금은 물체가 다섯이라 잴 것이
+        // 없다. **그 선택이 sort key가 생기는 자리다** - 물체가 수백이 될 때.
         const glm::vec3 kZAxis{0.0f, 0.0f, 1.0f};
         const DrawItem items[] = {
             // 초록. 원점에서 z축 회전 (축이 z라 깊이가 안 바뀐다)
-            {&pipeline,   {camera * glm::rotate(glm::mat4(1.0f), t, kZAxis), 1.0f},
-             kGreenIndices},
+            {&pipeline, checker.set,
+             {camera * glm::rotate(glm::mat4(1.0f), t, kZAxis), 1.0f}, kGreenIndices},
 
-            // 빨강. 반대 방향으로 더 천천히
-            {&pipeline,   {camera * glm::rotate(glm::mat4(1.0f), -t * 0.5f, kZAxis), 1.0f},
-             kRedIndices},
+            // 빨강. 반대 방향으로 더 천천히. **여기서 texture가 갈린다**
+            {&pipeline, stripe.set,
+             {camera * glm::rotate(glm::mat4(1.0f), -t * 0.5f, kZAxis), 1.0f}, kRedIndices},
 
             // Quad. 안 움직인다 - Transform이 아무것도 아닐 수도 있다
-            {&pipeline,   {camera, 1.0f}, kQuadIndices},
+            {&pipeline, checker.set, {camera, 1.0f}, kQuadIndices},
 
             // 초록을 한 번 더, 이번엔 선으로. **같은 구간을 가리킨다** -
             // 정점을 안 늘리고 물체만 늘었다
-            {&wireframe,  {camera * glm::scale(
-                               glm::translate(glm::mat4(1.0f),
-                                              glm::vec3(0.9f, -0.6f, -0.5f)),
-                               glm::vec3(0.5f)), 1.0f},
-             kGreenIndices},
+            {&wireframe, checker.set,
+             {camera * glm::scale(
+                  glm::translate(glm::mat4(1.0f), glm::vec3(0.9f, -0.6f, -0.5f)),
+                  glm::vec3(0.5f)), 1.0f}, kGreenIndices},
 
             // 반투명 파랑. 마지막이어야 한다
-            {&translucent, {camera, 0.5f}, kBlueIndices},
+            {&translucent, stripe.set, {camera, 0.5f}, kBlueIndices},
         };
 
         // 아래 셋은 continue가 아니라 break다. acquire까지 갔는데 제출을 안 하면
         // 신호된 세마포어와 리셋된 펜스를 기다릴 사람이 없어진다.
         if (!RecordFrame(dev.table, frame.cmd, target, vertexBuffer, indexBuffer,
-                         checker.set, items,
-                         static_cast<uint32_t>(std::size(items)), fullscreen)) {
+                         items, static_cast<uint32_t>(std::size(items)), fullscreen)) {
             break;
         }
 

@@ -10,28 +10,28 @@ Texture::~Texture() {
     DestroyImage(*dev, &image);
 }
 
-bool CreateCheckerTexture(const VulkanDevice& dev,
-                          const Commands& commands,
-                          const Descriptors& descriptors,
-                          Texture* out) noexcept {
+// 8x8 칸. 한 칸이 여러 픽셀이면 확대 필터를 안 거쳐 경계가 또렷해서, uv가 맞는지
+// 보는 데는 작을수록 낫다. sampler가 LINEAR라 칸 경계가 부드럽게 번진다.
+//
+// 크기가 인자가 아닌 이유: 코드로 만드는 debug texture라 부르는 쪽이 고를 것이 없다.
+// 파일 로딩이 오면 그때 크기가 인자가 된다 - 파일이 정하는 값이라서다.
+constexpr uint32_t kTextureSize = 8;
+
+// 두 texture의 공통부. 실제로 갈리는 것은 **픽셀과 이름**뿐이라 그 둘만 받는다.
+//
+// **SRGB다.** vertex color와 곱해지는 값이라 render target과 같은 공간이어야 한다.
+// UNORM으로 만들면 shader가 받는 값이 밝아져 곱한 결과가 뜬다.
+static bool CreateTextureFromPixels(const VulkanDevice& dev,
+                                    const Commands& commands,
+                                    const Descriptors& descriptors,
+                                    const uint8_t (&pixels)[kTextureSize * kTextureSize * 4],
+                                    const char* label,
+                                    Texture* out) noexcept {
     Texture& texture = *out;
     texture.dev = &dev;
 
-    // 8x8 칸. 한 칸이 여러 픽셀이면 확대 필터를 안 거쳐 경계가 또렷해서, uv가 맞는지
-    // 보는 데는 작을수록 낫다. sampler가 LINEAR라 칸 경계가 부드럽게 번진다.
-    constexpr uint32_t kSize = 8;
+    constexpr uint32_t kSize = kTextureSize;
     constexpr VkFormat kFormat = VK_FORMAT_R8G8B8A8_SRGB;
-
-    // **SRGB다.** vertex color와 곱해지는 값이라 render target과 같은 공간이어야 한다.
-    // UNORM으로 만들면 shader가 받는 값이 밝아져 곱한 결과가 뜬다.
-    uint8_t pixels[kSize * kSize * 4]{};
-    for (uint32_t y = 0; y < kSize; ++y) {
-        for (uint32_t x = 0; x < kSize; ++x) {
-            const uint8_t v = ((x + y) % 2 == 0) ? 255 : 70;
-            uint8_t* p = pixels + (y * kSize + x) * 4;
-            p[0] = v; p[1] = v; p[2] = v; p[3] = 255;
-        }
-    }
 
     Buffer staging;
     if (!CreateBuffer(dev, sizeof(pixels),
@@ -94,6 +94,39 @@ bool CreateCheckerTexture(const VulkanDevice& dev,
     texture.set = AllocateImageSet(descriptors, texture.image.view);
     if (texture.set == VK_NULL_HANDLE) { return false; }
 
-    LOG("[vk] checker texture ready (%ux%u)\n", kSize, kSize);
+    LOG("[vk] %s texture ready (%ux%u)\n", label, kSize, kSize);
     return true;
+}
+
+// 아래 둘이 서로 다른 부분의 전부다.
+
+bool CreateCheckerTexture(const VulkanDevice& dev,
+                          const Commands& commands,
+                          const Descriptors& descriptors,
+                          Texture* out) noexcept {
+    uint8_t pixels[kTextureSize * kTextureSize * 4]{};
+    for (uint32_t y = 0; y < kTextureSize; ++y) {
+        for (uint32_t x = 0; x < kTextureSize; ++x) {
+            const uint8_t v = ((x + y) % 2 == 0) ? 255 : 70;
+            uint8_t* p = pixels + (y * kTextureSize + x) * 4;
+            p[0] = v; p[1] = v; p[2] = v; p[3] = 255;
+        }
+    }
+    return CreateTextureFromPixels(dev, commands, descriptors, pixels, "checker", out);
+}
+
+bool CreateStripeTexture(const VulkanDevice& dev,
+                         const Commands& commands,
+                         const Descriptors& descriptors,
+                         Texture* out) noexcept {
+    // y를 안 본다 - 그래서 세로 줄이 되고 checker와 눈으로 구분된다.
+    uint8_t pixels[kTextureSize * kTextureSize * 4]{};
+    for (uint32_t y = 0; y < kTextureSize; ++y) {
+        for (uint32_t x = 0; x < kTextureSize; ++x) {
+            const uint8_t v = (x % 2 == 0) ? 255 : 70;
+            uint8_t* p = pixels + (y * kTextureSize + x) * 4;
+            p[0] = v; p[1] = v; p[2] = v; p[3] = 255;
+        }
+    }
+    return CreateTextureFromPixels(dev, commands, descriptors, pixels, "stripe", out);
 }
