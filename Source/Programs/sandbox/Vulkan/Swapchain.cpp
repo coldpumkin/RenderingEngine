@@ -139,7 +139,6 @@ bool CreateSwapchain(const VulkanInstance& inst,
         return false;
     }
 
-    sc.format = surfaceFormat.format;
     sc.extent = caps.currentExtent;
 
     // 개수는 요청이 아니라 결과다. minImageCount는 최소일 뿐이고 driver가 더 줄 수
@@ -170,7 +169,7 @@ bool CreateSwapchain(const VulkanInstance& inst,
         VkImageViewCreateInfo viewInfo{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
         viewInfo.image = rawImages[i];
         viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        viewInfo.format = sc.format;
+        viewInfo.format = surfaceFormat.format;
         viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         viewInfo.subresourceRange.levelCount = 1;
         viewInfo.subresourceRange.layerCount = 1;
@@ -206,7 +205,7 @@ bool CreateSwapchain(const VulkanInstance& inst,
 
     LOG("[vk] swapchain %ux%u, %u images (min %u), format %d, FIFO\n",
         sc.extent.width, sc.extent.height, actualCount, caps.minImageCount,
-        static_cast<int>(sc.format));
+        static_cast<int>(surfaceFormat.format));
     return true;
 }
 

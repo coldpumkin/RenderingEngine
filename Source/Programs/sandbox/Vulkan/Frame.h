@@ -16,7 +16,20 @@
 #include "Vulkan/RenderTargets.h"
 #include "Vulkan/Window.h"
 
-// 개수는 Config.h의 kFramesInFlight가 정한다.
+// 개수는 Config.h의 kFramesInFlight가 정한다. 아래 셋이 같은 신호 하나에 묶여서다.
+// 판별은 이렇다: "이 자원을 다시 써도 된다는 걸 무엇이 알려주는가?"
+//
+//   cmd             pending 상태면 리셋할 수 없다      -> inFlight fence가 알려준다
+//   imageAvailable  이전 wait(submit)이 끝나야 재signal -> inFlight fence가 알려준다
+//   inFlight        그 자신이 신호다
+//
+// 셋 다 답이 같은 fence 하나다. 그래서 개수도 같고 한 벌이다.
+//
+// **renderFinished가 여기 없는 이유도 같은 기준이다.** 그건 present가 기다리는데,
+// present에는 완료를 알려주는 것이 없다(vkQueuePresentKHR은 fence를 주지 않는다).
+// 유일한 단서가 "acquire가 그 image를 다시 줬다"이고 그건 image index로만 오므로,
+// 개수가 image 수가 되어 Swapchain 안에 산다. 그래서 frame 2개와 image 3개가
+// 안 맞아도 된다 - 짝지어지지 않는다.
 struct Frame {
     const VulkanDevice* dev = nullptr;   // 파괴에 필요한 non-owning 상태
 

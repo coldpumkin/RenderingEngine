@@ -161,8 +161,9 @@ static void RecordScenePass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
                                        glm::vec3(0.0f, 0.0f, 0.0f),    // center
                                        glm::vec3(0.0f, 1.0f, 0.0f));   // up
 
-    // aspect를 여기서 계산하는 이유는 전과 같다: extent는 리사이즈마다 바뀌는데
-    // pipeline은 그대로다. 값이 command에 실리니 재생성할 이유가 없다.
+    // 여기 extent는 draw.extent라 Config.h가 정한 고정값이다 - 리사이즈로 안 바뀌고
+    // 지금 aspect는 상수(1280/720)다. 그래도 매 frame 계산하는 이유는 값이 command에
+    // 실리기 때문이다: render 해상도가 런타임 값이 되어도 pipeline은 그대로다.
     // 달라진 건 shader의 `x /= aspect` 한 줄이 하던 일을 이제 proj가 한다는 것이다.
     const float aspect =
         static_cast<float>(extent.width) / static_cast<float>(extent.height);

@@ -29,7 +29,6 @@ struct Swapchain {
     const struct VulkanDevice* dev = nullptr;   // 파괴에 필요한 non-owning 상태
 
     VkSwapchainKHR handle = VK_NULL_HANDLE;
-    VkFormat format = VK_FORMAT_UNDEFINED;
     VkExtent2D extent{};
     std::vector<SwapchainImage> images;
 
