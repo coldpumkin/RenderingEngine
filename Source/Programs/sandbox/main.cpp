@@ -36,16 +36,18 @@
 //
 // 여기 나오는 것들의 관계 - 셋으로 갈린다.
 //
-//   서로 맞아야 하는 것       format · pipeline · vertex buffer
+//   서로 맞아야 하는 것       format · pipeline · vertex buffer · descriptor set
 //   명령이 적히는 곳          command buffer
 //   동시에 여러 개 돌리는 것  frame
 //
 // Command buffer와 frame은 "무엇을 그리나"에 아무 말도 안 한다. 앞은 명령을 적는
 // 테이프고, 뒤는 그 한 벌을 kFramesInFlight개 둬서 CPU가 앞서가게 하는 장치다.
 //
-// 맞아야 하는 것은 둘이고 pipeline이 그 가운데에 있다:
+// 맞아야 하는 것은 셋이고 pipeline이 그 가운데에 있다:
 //   pipeline <-> render target   format (dynamic rendering이 pipeline에 박는다)
 //   pipeline <-> vertex buffer   vertex layout (attribute description <-> Vertex)
+//   pipeline <-> descriptor set  setLayout (pipeline layout이 참조한다. texture가
+//                                들어오면서 셋이 됐다 - Descriptors.h)
 //
 // Pass는 vkCmdBeginRendering ~ vkCmdEndRendering 구간이고 그동안 그릴 대상이
 // 고정된다. 한 frame에 pass가 둘이고 뒤가 앞의 결과를 읽는다:
@@ -74,20 +76,35 @@
 // 동기화(fence · semaphore · acquire · present)는 하나도 안 들어온다. 그건 Frame.cpp에
 // 있고, 기록과 동기화는 서로 모르는 채로 돌아간다.
 
+// Index buffer 안의 한 구간
+//
+// 전에는 이 둘이 DrawItem의 필드로 풀려 있었고, 값은 index 배열의 자리를 손으로 다시
+// 적은 숫자였다(`{9, 6}`). 배열과 DrawItem이 100줄 떨어져 있어서 index를 하나만
+// 끼워 넣어도 조용히 어긋났다 - 검증 레이어도 컴파일러도 못 잡는다.
+//
+// 타입을 만든 것만으로는 안 고쳐진다. 고치는 것은 **이름 붙은 상수를 index 배열
+// 바로 옆에 두는 것**이고, 이 타입은 그 이름이 한 덩어리로 넘어가게 한다.
+struct IndexRange {
+    uint32_t firstIndex = 0;
+    uint32_t count = 0;
+
+    // 다음 구간이 여기서 시작한다. 상수끼리 이어서 자리를 유도한다.
+    constexpr uint32_t End() const noexcept { return firstIndex + count; }
+};
+
 // 한 번의 draw에 필요한 것 전부
 // ============================================================================
 //
 // **물체가 아니다.** 어떤 움직임에서 나온 행렬인지, 어느 물체의 index인지는 여기
 // 안 남는다. 물체마다 따로 적혀 있던 코드를 배열 하나로 fold하면서 실제로 무엇이
-// 달랐는지가 그대로 필드가 됐다 - 넷뿐이었다.
+// 달랐는지가 그대로 필드가 됐다 - 셋뿐이었다.
 //
 // pipeline이 값이 아니라 포인터인 이유: 같은 pipeline을 여러 item이 가리키고, loop가
 // **바뀔 때만** bind한다. 지금 물체 다섯에 bind가 셋이다.
 struct DrawItem {
     const Pipeline* pipeline = nullptr;
     PushConstants push{};        // mvp + alpha. 둘 다 물체마다 정해진다
-    uint32_t firstIndex = 0;
-    uint32_t indexCount = 0;
+    IndexRange range{};
 };
 
 // Scene Pass
@@ -222,7 +239,7 @@ static void RecordScenePass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
         // vkCmdDraw와 인자가 다르다. firstIndex는 **index buffer 안의 위치**이고,
         // vertexOffset(0)은 그 index에 더해지는 값이다 - mesh마다 vertex를 0부터
         // 세고 싶을 때 쓴다. 지금은 index에 절대 번호를 적어서 0이다.
-        vk.vkCmdDrawIndexed(cmd, item.indexCount, 1, item.firstIndex, 0, 0);
+        vk.vkCmdDrawIndexed(cmd, item.range.count, 1, item.range.firstIndex, 0, 0);
     }
 
     vk.vkCmdEndRendering(cmd);
@@ -307,7 +324,7 @@ static void RecordPresentPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
 
 }
 
-// Input:  cmd, target, pipeline, vertex buffer, fullscreen
+// Input:  cmd, target, vertex/index buffer, texture set, 그릴 것 목록, fullscreen
 // Effect: cmd를 리셋하고 pass 둘을 기록한다
 // Output: false면 cmd가 무효 상태다 - 제출하면 안 된다
 bool RecordFrame(const VolkDeviceTable& vk,
@@ -441,13 +458,13 @@ int main() {
         {{ 0.8f,  0.1f,  0.5f}, {0.2f, 0.3f, 0.95f}, {1.0f, 0.5f}},
     };
     // Quad. **정점 4개로 삼각형 2개를 그린다** - index buffer가 처음으로 값을 하는
-    // 자리다. 정점 둘(9, 11)이 두 번씩 쓰인다.
+    // 자리다. 정점 둘(kQuadBase+0, +2)이 두 번씩 쓰인다.
     // 위 셋과 같은 순서로 적는다(y-up 기준 CCW).
     constexpr Vertex kQuad[] = {
-        {{-1.4f,  0.45f, -0.8f}, {0.95f, 0.75f, 0.15f}, {0.0f, 0.0f}},   // 9
-        {{-1.4f, -0.45f, -0.8f}, {0.95f, 0.75f, 0.15f}, {0.0f, 1.0f}},   // 10
-        {{-0.5f, -0.45f, -0.8f}, {0.95f, 0.75f, 0.15f}, {1.0f, 1.0f}},   // 11
-        {{-0.5f,  0.45f, -0.8f}, {0.95f, 0.75f, 0.15f}, {1.0f, 0.0f}},   // 12
+        {{-1.4f,  0.45f, -0.8f}, {0.95f, 0.75f, 0.15f}, {0.0f, 0.0f}},
+        {{-1.4f, -0.45f, -0.8f}, {0.95f, 0.75f, 0.15f}, {0.0f, 1.0f}},
+        {{-0.5f, -0.45f, -0.8f}, {0.95f, 0.75f, 0.15f}, {1.0f, 1.0f}},
+        {{-0.5f,  0.45f, -0.8f}, {0.95f, 0.75f, 0.15f}, {1.0f, 0.0f}},
     };
 
     Vertex vertices[std::size(kTriangles) + std::size(kQuad)]{};
@@ -455,17 +472,35 @@ int main() {
     std::memcpy(vertices + std::size(kTriangles), kQuad, sizeof(kQuad));
 
     // Index buffer. 삼각형 셋은 정점을 그대로 한 번씩 가리키고(재사용 없음),
-    // quad만 9와 11을 두 번 가리킨다.
+    // quad만 정점 둘을 두 번 가리킨다.
     //
     // **타입이 vkCmdBindIndexBuffer의 VK_INDEX_TYPE_UINT16과 짝이다.** 어긋나면
     // 컴파일도 실행도 되는데 엉뚱한 정점이 나온다 - 검증 레이어도 못 잡는다.
+    //
+    // kQuadBase는 위 memcpy가 만든 자리다. 전에는 여기에 9라고 적혀 있었는데, 그건
+    // std::size(kTriangles)를 손으로 옮겨 적은 값이라 삼각형을 하나 더 넣으면 quad가
+    // 조용히 엉뚱한 정점을 가리켰다.
+    constexpr uint16_t kQuadBase = static_cast<uint16_t>(std::size(kTriangles));
     constexpr uint16_t kIndices[] = {
         0, 1, 2,          // 초록 삼각형
         3, 4, 5,          // 빨강 삼각형
         6, 7, 8,          // 파랑 삼각형 (반투명)
-        9, 10, 11,        // quad 앞쪽 절반
-        11, 12, 9,        // quad 뒤쪽 절반 - 두 정점을 다시 쓴다
+        kQuadBase + 0, kQuadBase + 1, kQuadBase + 2,   // quad 앞쪽 절반
+        kQuadBase + 2, kQuadBase + 3, kQuadBase + 0,   // quad 뒤쪽 절반 - 두 정점을 다시 쓴다
     };
+
+    // 위 배열의 어느 구간이 어느 물체인가. **선언 순서가 kIndices의 순서와 같다** -
+    // 각자가 앞의 것이 끝난 자리에서 시작하므로 중간에 하나를 끼워 넣으면 뒤가 전부
+    // 따라 움직인다. 남은 것은 count뿐이고, 그건 물체의 성질이다(삼각형 3, quad 6).
+    //
+    // 이것이 DrawItem 쪽에 자리 숫자가 안 남게 하는 유일한 장치다. 여기와 kIndices가
+    // 붙어 있는 것 자체가 그 장치의 절반이다 - 떨어뜨리면 다시 어긋난다.
+    constexpr IndexRange kGreenIndices{0, 3};
+    constexpr IndexRange kRedIndices{kGreenIndices.End(), 3};
+    constexpr IndexRange kBlueIndices{kRedIndices.End(), 3};
+    constexpr IndexRange kQuadIndices{kBlueIndices.End(), 6};
+    static_assert(kQuadIndices.End() == std::size(kIndices),
+                  "구간의 합이 index 배열을 다 덮지 않는다");
 
     if (!CreateDeviceLocalBuffer(dev, commands, vertices, sizeof(vertices),
                                  VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &vertexBuffer)) {
@@ -485,6 +520,31 @@ int main() {
     // Frame.cpp에, 무엇을 그리는지는 RecordFrame에 있다. 여기 남은 것은 그 순서와
     // 실패했을 때 무엇을 할지뿐이다.
     LOG("close the window to exit.\n");
+
+    // Projection - 주기가 frame이 아니라 render target의 수명이다
+    // ========================================================================
+    //
+    // 전에는 이 계산이 루프 안에 있었고 target.draw->extent에서 aspect를 얻었다.
+    // 그런데 그 extent는 Config.h의 컴파일 상수라(Frame.cpp가 그 값으로 만든다)
+    // 어느 frame이든 어떻게 리사이즈하든 같은 값이었다 - 매 frame 다시 만들고 있었다.
+    //
+    // **창 크기가 아니다.** 창은 present pass가 쓰고, 여기는 우리 render target이다.
+    // 그래서 리사이즈로는 안 변한다.
+    //
+    // 이 값이 변하는 사건은 하나뿐이다: 렌더 해상도가 런타임 값이 되는 것. 그때는
+    // render target 재생성 경로가 같이 생기고(Config.h가 그 조건을 적어놨다)
+    // 이 계산이 프레임이 아니라 **그 경로로** 따라간다.
+    //
+    // frames[0]에서 얻는다 - 전부 같은 크기로 만들어진다. 갈라지면 여기가 못 쓴다.
+    const VkExtent2D sceneExtent = frames[0].targets.extent;
+    const float aspect = static_cast<float>(sceneExtent.width)
+                       / static_cast<float>(sceneExtent.height);
+
+    // proj[1][1]에 -1을 곱하지 않는다 - viewport height가 이미 음수다.
+    // 깊이가 [0,1]로 나오는 것은 GLM_FORCE_DEPTH_ZERO_TO_ONE 덕이고 CMake의 glm
+    // 타깃에 붙어 있다. near를 0.1로 잡았다 (깊이 정밀도는 near 근처에 몰린다).
+    const glm::mat4 proj =
+        glm::perspective(glm::radians(60.0f), aspect, 0.1f, 100.0f);
 
     // 어느 frame 자원 한 벌을 쓸 차례인가.
     uint32_t frameIndex = 0;
@@ -511,25 +571,21 @@ int main() {
         // 전에는 이 계산이 RecordScenePass 안에 있었다. 시간도 카메라도 물체도
         // 장면의 상태지 기록의 일이 아니라 위로 올렸다. 기록 쪽으로 내려가는 것은
         // DrawItem 배열 하나뿐이고, 그 안에는 Transform도 Geometry도 안 남는다 -
-        // 카메라와 곱해진 행렬 하나, index 범위, pipeline이 전부다.
+        // 카메라와 곱해진 행렬 하나, index 구간, pipeline이 전부다.
+        //
+        // **여기 남는 기준은 "frame마다 변하는가"다.** aspect와 proj는 그렇지 않아서
+        // 루프 밖으로 나갔다(위 주석). 남은 것은 t와 그것으로 만드는 행렬들이다.
         const float t = static_cast<float>(glfwGetTime());
-
-        // aspect는 창이 아니라 render target 크기에서 나온다 (Config.h가 정한 값).
-        const VkExtent2D sceneExtent = target.draw->extent;
-        const float aspect = static_cast<float>(sceneExtent.width)
-                           / static_cast<float>(sceneExtent.height);
 
         // 카메라. 오른손 좌표계라 -z 쪽을 본다. z=2에 둔 이유는 화면에 차는 크기를
         // 맞추려는 것뿐이다.
         //
-        // proj[1][1]에 -1을 곱하지 않는다 - viewport height가 이미 음수다.
-        // 깊이가 [0,1]로 나오는 것은 GLM_FORCE_DEPTH_ZERO_TO_ONE 덕이고 CMake의 glm
-        // 타깃에 붙어 있다. near를 0.1로 잡았다 (깊이 정밀도는 near 근처에 몰린다).
+        // **proj와 달리 이건 루프 안에 남는다.** 지금 값이 안 변하는 것은 카메라를
+        // 움직이는 입력이 아직 없어서지, 주기가 프로그램 수명이어서가 아니다. 위로
+        // 올리면 입력이 들어오는 날 다시 내려와야 한다 - 이르게 정하면 낡는다.
         const glm::mat4 view = glm::lookAt(glm::vec3(0.0f, 0.0f, 2.0f),
                                            glm::vec3(0.0f, 0.0f, 0.0f),
                                            glm::vec3(0.0f, 1.0f, 0.0f));
-        const glm::mat4 proj =
-            glm::perspective(glm::radians(60.0f), aspect, 0.1f, 100.0f);
         const glm::mat4 camera = proj * view;
 
         // **순서가 규칙이다.** 같은 pipeline끼리 붙어 있으면 bind가 줄고, 반투명은
@@ -538,23 +594,26 @@ int main() {
         const glm::vec3 kZAxis{0.0f, 0.0f, 1.0f};
         const DrawItem items[] = {
             // 초록. 원점에서 z축 회전 (축이 z라 깊이가 안 바뀐다)
-            {&pipeline,   {camera * glm::rotate(glm::mat4(1.0f), t, kZAxis), 1.0f}, 0, 3},
+            {&pipeline,   {camera * glm::rotate(glm::mat4(1.0f), t, kZAxis), 1.0f},
+             kGreenIndices},
 
             // 빨강. 반대 방향으로 더 천천히
-            {&pipeline,   {camera * glm::rotate(glm::mat4(1.0f), -t * 0.5f, kZAxis), 1.0f}, 3, 3},
+            {&pipeline,   {camera * glm::rotate(glm::mat4(1.0f), -t * 0.5f, kZAxis), 1.0f},
+             kRedIndices},
 
             // Quad. 안 움직인다 - Transform이 아무것도 아닐 수도 있다
-            {&pipeline,   {camera, 1.0f}, 9, 6},
+            {&pipeline,   {camera, 1.0f}, kQuadIndices},
 
-            // 초록을 한 번 더, 이번엔 선으로. **index 범위가 첫째와 같다** -
+            // 초록을 한 번 더, 이번엔 선으로. **같은 구간을 가리킨다** -
             // 정점을 안 늘리고 물체만 늘었다
             {&wireframe,  {camera * glm::scale(
                                glm::translate(glm::mat4(1.0f),
                                               glm::vec3(0.9f, -0.6f, -0.5f)),
-                               glm::vec3(0.5f)), 1.0f}, 0, 3},
+                               glm::vec3(0.5f)), 1.0f},
+             kGreenIndices},
 
             // 반투명 파랑. 마지막이어야 한다
-            {&translucent, {camera, 0.5f}, 6, 3},
+            {&translucent, {camera, 0.5f}, kBlueIndices},
         };
 
         // 아래 셋은 continue가 아니라 break다. acquire까지 갔는데 제출을 안 하면
