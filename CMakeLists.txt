@@ -37,6 +37,7 @@ message(STATUS "Vulkan validation layers: ${LAMBDA_ENABLE_VULKAN_VALIDATION}")
 add_subdirectory(Source/ThirdParty/volk)
 add_subdirectory(Source/ThirdParty/vma)
 add_subdirectory(Source/ThirdParty/glfw)
+add_subdirectory(Source/ThirdParty/glm)
 
 # 모듈이 없다. sandbox 하나에 평평하게 쓴다.
 #
