@@ -475,8 +475,15 @@ int main() {
         return 1;
     }
 
-    if (!CreateCheckerTexture(dev, commands, descriptors, &checker)) { return 1; }
-    if (!CreateStripeTexture(dev, commands, descriptors, &stripe)) { return 1; }
+    if (!CreateCheckerTexture(dev, commands, &checker)) { return 1; }
+    if (!CreateStripeTexture(dev, commands, &stripe)) { return 1; }
+
+    // A set now names two images, so it is a pair rather than a property of one texture.
+    // Both textures have to exist before either set can be filled, which is why this sits
+    // here instead of inside Create*Texture.
+    checker.set = AllocateImageSet(descriptors, checker.image.view, stripe.image.view);
+    stripe.set = AllocateImageSet(descriptors, stripe.image.view, checker.image.view);
+    if (checker.set == VK_NULL_HANDLE || stripe.set == VK_NULL_HANDLE) { return 1; }
 
     // No swapchain here. The loop's EnsureSwapchain creates it, and the first creation
     // takes the same path as a recreation: "nothing to draw into" is a normal state.

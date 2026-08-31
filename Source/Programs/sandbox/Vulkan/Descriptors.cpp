@@ -1,5 +1,9 @@
 ﻿#include "Vulkan/Descriptors.h"
 
+// 한 set이 드는 이 타입 descriptor의 개수. layout · pool · write 셋이 같은 값을
+// 봐야 해서 손으로 세 번 적지 않는다.
+constexpr uint32_t kBindingCount = 2;
+
 bool CreateDescriptors(const VulkanDevice& dev, uint32_t maxSets, Descriptors* out) noexcept {
     out->dev = &dev;
 
@@ -23,16 +27,20 @@ bool CreateDescriptors(const VulkanDevice& dev, uint32_t maxSets, Descriptors* o
 
     // binding 0은 shader의 layout(set=0, binding=0)과 짝이다.
     // COMBINED_IMAGE_SAMPLER: image와 sampler를 한 자리에 묶는다(GLSL의 sampler2D).
-    VkDescriptorSetLayoutBinding binding{};
-    binding.binding = 0;
-    binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    binding.descriptorCount = 1;
-    binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;   // 읽는 곳이 fragment뿐이다
+    VkDescriptorSetLayoutBinding bindings[kBindingCount]{};
+    bindings[0].binding = 0;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;   // 읽는 곳이 fragment뿐이다
+
+    // binding 1: 두 번째 image. 한 set이 이제 이 타입 descriptor를 2개 든다.
+    bindings[1] = bindings[0];
+    bindings[1].binding = 1;
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    layoutInfo.bindingCount = 1;
-    layoutInfo.pBindings = &binding;
+    layoutInfo.bindingCount = kBindingCount;
+    layoutInfo.pBindings = bindings;
     if (dev.table.vkCreateDescriptorSetLayout(dev.handle, &layoutInfo, nullptr, &out->setLayout)
             != VK_SUCCESS) {
         LOG("[vk] vkCreateDescriptorSetLayout failed\n");
@@ -40,9 +48,12 @@ bool CreateDescriptors(const VulkanDevice& dev, uint32_t maxSets, Descriptors* o
     }
 
     // Pool은 자라지 않아서 크기를 미리 정한다. 타입별 개수도 같이 말해야 한다.
+    //
+    // maxSets와 descriptorCount는 다른 것을 센다 - set의 개수와 descriptor의 개수다.
+    // 한 set이 binding을 여럿 들면 뒤가 앞보다 크다.
     VkDescriptorPoolSize poolSize{};
     poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSize.descriptorCount = maxSets;
+    poolSize.descriptorCount = maxSets * kBindingCount;
 
     VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     poolInfo.maxSets = maxSets;
@@ -58,7 +69,8 @@ bool CreateDescriptors(const VulkanDevice& dev, uint32_t maxSets, Descriptors* o
     return true;
 }
 
-VkDescriptorSet AllocateImageSet(const Descriptors& descriptors, VkImageView view) noexcept {
+VkDescriptorSet AllocateImageSet(const Descriptors& descriptors,
+                                 VkImageView view0, VkImageView view1) noexcept {
     const VulkanDevice& dev = *descriptors.dev;
 
     VkDescriptorSetAllocateInfo allocInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
@@ -68,28 +80,34 @@ VkDescriptorSet AllocateImageSet(const Descriptors& descriptors, VkImageView vie
 
     VkDescriptorSet set = VK_NULL_HANDLE;
     if (dev.table.vkAllocateDescriptorSets(dev.handle, &allocInfo, &set) != VK_SUCCESS) {
-        LOG("[vk] vkAllocateDescriptorSets failed (풀이 모자랄 수 있다)\n");
+        LOG("[vk] vkAllocateDescriptorSets failed (pool may be too small)\n");
         return VK_NULL_HANDLE;
     }
 
-    // 뽑은 set은 비어 있어서 "0번 자리 = 이 view + 이 sampler"를 채운다.
+    // 뽑은 set은 비어 있어서 binding마다 "이 view + 이 sampler"를 채운다.
+    // 안 채운 binding을 shader가 읽으면 validation layer가 draw에서 잡는다.
     //
     // imageLayout은 bind 시점이 아니라 읽는 시점의 layout이다. RecordPresentPass가
     // 그 직전에 SHADER_READ_ONLY_OPTIMAL로 전이시키는 것과 짝이다.
-    VkDescriptorImageInfo imageInfo{};
-    imageInfo.sampler = descriptors.sampler;
-    imageInfo.imageView = view;
-    imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    const VkImageView views[kBindingCount] = {view0, view1};
 
-    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    write.dstSet = set;
-    write.dstBinding = 0;
-    write.descriptorCount = 1;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    write.pImageInfo = &imageInfo;
+    VkDescriptorImageInfo imageInfo[kBindingCount]{};
+    VkWriteDescriptorSet write[kBindingCount]{};
+    for (uint32_t i = 0; i < kBindingCount; ++i) {
+        imageInfo[i].sampler = descriptors.sampler;
+        imageInfo[i].imageView = views[i];
+        imageInfo[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        write[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write[i].dstSet = set;
+        write[i].dstBinding = i;
+        write[i].descriptorCount = 1;
+        write[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write[i].pImageInfo = &imageInfo[i];
+    }
 
     // 스펙: 이 함수는 실패하지 않는다. 잘못 채우면 validation layer가 잡는다.
-    dev.table.vkUpdateDescriptorSets(dev.handle, 1, &write, 0, nullptr);
+    dev.table.vkUpdateDescriptorSets(dev.handle, kBindingCount, write, 0, nullptr);
     return set;
 }
 

@@ -25,7 +25,10 @@ struct Texture {
     const VulkanDevice* dev = nullptr;   // 파괴에 필요한 non-owning 상태
 
     Image image;
-    VkDescriptorSet set = VK_NULL_HANDLE;   // pool이 죽을 때 같이 사라진다
+
+    // 이 texture가 binding 0에 걸린 set. binding 1은 다른 texture라 짝을 여기서
+    // 못 정한다 - 호출자가 AllocateImageSet으로 채운다. pool이 죽을 때 같이 사라진다.
+    VkDescriptorSet set = VK_NULL_HANDLE;
 
     Texture() = default;
     ~Texture();
@@ -42,15 +45,13 @@ struct Texture {
 // 드러낸다 - descriptor set이 하나뿐일 때는 pass 앞에서 한 번 bind하고 끝이었다.
 //
 // 나란히 놓고 보면 실제로 다른 것은 **픽셀을 만드는 6줄과 로그 이름**뿐이다.
-// staging · image · layout 전이 둘 · 복사 · set 할당은 한 글자도 안 다르다.
+// staging · image · layout 전이 둘 · 복사는 한 글자도 안 다르다.
 // 그래서 .cpp에서 그 공통부를 static 함수 하나로 접었다.
 bool CreateCheckerTexture(const VulkanDevice& dev,
                           const Commands& commands,
-                          const Descriptors& descriptors,
                           Texture* out) noexcept;
 
 // 세로 줄무늬. checker와 눈으로 구분되는 것이 목적의 전부다.
 bool CreateStripeTexture(const VulkanDevice& dev,
                          const Commands& commands,
-                         const Descriptors& descriptors,
                          Texture* out) noexcept;

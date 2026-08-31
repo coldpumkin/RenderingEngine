@@ -23,7 +23,6 @@ constexpr uint32_t kTextureSize = 8;
 // UNORM으로 만들면 shader가 받는 값이 밝아져 곱한 결과가 뜬다.
 static bool CreateTextureFromPixels(const VulkanDevice& dev,
                                     const Commands& commands,
-                                    const Descriptors& descriptors,
                                     const uint8_t (&pixels)[kTextureSize * kTextureSize * 4],
                                     const char* label,
                                     Texture* out) noexcept {
@@ -89,11 +88,11 @@ static bool CreateTextureFromPixels(const VulkanDevice& dev,
 
     if (!EndOneShotAndWait(dev, commands, cmd, "texture upload")) { return false; }
 
-    // 이 set이 가리키는 layout은 위에서 전이시킨 SHADER_READ_ONLY_OPTIMAL이다.
-    // AllocateImageSet이 그렇게 적어둔다 - 어긋나면 검증 레이어가 draw에서 잡는다.
-    texture.set = AllocateImageSet(descriptors, texture.image.view);
-    if (texture.set == VK_NULL_HANDLE) { return false; }
-
+    // set은 여기서 안 만든다. binding이 둘이 되면서 set이 image 하나가 아니라 둘의
+    // 조합이 됐고, 그 짝은 texture 자신이 모른다 - 호출자가 정한다.
+    //
+    // 위에서 전이시킨 SHADER_READ_ONLY_OPTIMAL이 AllocateImageSet이 적어두는 값과
+    // 같아야 한다. 어긋나면 검증 레이어가 draw에서 잡는다.
     LOG("[vk] %s texture ready (%ux%u)\n", label, kSize, kSize);
     return true;
 }
@@ -102,7 +101,6 @@ static bool CreateTextureFromPixels(const VulkanDevice& dev,
 
 bool CreateCheckerTexture(const VulkanDevice& dev,
                           const Commands& commands,
-                          const Descriptors& descriptors,
                           Texture* out) noexcept {
     uint8_t pixels[kTextureSize * kTextureSize * 4]{};
     for (uint32_t y = 0; y < kTextureSize; ++y) {
@@ -112,12 +110,11 @@ bool CreateCheckerTexture(const VulkanDevice& dev,
             p[0] = v; p[1] = v; p[2] = v; p[3] = 255;
         }
     }
-    return CreateTextureFromPixels(dev, commands, descriptors, pixels, "checker", out);
+    return CreateTextureFromPixels(dev, commands, pixels, "checker", out);
 }
 
 bool CreateStripeTexture(const VulkanDevice& dev,
                          const Commands& commands,
-                         const Descriptors& descriptors,
                          Texture* out) noexcept {
     // y를 안 본다 - 그래서 세로 줄이 되고 checker와 눈으로 구분된다.
     uint8_t pixels[kTextureSize * kTextureSize * 4]{};
@@ -128,5 +125,5 @@ bool CreateStripeTexture(const VulkanDevice& dev,
             p[0] = v; p[1] = v; p[2] = v; p[3] = 255;
         }
     }
-    return CreateTextureFromPixels(dev, commands, descriptors, pixels, "stripe", out);
+    return CreateTextureFromPixels(dev, commands, pixels, "stripe", out);
 }

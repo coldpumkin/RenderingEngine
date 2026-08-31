@@ -34,7 +34,11 @@ struct Descriptors {
 // maxSets: pool에서 뽑을 수 있는 최대 개수. pool은 자라지 않아서 미리 정해야 한다.
 bool CreateDescriptors(const VulkanDevice& dev, uint32_t maxSets, Descriptors* out) noexcept;
 
-// Input:  descriptors, view
-// Output: view가 걸린 set (실패하면 VK_NULL_HANDLE)
+// Input:  descriptors, view0 (binding 0), view1 (binding 1)
+// Output: 두 binding이 다 걸린 set (실패하면 VK_NULL_HANDLE)
 // Contract: 개별 반납은 없다. pool이 죽을 때 같이 사라진다.
-VkDescriptorSet AllocateImageSet(const Descriptors& descriptors, VkImageView view) noexcept;
+//
+// setLayout이 binding 둘을 요구하므로 view도 둘이다. 한쪽을 안 채우고 shader가
+// 그것을 읽으면 draw에서 잡힌다 - 그래서 인자로 강제한다.
+VkDescriptorSet AllocateImageSet(const Descriptors& descriptors,
+                                 VkImageView view0, VkImageView view1) noexcept;
