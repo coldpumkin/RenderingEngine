@@ -45,7 +45,9 @@ struct Buffer {
 //
 // Contract: shader의 layout(location=...) in과 짝이 맞아야 한다.
 struct Vertex {
-    // z는 depth test가 비교하는 값. 0(가까움)~1(멈) 범위를 벗어나면 잘려 나간다.
+    // **world 좌표다. NDC가 아니다** - 화면 어디에 오는지는 vertex shader의 mvp가
+    // 정한다. 그래서 z에 [0,1] 같은 제한이 없다. 카메라의 near~far 밖으로 나가면
+    // 잘리는데, 그 판단은 투영이 깊이를 [0,1]로 옮긴 뒤에 일어난다.
     float position[3];   // vec3 -> VK_FORMAT_R32G32B32_SFLOAT
     float color[3];      // vec3 -> VK_FORMAT_R32G32B32_SFLOAT
 };

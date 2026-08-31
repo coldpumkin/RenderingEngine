@@ -3,6 +3,9 @@
 #include "Vulkan/Descriptors.h"
 #include "Vulkan/RenderTargets.h"
 
+// PushConstants가 mat4를 들고 있어서 필요하다. 헤더 온리라 링크에 영향이 없다.
+#include <glm/glm.hpp>
+
 // Graphics pipeline - 무엇으로 그리는가
 // ============================================================================
 //
@@ -26,9 +29,14 @@ struct Pipeline {
 // Contract: shader의 layout(push_constant) 블록과 필드 순서·타입이 같아야 한다.
 //           어긋나면 컴파일도 실행도 되는데 값만 이상해진다 - validation layer가
 //           크기는 보지만 필드 순서는 못 본다.
+// **셋을 CPU에서 곱해 하나로 보낸다.** mat4 셋을 따로 보내면 192바이트라 위의 128
+// 보장을 넘는다. 그리고 shader가 셋을 각각 알아야 할 이유가 아직 없다 - 조명이
+// world 좌표를 필요로 하게 되면 그때 model이 갈라져 나온다.
+//
+// glm::mat4는 64바이트 column-major이고 GLSL의 mat4와 레이아웃이 같다. 전치도
+// 변환도 없이 그대로 실린다 (`ThirdParty/glm/VERSION.md`가 숫자로 확인해뒀다).
 struct PushConstants {
-    float time;     // 초. glfwGetTime()
-    float aspect;   // width / height. 없으면 리사이즈할 때 도형이 늘어난다
+    glm::mat4 mvp;   // model -> world -> view -> clip
 };
 
 // Scene pass용. Vertex buffer를 읽고 depth test를 한다.

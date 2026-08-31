@@ -8,7 +8,7 @@
 
 // Input:  path (실행 파일 옆 Shaders/. CMake가 빌드할 때 거기로 떨군다)
 // Output: VkShaderModule (실패하면 VK_NULL_HANDLE)
-VkShaderModule LoadShader(const VulkanDevice& dev, const char* path) noexcept {
+static VkShaderModule LoadShader(const VulkanDevice& dev, const char* path) noexcept {
     std::FILE* file = std::fopen(path, "rb");
     if (file == nullptr) {
         LOG("[vk] cannot open shader: %s\n", path);

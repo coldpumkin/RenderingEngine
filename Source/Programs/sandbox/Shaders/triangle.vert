@@ -7,39 +7,29 @@
 // 몇 안 되는 경우이기도 하다.
 //
 // **좌표 규약: y가 위로 향한다.** Vulkan 기본 NDC는 y가 아래로 향하지만, C++ 쪽에서
-// 뷰포트 height를 음수로 줘서 뒤집어놨다 (GLM 같은 수학 라이브러리가 y-up을 가정하고
-// 대부분의 엔진이 같은 선택을 한다). 정점 데이터도 y-up으로 적는다.
+// 뷰포트 height를 음수로 줘서 뒤집어놨다. GLM도 y-up을 가정하므로 둘이 맞는다 -
+// **proj[1][1] *= -1을 같이 하면 이중 반전이라 화면이 뒤집힌다.**
 //
-// **z가 있다.** 전에는 여기서 0.0을 박았다 - 모든 것이 같은 깊이라 뎁스 테스트가
-// 의미가 없었다. 이제 정점이 자기 깊이를 들고 온다.
+// **inPosition이 이제 world 좌표다.** 전에는 NDC를 직접 적었다 - 그건 "화면 어디"지
+// "어디에 있는가"가 아니었고, 그래서 물체를 하나 더 놓을 자리가 없었다.
+// 화면 위치는 아래 mvp가 정한다.
 layout(location = 0) in vec3 inPosition;
 layout(location = 1) in vec3 inColor;
 
-// **셰이더가 처음으로 정점 말고 다른 것을 받는다.**
 // C++의 PushConstants와 필드 순서·타입이 정확히 같아야 한다 (Pipeline.h).
+// GLSL의 mat4도 column-major라 glm::mat4가 전치 없이 그대로 실려 온다.
 layout(push_constant) uniform Push {
-    float time;
-    float aspect;
+    mat4 mvp;
 } pc;
 
 layout(location = 0) out vec3 fragColor;
 
 void main() {
-    // 원점 기준 회전. 두 삼각형이 **같은 각도로 같이** 돌기 때문에 서로의 앞뒤 관계는
-    // 변하지 않는다 - 회전 중에도 겹친 곳은 계속 가까운 쪽 색이어야 한다.
-    float c = cos(pc.time);
-    float s = sin(pc.time);
-    vec2 rotated = vec2(inPosition.x * c - inPosition.y * s,
-                        inPosition.x * s + inPosition.y * c);
-
-    // **종횡비 보정.** NDC는 항상 [-1,1]인데 화면은 정사각형이 아니다. 보정이 없으면
-    // 창을 옆으로 늘릴 때 도형도 같이 늘어난다. x를 aspect로 나눠 가로를 좁힌다.
+    // **한 줄이 됐다.** 회전(손계산 2x2)과 종횡비 보정(x /= aspect)이 여기 있었는데
+    // 둘 다 행렬이 하는 일이라 CPU로 올라갔다 - 회전은 model로, 보정은 proj로.
     //
-    // **회전 뒤에 한다.** 순서를 바꾸면 회전이 찌그러진 좌표계에서 일어나서
-    // 도형이 돌면서 모양이 변한다.
-    rotated.x /= pc.aspect;
-
-    // z는 그대로 넘긴다. 회전은 xy 평면 안에서만 일어나므로 깊이가 안 바뀐다.
-    gl_Position = vec4(rotated, inPosition.z, 1.0);
+    // w로 나누는 것(원근 나눗셈)은 우리가 안 한다. 래스터라이저가 한다.
+    // 그래서 **먼 것이 작아지는 일**이 이 한 줄 다음에 일어난다.
+    gl_Position = pc.mvp * vec4(inPosition, 1.0);
     fragColor = inColor;
 }

@@ -23,6 +23,10 @@
 
 #include <GLFW/glfw3.h>
 
+// 필요한 것만 하나씩 include한다. <glm/ext.hpp>는 벤더링할 때 뺐다 (VERSION.md).
+#include <glm/ext/matrix_clip_space.hpp>   // perspective
+#include <glm/ext/matrix_transform.hpp>    // rotate · lookAt
+
 // Frame 기록
 // ============================================================================
 //
@@ -142,12 +146,41 @@ static void RecordScenePass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
 
     vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.handle);
 
-    // aspect를 여기서 계산하는 이유: extent는 리사이즈마다 바뀌는데 pipeline은
-    // 그대로다. 값이 command에 실리니 재생성할 이유가 없다.
-    const PushConstants push{
-        static_cast<float>(glfwGetTime()),
-        static_cast<float>(extent.width) / static_cast<float>(extent.height),
-    };
+    // 원점을 도는 z축 회전. 전에는 vertex shader가 손계산 2x2로 하던 것이다.
+    // 축이 z라 깊이가 안 바뀐다 - 회전 중에도 초록이 계속 앞이다.
+    const glm::mat4 model =
+        glm::rotate(glm::mat4(1.0f), static_cast<float>(glfwGetTime()),
+                    glm::vec3(0.0f, 0.0f, 1.0f));
+
+    // 카메라. 오른손 좌표계라 -z 쪽을 본다.
+    //
+    // z=2에 둔 이유는 화면에 차는 크기를 전과 비슷하게 맞추려는 것뿐이다.
+    // fov 60도에서 거리 2면 보이는 반높이가 2*tan(30) = 1.155이고, 삼각형 반높이가
+    // 0.5라 화면의 43%를 차지한다 (전에는 NDC에 직접 적어서 50%였다).
+    const glm::mat4 view = glm::lookAt(glm::vec3(0.0f, 0.0f, 2.0f),    // eye
+                                       glm::vec3(0.0f, 0.0f, 0.0f),    // center
+                                       glm::vec3(0.0f, 1.0f, 0.0f));   // up
+
+    // aspect를 여기서 계산하는 이유는 전과 같다: extent는 리사이즈마다 바뀌는데
+    // pipeline은 그대로다. 값이 command에 실리니 재생성할 이유가 없다.
+    // 달라진 건 shader의 `x /= aspect` 한 줄이 하던 일을 이제 proj가 한다는 것이다.
+    const float aspect =
+        static_cast<float>(extent.width) / static_cast<float>(extent.height);
+
+    // **proj[1][1]에 -1을 곱하지 않는다.** 흔히 보이는 그 줄은 viewport height가
+    // 양수일 때 쓰는 것이고, 우리는 위에서 이미 음수로 줬다. 둘 다 하면 이중 반전이라
+    // 화면이 상하로 뒤집힌다.
+    //
+    // 깊이가 [0,1]로 나오는 것은 GLM_FORCE_DEPTH_ZERO_TO_ONE 덕이고, 그건 CMake의
+    // glm 타깃에 붙어 있어서 여기서 신경 쓸 것이 없다. 없으면 OpenGL 규약([-1,1])이
+    // 되어 가까운 절반이 잘려 나가는데 아무도 경고해주지 않는다.
+    //
+    // near를 0.1로 잡았다. 깊이 정밀도는 near 근처에 몰리므로 near를 키울수록
+    // 멀리서 z-fighting이 줄어든다 - 물체가 늘어나면 그때 만질 손잡이다.
+    const glm::mat4 proj =
+        glm::perspective(glm::radians(60.0f), aspect, 0.1f, 100.0f);
+
+    const PushConstants push{proj * view * model};
     vk.vkCmdPushConstants(cmd, pipeline.layout, VK_SHADER_STAGE_VERTEX_BIT,
                           0, sizeof(push), &push);
 
@@ -340,16 +373,21 @@ int main() {
 
     // 삼각형 둘을 겹치게 두고 그리는 순서를 깊이 순서와 반대로 만들었다. Depth test가
     // 실제로 도는지 보는 방법이다 - 겹친 곳이 초록이면 켜진 것이고 빨강이면 꺼진 것이다.
+    //
+    // **좌표가 이제 world다.** 전에는 z가 0.25/0.75, 즉 NDC 깊이값이라 그냥 숫자였다.
+    // 이제는 카메라(z=2)로부터의 거리이고, 그래서 **둘을 같은 크기로 적었는데도 먼 쪽이
+    // 작게 보인다** (2/3.5 = 0.57배). 원근이 실제로 도는지 보는 방법이다 -
+    // 전에는 z만 다르고 크기가 같았다.
     constexpr Vertex kTriangles[] = {
-        // 가까움 (z=0.25), 먼저 그린다 - 초록
-        {{-0.7f,  0.5f, 0.25f}, {0.1f, 0.9f, 0.2f}},
-        {{-0.7f, -0.5f, 0.25f}, {0.1f, 0.9f, 0.2f}},
-        {{ 0.3f,  0.0f, 0.25f}, {0.1f, 0.9f, 0.2f}},
+        // 가까움 (z=0, 카메라에서 2), 먼저 그린다 - 초록
+        {{-0.7f,  0.5f,  0.0f}, {0.1f, 0.9f, 0.2f}},
+        {{-0.7f, -0.5f,  0.0f}, {0.1f, 0.9f, 0.2f}},
+        {{ 0.3f,  0.0f,  0.0f}, {0.1f, 0.9f, 0.2f}},
 
-        // 멈 (z=0.75), 나중에 그린다 - 빨강
-        {{ 0.7f,  0.5f, 0.75f}, {0.9f, 0.2f, 0.1f}},
-        {{-0.3f,  0.0f, 0.75f}, {0.9f, 0.2f, 0.1f}},
-        {{ 0.7f, -0.5f, 0.75f}, {0.9f, 0.2f, 0.1f}},
+        // 멈 (z=-1.5, 카메라에서 3.5), 나중에 그린다 - 빨강
+        {{ 0.7f,  0.5f, -1.5f}, {0.9f, 0.2f, 0.1f}},
+        {{-0.3f,  0.0f, -1.5f}, {0.9f, 0.2f, 0.1f}},
+        {{ 0.7f, -0.5f, -1.5f}, {0.9f, 0.2f, 0.1f}},
     };
     if (!CreateVertexBuffer(dev, commands, kTriangles, sizeof(kTriangles), &vertexBuffer)) {
         return 1;
