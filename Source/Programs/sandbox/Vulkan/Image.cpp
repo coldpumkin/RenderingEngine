@@ -3,6 +3,7 @@
 bool CreateImage2D(const VulkanDevice& dev,
                    VkExtent2D extent,
                    VkFormat format,
+                   VkSampleCountFlagBits samples,
                    VkImageUsageFlags usage,
                    VkImageAspectFlags aspect,
                    Image* out) noexcept {
@@ -12,7 +13,7 @@ bool CreateImage2D(const VulkanDevice& dev,
     info.extent = VkExtent3D{extent.width, extent.height, 1};
     info.mipLevels = 1;
     info.arrayLayers = 1;
-    info.samples = VK_SAMPLE_COUNT_1_BIT;   // pipeline의 MSAA 설정과 맞아야 한다
+    info.samples = samples;
     info.tiling = VK_IMAGE_TILING_OPTIMAL;
     info.usage = usage;
     info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;

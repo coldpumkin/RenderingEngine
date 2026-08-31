@@ -78,6 +78,13 @@ struct GraphicsPipelineDesc {
     // 줬는데 test는 껐다" 같은 어긋난 조합이 생긴다.
     VkFormat depthFormat = VK_FORMAT_UNDEFINED;
 
+    // 네 번째로 올라온 값인데 이유가 앞의 셋과 다르다. 소비자가 는 것이 아니라
+    // 기능이 들어왔고, 그런데도 모양은 같다 - scene은 MSAA로 그리고 present는
+    // swapchain에 1-sample로 그리므로 공유 상수면 한쪽이 반드시 틀린다.
+    //
+    // Attachment의 sample 수와 같아야 한다. 다르면 vkCmdBeginRendering이 잡는다.
+    VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
+
     // 셰이더가 정점 말고 무엇을 받나. 둘 다 없어도, 둘 다 있어도 된다.
     const VkPushConstantRange* pushConstants = nullptr;
     VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
@@ -175,7 +182,10 @@ static bool CreateGraphicsPipeline(const VulkanDevice& dev,
 
     VkPipelineMultisampleStateCreateInfo multisample{
         VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-    multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;   // MSAA 없음
+    // sampleShadingEnable은 안 켠다. 켜면 shader가 sample마다 도는데, 지금 계단이
+    // 보이는 것은 삼각형 가장자리뿐이고 그건 rasterizer가 해결한다. Texture가
+    // 어른거리기 시작하면 그때 근거가 생긴다.
+    multisample.rasterizationSamples = desc.samples;
 
     const bool translucent = desc.blending == Blending::Translucent;
 
@@ -319,6 +329,7 @@ bool CreateTrianglePipeline(const VulkanDevice& dev,
     desc.vertexInput = &vertexInput;
     desc.colorFormat = formats.color;
     desc.depthFormat = formats.depth;
+    desc.samples = formats.samples;
     desc.pushConstants = &pushRange;
     // 호출자가 sceneLayout을 준다. present pipeline과 다른 layout인 이유는
     // triangle.frag가 sampler2D를 둘 읽어서다 (Descriptors.h).
@@ -346,6 +357,8 @@ bool CreateFullscreenPipeline(const VulkanDevice& dev,
     // vertexInput 없음   - shader가 gl_VertexIndex로 세 점을 만든다
     // depthFormat 없음   - 화면을 덮는 삼각형에 깊이 비교는 의미가 없다
     desc.colorFormat = colorFormat;   // swapchain format이다 - 맞추는 상대가 다르다
+    // samples 없음 - swapchain image는 조회해서 받는 것이라 1-sample이다. 그리고
+    // MSAA는 이미 scene pass에서 resolve로 끝났다.
     desc.setLayout = setLayout;
     // 여기는 안 뒤집는다 - shader가 uv를 직접 만들어 쓰므로 뒤집으면 화면이 상하로
     // 뒤집힌다. 그래서 frontFace가 scene과 반대로 유도된다.

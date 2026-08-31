@@ -72,25 +72,39 @@ bool CreateRenderTargets(const VulkanDevice& dev, const Descriptors& descriptors
     out->dev = &dev;
     out->extent = extent;
 
-    // SAMPLED가 붙는 것이 off-screen의 표식이다 - present pass가 이걸 texture로 읽는다.
-    if (!CreateImage2D(dev, extent, formats.color,
-                       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+    // 그리는 곳이다. SAMPLED가 없는 것이 resolve와 갈리는 자리다 - multisample image는
+    // 우리 셰이더가 읽을 수 없고, 읽으라고 시키면 여기서 usage가 모자란다.
+    if (!CreateImage2D(dev, extent, formats.color, formats.samples,
+                       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
                        VK_IMAGE_ASPECT_COLOR_BIT, &out->color)) {
         return false;
     }
 
+    // 내보내는 곳이다. SAMPLED가 붙는 것이 off-screen의 표식이고, COLOR_ATTACHMENT는
+    // resolve 대상이라 필요하다 - 우리가 여기 직접 그리지는 않는다.
+    if (!CreateImage2D(dev, extent, formats.color, VK_SAMPLE_COUNT_1_BIT,
+                       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                       VK_IMAGE_ASPECT_COLOR_BIT, &out->resolve)) {
+        return false;
+    }
+
     // Depth는 아무 데도 안 나간다. 이 frame 안에서만 쓰이고 버려진다.
-    if (!CreateImage2D(dev, extent, formats.depth,
+    //
+    // Sample 수는 color를 따라간다. resolve를 안 하는데도 그런 이유는 pipeline의
+    // rasterizationSamples가 pass 전체에 하나뿐이기 때문이다 - depth만 1로 두면
+    // 그리는 순간 어긋난다.
+    if (!CreateImage2D(dev, extent, formats.depth, formats.samples,
                        VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
                        VK_IMAGE_ASPECT_DEPTH_BIT, &out->depth)) {
         return false;
     }
 
-    // Color image가 생긴 뒤에야 그것을 가리키는 set을 만들 수 있다.
+    // Image가 생긴 뒤에야 그것을 가리키는 set을 만들 수 있다.
     //
     // present용이다 - 이 set을 읽는 것은 fullscreen.frag이고 sampler2D가 하나다.
-    out->colorSet = AllocatePresentSet(descriptors, out->color.view);
-    if (out->colorSet == VK_NULL_HANDLE) { return false; }
+    // color가 아니라 resolve를 준다. color를 주면 여기서는 통과하고 draw에서 잡힌다.
+    out->resolveSet = AllocatePresentSet(descriptors, out->resolve.view);
+    if (out->resolveSet == VK_NULL_HANDLE) { return false; }
     return true;
 }
 
@@ -100,5 +114,5 @@ RenderTargets::~RenderTargets() {
     if (dev == nullptr) { return; }
     const VulkanDevice& d = *dev;
 
-    for (Image* img : {&color, &depth}) { DestroyImage(d, img); }
+    for (Image* img : {&color, &resolve, &depth}) { DestroyImage(d, img); }
 }

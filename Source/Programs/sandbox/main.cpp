@@ -51,18 +51,18 @@
 // inside it. Two passes per frame, the second reads what the first wrote:
 //
 //   [scene pass]    knows nothing about the window
-//     barrier x2 (our color, depth)
-//     BeginRendering   attachment = draw.color / draw.depth
+//     barrier x3 (our color, its resolve target, depth)
+//     BeginRendering   attachment = draw.color / draw.depth, resolving into draw.resolve
 //       BindVertexBuffers, BindIndexBuffer
 //       per item: BindPipeline and BindDescriptorSets only when they change,
 //                 PushConstants, DrawIndexed
-//     EndRendering
+//     EndRendering    <- the multisample average happens here
 //
-//   [present pass]  reads draw.color only
-//     barrier draw.color -> SHADER_READ_ONLY
+//   [present pass]  reads draw.resolve only
+//     barrier draw.resolve -> SHADER_READ_ONLY
 //     barrier swapchain  -> COLOR_ATTACHMENT
 //     BeginRendering   attachment = swapchain image, in the swapchain's own format
-//       BindPipeline, BindDescriptorSets (draw.colorSet), Draw 3 vertices
+//       BindPipeline, BindDescriptorSets (draw.resolveSet), Draw 3 vertices
 //     EndRendering
 //     barrier swapchain -> PRESENT_SRC
 //
@@ -120,6 +120,15 @@ static void RecordScenePass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
                            VK_IMAGE_LAYOUT_UNDEFINED,
                            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
+    // The resolve target is written too, at the end of the pass, so it needs the same
+    // layout and the same stage. Nothing here draws into it directly.
+    RecordLayoutTransition(vk, cmd, draw.resolve.handle, VK_IMAGE_ASPECT_COLOR_BIT,
+                           VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                           VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                           VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                           VK_IMAGE_LAYOUT_UNDEFINED,
+                           VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+
     // Depth test runs at EARLY/LATE_FRAGMENT_TESTS, ahead of COLOR_ATTACHMENT_OUTPUT.
     // Reusing the color stage here would let depth writes pass the barrier.
     RecordLayoutTransition(vk, cmd, draw.depth.handle, VK_IMAGE_ASPECT_DEPTH_BIT,
@@ -130,11 +139,21 @@ static void RecordScenePass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
                            VK_IMAGE_LAYOUT_UNDEFINED,
                            VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
 
+    // imageView is the multisample image, resolveImageView is what survives the pass.
+    // vkCmdEndRendering does the averaging, so there is no second pass and no
+    // vkCmdResolveImage.
+    //
+    // storeOp DONT_CARE goes with that: only the resolved copy is read afterwards, so
+    // writing the multisample image back would be pure bandwidth. The resolve still
+    // happens -- resolveMode is what drives it, not storeOp.
     VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
     color.imageView = draw.color.view;
     color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    color.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
+    color.resolveImageView = draw.resolve.view;
+    color.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    color.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     color.clearValue.color = VkClearColorValue{{0.0f, 0.0f, 0.0f, 1.0f}};
 
     // Clear 1.0 = farthest, paired with the pipeline's compareOp=LESS.
@@ -224,10 +243,13 @@ static void RecordScenePass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
 // Present pass
 //
 // Input:  cmd, draw (read only), present, presentExtent, fullscreen
-// Effect: appends commands that sample draw.color into the swapchain image
+// Effect: appends commands that sample draw.resolve into the swapchain image
 //
-// Taking draw is what "reads the previous pass" means: colorSet comes from the same
+// Taking draw is what "reads the previous pass" means: resolveSet comes from the same
 // draw, so the pair cannot disagree.
+//
+// draw.color is never touched here. It is the multisample image, which our shader
+// cannot sample; the scene pass already averaged it into draw.resolve.
 static void RecordPresentPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
                               const RenderTargets& draw,
                               const SwapchainImage& present,
@@ -235,7 +257,10 @@ static void RecordPresentPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
                               const Pipeline& fullscreen) noexcept {
     // Writing must finish (COLOR_ATTACHMENT_OUTPUT) before sampling (FRAGMENT_SHADER).
     // The layout must equal the one recorded into the descriptor set.
-    RecordLayoutTransition(vk, cmd, draw.color.handle, VK_IMAGE_ASPECT_COLOR_BIT,
+    //
+    // The write being waited on is the resolve, which counts as a colour attachment
+    // write in the same stage, so the barrier did not change when MSAA arrived.
+    RecordLayoutTransition(vk, cmd, draw.resolve.handle, VK_IMAGE_ASPECT_COLOR_BIT,
                            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
@@ -282,7 +307,7 @@ static void RecordPresentPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
     // An image cannot ride in the command stream the way a push constant does, so the
     // command only says "attach this set at slot 0".
     vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, fullscreen.layout,
-                               0, 1, &draw.colorSet, 0, nullptr);
+                               0, 1, &draw.resolveSet, 0, nullptr);
 
     // 3 vertices, no buffer. The shader builds them from gl_VertexIndex.
     vk.vkCmdDraw(cmd, 3, 1, 0, 0);

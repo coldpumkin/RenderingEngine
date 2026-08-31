@@ -20,12 +20,20 @@ struct Image {
     VkImageView view = VK_NULL_HANDLE;
 };
 
-// Input:  usage는 무엇에 쓸 image인가 (attachment / sampled / 복사 대상)
+// Input:  samples는 MSAA sample 수 (1_BIT면 MSAA 없음)
+//         usage는 무엇에 쓸 image인가 (attachment / sampled / 복사 대상)
 //         aspect는 view가 어느 면을 보나 (COLOR / DEPTH)
 // Output: image + allocation + view가 채워진 Image
+//
+// Contract: samples가 이 image를 attachment로 쓰는 pipeline의 rasterizationSamples와
+//           같아야 한다. 검증 레이어가 잡아준다 - vkCmdBeginRendering에서 말한다.
+//
+// 기본값을 안 준 이유: 1_BIT가 기본이면 MSAA image를 만들 자리에서 깜빡해도
+// 컴파일된다. 호출자가 셋뿐이라 명시가 싸다.
 bool CreateImage2D(const VulkanDevice& dev,
                    VkExtent2D extent,
                    VkFormat format,
+                   VkSampleCountFlagBits samples,
                    VkImageUsageFlags usage,
                    VkImageAspectFlags aspect,
                    Image* out) noexcept;

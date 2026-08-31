@@ -22,16 +22,27 @@
 struct RenderTargets {
     const VulkanDevice* dev = nullptr;   // 파괴에 필요한 non-owning 상태
 
+    // color는 그리는 곳(MSAA), resolve는 내보내는 곳(1-sample)이다.
+    //
+    // 둘로 갈린 이유는 sample 수 하나뿐이다. Multisample image는 sampler2D로 못
+    // 읽히므로(sampler2DMS가 따로 있다) present pass가 볼 것이 따로 있어야 한다.
+    // 우리 구조가 이걸 거저 얻었다 - off-screen이라 present가 읽을 1-sample image가
+    // 이미 있었고, 그것이 그대로 resolve 대상이 됐다.
+    //
+    // 옮기는 것은 dynamic rendering이 한다 (main.cpp의 resolveImageView). 별도
+    // vkCmdResolveImage도, pass 하나 더도 없다.
     Image color;
+    Image resolve;
     Image depth;
     VkExtent2D extent{};
 
-    // 위 color.view를 가리키는 descriptor set. Pass 2가 이걸 bind한다.
+    // 위 resolve.view를 가리키는 descriptor set. Pass 2가 이걸 bind한다.
     //
     // 여기 있는 이유: 따로 들고 다니면 다른 frame의 image를 가리켜도 컴파일된다.
-    // 같은 draw에서 color.view(쓴다)와 colorSet(읽는다)이 나오면 pass 사이의 연결이
-    // 코드에 보인다. Pool이 죽을 때 같이 사라지므로 소멸자가 안 지운다.
-    VkDescriptorSet colorSet = VK_NULL_HANDLE;
+    // 같은 draw에서 color.view(그린다) · resolve.view(옮겨진다) · resolveSet(읽는다)이
+    // 나오면 pass 사이의 연결이 코드에 보인다.
+    // Pool이 죽을 때 같이 사라지므로 소멸자가 안 지운다.
+    VkDescriptorSet resolveSet = VK_NULL_HANDLE;
 
     RenderTargets() = default;
     ~RenderTargets();

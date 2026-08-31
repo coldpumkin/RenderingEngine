@@ -49,7 +49,9 @@ static bool CreateTextureFromPixels(const VulkanDevice& dev,
 
     // usage 둘이 짝이다 - 복사를 받고(TRANSFER_DST) shader가 읽는다(SAMPLED).
     // 하나만 적으면 만들어지고 나서 검증 레이어가 잡는다.
-    if (!CreateImage2D(dev, VkExtent2D{kSize, kSize}, kFormat,
+    // 1_BIT다 - shader가 sampler2D로 읽는다. Multisample image는 sampler2DMS를
+    // 요구하고 그건 우리 셰이더가 아니다.
+    if (!CreateImage2D(dev, VkExtent2D{kSize, kSize}, kFormat, VK_SAMPLE_COUNT_1_BIT,
                        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                        VK_IMAGE_ASPECT_COLOR_BIT, &texture.image)) {
         return false;
