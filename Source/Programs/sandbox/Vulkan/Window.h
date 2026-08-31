@@ -48,9 +48,16 @@ struct Window {
     GLFWwindow* handle = nullptr;
     VkSurfaceKHR surface = VK_NULL_HANDLE;
 
-    // Format은 swapchain이 아니라 surface의 성질이다 - (GPU, surface) 쌍으로 정해지고
-    // 리사이즈로 바뀌지 않는다. 여기 있으면 pipeline이 swapchain을 기다릴 필요가 없다.
-    // GPU가 정해져야 알 수 있으므로 OpenWindow가 아니라 SelectSurfaceFormat이 채운다.
+    // Format은 swapchain이 아니라 surface의 성질이다 - (GPU, surface) 쌍으로 정해진다.
+    // 여기 있으면 pipeline이 swapchain을 기다릴 필요가 없다. GPU가 정해져야 알 수 있어서
+    // OpenWindow가 아니라 SelectSurfaceFormat이 채운다.
+    //
+    // **"리사이즈로 바뀌지 않는다"고 적혀 있었는데, 그건 스펙이 보장하는 것보다 센
+    // 주장이었다.** vkGetPhysicalDeviceSurfaceFormatsKHR의 결과는 고정이 아니다 -
+    // 창이 다른 모니터로 가거나 HDR이 켜지면 달라질 수 있다. 리사이즈만 놓고 보면
+    // 맞는 말이지만 그 셋을 다 덮지는 못한다.
+    //
+    // 그래서 EnsureSwapchain이 재생성할 때마다 다시 묻고, 바뀌면 아래 플래그를 세운다.
     VkSurfaceFormatKHR surfaceFormat{};
 
     // unique_ptr인 이유: 리사이즈마다 통째로 갈아끼운다. 값으로 두면 move 대입이
@@ -60,6 +67,13 @@ struct Window {
     // 창마다 하나여야 한다. 한동안 전역이었는데, 그러면 창이 둘일 때 어느 창이
     // 바뀌었는지 구분할 수 없다.
     bool swapchainOutOfDate = false;
+
+    // surfaceFormat이 실제로 달라졌다. 지우는 것은 세운 쪽이 아니라 **처리한 쪽**이다.
+    //
+    // EnsureSwapchain이 세우고 main이 지운다. 여기서 pipeline을 다시 만들 수 없어서다 -
+    // Swapchain은 Pipeline을 모르고, 알면 "그릴 곳"이 "무엇으로 그리나"에 묶인다.
+    // 그래서 알리기만 하고 무엇을 할지는 호출자가 정한다.
+    bool surfaceFormatChanged = false;
 
     // Surface 파괴가 instance level이라 instance가 필요하다.
     const VulkanInstance* inst = nullptr;

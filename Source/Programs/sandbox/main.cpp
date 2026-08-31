@@ -596,6 +596,29 @@ int main() {
         // 카메라가 멈췄다가 튄다.
         if (begun == FrameResult::Skip) { continue; }
 
+        // Surface format이 바뀌었으면 fullscreen pipeline을 다시 만든다
+        // --------------------------------------------------------------------
+        //
+        // **왜 이 자리인가.** 플래그는 BeginFrame 안의 EnsureSwapchain이 세운다.
+        // 루프 맨 앞에서 보면 한 바퀴 늦어서, 바뀐 그 frame을 옛 pipeline으로 그린다.
+        //
+        // Scene pipeline 셋은 안 건드린다 - 그쪽 format은 우리 render target 것이라
+        // surface와 무관하다. 여기 걸리는 것은 fullscreen 하나뿐이다.
+        //
+        // **vkDeviceWaitIdle이 필요하다.** BeginFrame은 이 frame의 fence만 기다렸고,
+        // 다른 frame의 cmd가 아직 실행 중일 수 있다. 그 cmd가 지금 지우려는 pipeline을
+        // bind해 뒀다 - 실행 중인 command buffer가 참조하는 pipeline은 못 지운다.
+        if (window.surfaceFormatChanged) {
+            dev.table.vkDeviceWaitIdle(dev.handle);
+            DestroyPipeline(dev, &fullscreen);
+            if (!CreateFullscreenPipeline(dev, window.surfaceFormat.format,
+                                          descriptors.setLayout, &fullscreen)) {
+                break;
+            }
+            // 세운 쪽이 아니라 처리한 쪽이 지운다.
+            window.surfaceFormatChanged = false;
+        }
+
         // 이번 frame에 그릴 것을 여기서 만든다
         // --------------------------------------------------------------------
         //

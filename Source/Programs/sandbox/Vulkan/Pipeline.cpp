@@ -361,12 +361,20 @@ bool CreateFullscreenPipeline(const VulkanDevice& dev,
     return true;
 }
 
+void DestroyPipeline(const VulkanDevice& dev, Pipeline* pipeline) noexcept {
+    if (pipeline->handle != VK_NULL_HANDLE) {
+        dev.table.vkDestroyPipeline(dev.handle, pipeline->handle, nullptr);
+    }
+    if (pipeline->layout != VK_NULL_HANDLE) {
+        dev.table.vkDestroyPipelineLayout(dev.handle, pipeline->layout, nullptr);
+    }
+    // dev를 지우지 않는다 - 다시 만들 때 Create*가 어차피 덮어쓰고, 여기서 비우면
+    // 재생성이 실패했을 때 소멸자가 아무것도 못 지운다.
+    pipeline->handle = VK_NULL_HANDLE;
+    pipeline->layout = VK_NULL_HANDLE;
+}
+
 Pipeline::~Pipeline() {
     if (dev == nullptr) { return; }
-    if (handle != VK_NULL_HANDLE) {
-        dev->table.vkDestroyPipeline(dev->handle, handle, nullptr);
-    }
-    if (layout != VK_NULL_HANDLE) {
-        dev->table.vkDestroyPipelineLayout(dev->handle, layout, nullptr);
-    }
+    DestroyPipeline(*dev, this);
 }

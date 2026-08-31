@@ -82,6 +82,17 @@ struct Pipeline {
     Pipeline& operator=(const Pipeline&) = delete;
 };
 
+// Effect: pipeline과 layout을 지우고 빈 상태로 되돌린다. 소멸자가 이걸 부른다.
+//
+// 소멸자만으로 부족한 경우가 실제로 하나 있다 - **소유자를 살려둔 채 다시 만드는
+// 것**이다. Surface format이 바뀌면 fullscreen pipeline이 옛 format을 박은 채
+// 남으므로 main이 그 자리에서 지우고 다시 만든다. `DestroyImage`와 같은 모양이다.
+//
+// Contract: 호출 전에 이 pipeline을 참조하는 command buffer가 전부 끝나 있어야 한다.
+//           frames-in-flight가 둘이라 **다른 frame의 cmd가 아직 실행 중일 수 있다** -
+//           그래서 호출자가 vkDeviceWaitIdle을 먼저 부른다.
+void DestroyPipeline(const VulkanDevice& dev, Pipeline* pipeline) noexcept;
+
 // Shader에 매 frame 넘기는 값. Command buffer에 값이 그대로 실려 가므로 pool도
 // set도 갱신도 수명 관리도 없다. 스펙이 최소 128바이트를 보장한다.
 //

@@ -225,6 +225,23 @@ bool EnsureSwapchain(const VulkanDevice& dev, Window* window) noexcept {
 
     dev.table.vkDeviceWaitIdle(dev.handle);
 
+    // Surface에 format을 다시 묻는다 - 결과가 고정이라는 보장이 없다(Window.h).
+    //
+    // 여기가 그 재조회의 자리인 이유: format이 바뀌는 사건과 swapchain을 다시 만드는
+    // 사건이 같은 것이다. 창이 다른 모니터로 가면 둘 다 일어난다.
+    //
+    // 실패는 무시한다 - 이전 format으로 계속 가는 것이 그릴 곳이 없어지는 것보다 낫다.
+    const VkSurfaceFormatKHR previous = window->surfaceFormat;
+    if (SelectSurfaceFormat(*window->inst, dev.gpu, window)
+        && (window->surfaceFormat.format != previous.format
+            || window->surfaceFormat.colorSpace != previous.colorSpace)) {
+        // 세우기만 한다. 지우는 것은 처리한 쪽(main)이다.
+        window->surfaceFormatChanged = true;
+        LOG("[vk] surface format changed: %d -> %d\n",
+            static_cast<int>(previous.format),
+            static_cast<int>(window->surfaceFormat.format));
+    }
+
     // 이전 것을 oldSwapchain으로 넘겨 retire시키고, 새것을 만든 뒤에 놓는다.
     // 스펙: 생성이 실패해도 retire는 일어난다 - 그래서 실패해도 이전 것은 버려야 한다.
     const VkSwapchainKHR retiring =
