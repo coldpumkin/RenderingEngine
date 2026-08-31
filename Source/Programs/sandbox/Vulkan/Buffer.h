@@ -72,8 +72,13 @@ bool CreateBuffer(const VulkanDevice& dev,
 // CPU가 쓸 수 있는 임시 buffer에 넣고 GPU에게 복사를 시킨다.
 //
 // Effect: 복사가 끝날 때까지 blocking한다. 초기화 경로라 기다려도 된다.
-bool CreateVertexBuffer(const VulkanDevice& dev,
-                        const Commands& commands,
-                        const void* data,
-                        VkDeviceSize size,
-                        Buffer* out) noexcept;
+//
+// usage를 인자로 받는다. 한동안 VERTEX_BUFFER_BIT을 안에 박아두고 이름도
+// CreateVertexBuffer였는데, index buffer가 생기면서 갈렸다 - staging 경유 upload는
+// 둘이 완전히 같고 usage 한 값만 다르다. TRANSFER_DST_BIT은 안에서 더한다.
+bool CreateDeviceLocalBuffer(const VulkanDevice& dev,
+                             const Commands& commands,
+                             const void* data,
+                             VkDeviceSize size,
+                             VkBufferUsageFlags usage,
+                             Buffer* out) noexcept;

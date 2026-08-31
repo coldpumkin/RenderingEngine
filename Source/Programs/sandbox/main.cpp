@@ -23,6 +23,9 @@
 
 #include <GLFW/glfw3.h>
 
+#include <cstring>    // memcpy
+#include <iterator>   // std::size
+
 // 필요한 것만 하나씩 include한다. <glm/ext.hpp>는 벤더링할 때 뺐다 (VERSION.md).
 #include <glm/ext/matrix_clip_space.hpp>   // perspective
 #include <glm/ext/matrix_transform.hpp>    // rotate · lookAt
@@ -49,11 +52,12 @@
 //   [Scene Pass]  창을 모른다
 //     barrier x2 (우리 color·depth)
 //     +- BeginRendering --- attachment = draw.color / draw.depth
-//     |    BindPipeline        format이 attachment와 같아야 한다
 //     |    BindVertexBuffers   layout이 pipeline과 같아야 한다
-//     |    Draw x2             면으로
-//     |    BindPipeline        선으로 바꾼다 - 상태 전환이다
-//     |    Draw
+//     |    BindIndexBuffer     UINT16
+//     |    for item:
+//     |      BindPipeline      **바뀔 때만.** 물체 5개에 bind 3번
+//     |      PushConstants     mvp + alpha
+//     |      DrawIndexed
 //     +- EndRendering
 //
 //   [Present Pass]  draw를 읽기만 한다
@@ -69,21 +73,37 @@
 // 동기화(fence · semaphore · acquire · present)는 하나도 안 들어온다. 그건 Frame.cpp에
 // 있고, 기록과 동기화는 서로 모르는 채로 돌아간다.
 
+// 한 번의 draw에 필요한 것 전부
+// ============================================================================
+//
+// **물체가 아니다.** 어떤 움직임에서 나온 행렬인지, 어느 물체의 index인지는 여기
+// 안 남는다. 물체마다 따로 적혀 있던 코드를 배열 하나로 fold하면서 실제로 무엇이
+// 달랐는지가 그대로 필드가 됐다 - 넷뿐이었다.
+//
+// pipeline이 값이 아니라 포인터인 이유: 같은 pipeline을 여러 item이 가리키고, loop가
+// **바뀔 때만** bind한다. 지금 물체 다섯에 bind가 셋이다.
+struct DrawItem {
+    const Pipeline* pipeline = nullptr;
+    PushConstants push{};        // mvp + alpha. 둘 다 물체마다 정해진다
+    uint32_t firstIndex = 0;
+    uint32_t indexCount = 0;
+};
+
 // Scene Pass
 //
-// Input:  cmd, draw, pipeline 둘, vertex buffer
+// Input:  cmd, draw, vertex/index buffer, 그릴 것 목록
 // Effect: draw.color / draw.depth에 그리는 명령이 cmd에 append된다
 //
 // Swapchain이 인자에 없다 - 창이 없어도 성립한다.
 //
-// pipeline이 둘이 되면서 **이 층에 처음으로 고를 것이 생겼다.** 어느 물체를 어느
-// pipeline으로 그릴지는 여기서 정한다 - 위에서는 둘을 만들어 넘기기만 한다.
+// **카메라도 시간도 안 받는다.** 전에는 여기서 glfwGetTime과 lookAt/perspective를
+// 직접 불렀는데, 그건 장면의 상태지 기록의 일이 아니다. 지금 이 함수가 아는 것은
+// "이 행렬로 이 index 범위를 이 pipeline으로 그려라"뿐이다.
 static void RecordScenePass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
                             const RenderTargets& draw,
-                            const Pipeline& pipeline,
-                            const Pipeline& wireframe,
-                            const Pipeline& translucent,
-                            const Buffer& vertexBuffer) noexcept {
+                            const Buffer& vertexBuffer,
+                            const Buffer& indexBuffer,
+                            const DrawItem* items, uint32_t itemCount) noexcept {
     const VkExtent2D extent = draw.extent;   // **창 크기가 아니다.** Config.h가 정한다
     // oldLayout이 UNDEFINED인 이유: 이전 내용을 안 쓴다(loadOp=CLEAR로 덮는다).
     // 보존을 요구하면 driver가 실제로 복사를 한다.
@@ -132,12 +152,23 @@ static void RecordScenePass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
 
     vk.vkCmdBeginRendering(cmd, &rendering);
 
+    // 그릴 것이 없으면 clear만 하고 나간다. viewport를 items[0]에서 얻으므로
+    // 여기서 걸러야 한다.
+    if (itemCount == 0) {
+        vk.vkCmdEndRendering(cmd);
+        return;
+    }
+
     // Viewport/scissor를 dynamic state로 둔 덕에 창 크기가 바뀌어도 pipeline을 다시
     // 만들 필요가 없다.
     //
     // 부호를 여기서 안 정한다. pipeline이 든 값을 그대로 넘기므로 그쪽의 frontFace와
     // 어긋날 수가 없다 (Pipeline.h). 여기는 y-up이라 뒤집혀 나온다.
-    const VkViewport viewport = MakeViewport(extent, pipeline.viewportY);
+    //
+    // items[0]에서 얻는다 - scene pipeline이 전부 같은 y 규약을 쓴다는 전제다.
+    // 규약이 갈리는 pipeline이 섞이면 이 두 줄이 loop 안으로 들어가야 한다
+    // (dynamic state라 들어갈 수 있다).
+    const VkViewport viewport = MakeViewport(extent, items[0].pipeline->viewportY);
     vk.vkCmdSetViewport(cmd, 0, 1, &viewport);
 
     // 시저: 이 사각형 밖의 픽셀은 버린다. 지금은 화면 전체다.
@@ -145,103 +176,41 @@ static void RecordScenePass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
     scissor.extent = extent;
     vk.vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-    vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.handle);
-
-    const float t = static_cast<float>(glfwGetTime());
-
-    // 카메라. 오른손 좌표계라 -z 쪽을 본다.
-    //
-    // z=2에 둔 이유는 화면에 차는 크기를 전과 비슷하게 맞추려는 것뿐이다.
-    // fov 60도에서 거리 2면 보이는 반높이가 2*tan(30) = 1.155이고, 삼각형 반높이가
-    // 0.5라 화면의 43%를 차지한다 (전에는 NDC에 직접 적어서 50%였다).
-    const glm::mat4 view = glm::lookAt(glm::vec3(0.0f, 0.0f, 2.0f),    // eye
-                                       glm::vec3(0.0f, 0.0f, 0.0f),    // center
-                                       glm::vec3(0.0f, 1.0f, 0.0f));   // up
-
-    // 여기 extent는 draw.extent라 Config.h가 정한 고정값이다 - 리사이즈로 안 바뀌고
-    // 지금 aspect는 상수(1280/720)다. 그래도 매 frame 계산하는 이유는 값이 command에
-    // 실리기 때문이다: render 해상도가 런타임 값이 되어도 pipeline은 그대로다.
-    // 달라진 건 shader의 `x /= aspect` 한 줄이 하던 일을 이제 proj가 한다는 것이다.
-    const float aspect =
-        static_cast<float>(extent.width) / static_cast<float>(extent.height);
-
-    // **proj[1][1]에 -1을 곱하지 않는다.** 흔히 보이는 그 줄은 viewport height가
-    // 양수일 때 쓰는 것이고, 우리는 위에서 이미 음수로 줬다. 둘 다 하면 이중 반전이라
-    // 화면이 상하로 뒤집힌다.
-    //
-    // 깊이가 [0,1]로 나오는 것은 GLM_FORCE_DEPTH_ZERO_TO_ONE 덕이고, 그건 CMake의
-    // glm 타깃에 붙어 있어서 여기서 신경 쓸 것이 없다. 없으면 OpenGL 규약([-1,1])이
-    // 되어 가까운 절반이 잘려 나가는데 아무도 경고해주지 않는다.
-    //
-    // near를 0.1로 잡았다. 깊이 정밀도는 near 근처에 몰리므로 near를 키울수록
-    // 멀리서 z-fighting이 줄어든다 - 물체가 늘어나면 그때 만질 손잡이다.
-    const glm::mat4 proj =
-        glm::perspective(glm::radians(60.0f), aspect, 0.1f, 100.0f);
-
     // binding 0은 pipeline의 binding=0과 짝이다. offset은 buffer 안의 시작 바이트 -
     // 여러 mesh를 한 buffer에 담으면 여기가 달라진다.
     const VkDeviceSize offset = 0;
     vk.vkCmdBindVertexBuffers(cmd, 0, 1, &vertexBuffer.handle, &offset);
 
-    // 물체 셋을 일부러 접지 않고 평평하게 적는다. 무엇이 반복되고 무엇이 다른지를
-    // 눈으로 보려는 것이다 - 접는 것은 그 다음이다.
-
-    // 1. 초록. 원점에서 z축 회전 (축이 z라 깊이가 안 바뀐다)
-    const glm::mat4 model0 =
-        glm::rotate(glm::mat4(1.0f), t, glm::vec3(0.0f, 0.0f, 1.0f));
-    const PushConstants push0{proj * view * model0, 1.0f};
-    vk.vkCmdPushConstants(cmd, pipeline.layout,
-                          VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                          0, sizeof(push0), &push0);
-    vk.vkCmdDraw(cmd, 3, 1, 0, 0);
-
-    // 2. 빨강. 반대 방향으로 더 천천히
-    const glm::mat4 model1 =
-        glm::rotate(glm::mat4(1.0f), -t * 0.5f, glm::vec3(0.0f, 0.0f, 1.0f));
-    const PushConstants push1{proj * view * model1, 1.0f};
-    vk.vkCmdPushConstants(cmd, pipeline.layout,
-                          VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                          0, sizeof(push1), &push1);
-    vk.vkCmdDraw(cmd, 3, 1, 3, 0);
-
-    // 3. 초록을 한 번 더. **정점을 안 늘리고 물체만 늘었다** - vertex 범위는 1번과
-    //    같고 transform만 다르다. 그리고 이번엔 선으로 그린다.
+    // Index buffer는 slot이 없다. vertex는 binding 번호가 있는데 index는 하나뿐이라
+    // "지금 쓰는 index buffer"가 command buffer에 하나만 있다.
     //
-    // **bind가 draw 사이에서 일어난다.** 여기까지 오면 command buffer가 상태 기계라는
-    // 것이 코드에 보인다 - 이 줄 위의 draw 둘은 면으로, 아래는 선으로 나간다.
-    //
-    // 오버레이(같은 물체를 면+선으로 두 번)가 아닌 이유: 깊이가 같아서 compareOp=LESS에
-    // 선이 전부 걸린다. 그러려면 wireframe 쪽만 LESS_OR_EQUAL이어야 하고 그건 pipeline이
-    // 두 값에서 갈린다는 뜻이다 - 지금은 한 값(polygonMode)만 갈린 것을 보려 한다.
-    vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, wireframe.handle);
+    // UINT16은 vertex가 65536개 미만일 때 쓴다. 넘으면 UINT32로 바꿔야 하고,
+    // **그때 이 인자와 kIndices의 타입이 같이 움직여야 한다.**
+    vk.vkCmdBindIndexBuffer(cmd, indexBuffer.handle, 0, VK_INDEX_TYPE_UINT16);
 
-    const glm::mat4 model2 =
-        glm::scale(glm::translate(glm::mat4(1.0f), glm::vec3(0.9f, -0.6f, -0.5f)),
-                   glm::vec3(0.5f));
-    const PushConstants push2{proj * view * model2, 1.0f};
-    // layout이 pipeline.layout이 아니라 wireframe.layout이다. 둘은 정의가 같아서
-    // 호환되지만(값이 살아남는다) 지금 bind된 것을 적는 편이 읽기에 정직하다.
-    vk.vkCmdPushConstants(cmd, wireframe.layout,
-                          VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                          0, sizeof(push2), &push2);
-    vk.vkCmdDraw(cmd, 3, 1, 0, 0);
+    // 물체마다 따로 적혀 있던 코드를 fold한 결과다. 남은 것은 순서뿐이고,
+    // 순서는 호출자가 배열에 적은 그대로다 - 반투명이 마지막이어야 한다는 규칙도
+    // 이제 이 함수가 아니라 배열을 만드는 쪽이 진다.
+    const Pipeline* bound = nullptr;
+    for (uint32_t i = 0; i < itemCount; ++i) {
+        const DrawItem& item = items[i];
 
-    // 4. 반투명 파랑. **마지막에 그리는 것이 이 물체의 정확성 조건이다.**
-    //
-    // depth write를 껐으므로 이 물체는 자기 깊이를 안 남긴다. 그래서 뒤에 무엇을
-    // 그리든 이것에 가려지지 않는다 - 순서를 지키는 일이 depth에서 기록 쪽으로
-    // 넘어왔다. 지금은 반투명이 하나뿐이라 "맨 뒤"로 충분하지만, 둘이 되는 순간
-    // 뒤에서 앞으로 정렬해야 한다.
-    //
-    // depth test는 살아 있다. z=0.5라 앞의 셋보다 카메라에 가까워서 다 통과한다.
-    vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, translucent.handle);
+        // **바뀔 때만 bind한다.** 같은 pipeline이 이어지면 명령이 안 나간다.
+        if (item.pipeline != bound) {
+            vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                 item.pipeline->handle);
+            bound = item.pipeline;
+        }
 
-    // 안 움직인다. Transform이 아무것도 아닐 수도 있다는 것이 여기서 보인다.
-    const PushConstants push3{proj * view, 0.5f};
-    vk.vkCmdPushConstants(cmd, translucent.layout,
-                          VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                          0, sizeof(push3), &push3);
-    vk.vkCmdDraw(cmd, 3, 1, 6, 0);
+        vk.vkCmdPushConstants(cmd, item.pipeline->layout,
+                              VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                              0, sizeof(item.push), &item.push);
+
+        // vkCmdDraw와 인자가 다르다. firstIndex는 **index buffer 안의 위치**이고,
+        // vertexOffset(0)은 그 index에 더해지는 값이다 - mesh마다 vertex를 0부터
+        // 세고 싶을 때 쓴다. 지금은 index에 절대 번호를 적어서 0이다.
+        vk.vkCmdDrawIndexed(cmd, item.indexCount, 1, item.firstIndex, 0, 0);
+    }
 
     vk.vkCmdEndRendering(cmd);
 
@@ -331,10 +300,9 @@ static void RecordPresentPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
 bool RecordFrame(const VolkDeviceTable& vk,
                  VkCommandBuffer cmd,
                  const FrameTarget& target,
-                 const Pipeline& pipeline,
-                 const Pipeline& wireframe,
-                 const Pipeline& translucent,
                  const Buffer& vertexBuffer,
+                 const Buffer& indexBuffer,
+                 const DrawItem* items, uint32_t itemCount,
                  const Pipeline& fullscreen) noexcept {
     // Pool에 RESET_COMMAND_BUFFER_BIT을 줬기에 buffer 하나만 되감을 수 있다.
     if (vk.vkResetCommandBuffer(cmd, 0) != VK_SUCCESS) {
@@ -350,8 +318,7 @@ bool RecordFrame(const VolkDeviceTable& vk,
         return false;
     }
 
-    RecordScenePass(vk, cmd, *target.draw, pipeline, wireframe, translucent,
-                    vertexBuffer);
+    RecordScenePass(vk, cmd, *target.draw, vertexBuffer, indexBuffer, items, itemCount);
     RecordPresentPass(vk, cmd, *target.draw, *target.present,
                       target.presentExtent, fullscreen);
 
@@ -381,7 +348,8 @@ int main() {
     Pipeline       wireframe;     // 같은 정점을 선으로. pipeline이 갈리는 첫 사례
     Pipeline       translucent;   // blend 켬 + depth write 끔
     Pipeline       fullscreen;
-    Buffer         vertexBuffer;   // 파괴: 첫 번째
+    Buffer         vertexBuffer;
+    Buffer         indexBuffer;    // 파괴: 첫 번째
 
     // 채우기 - 의존 순서로. 조기 return이 아무것도 안 샌다.
     // ========================================================================
@@ -453,7 +421,39 @@ int main() {
         {{-0.2f, -0.4f,  0.5f}, {0.2f, 0.3f, 0.95f}},
         {{ 0.8f,  0.1f,  0.5f}, {0.2f, 0.3f, 0.95f}},
     };
-    if (!CreateVertexBuffer(dev, commands, kTriangles, sizeof(kTriangles), &vertexBuffer)) {
+    // Quad. **정점 4개로 삼각형 2개를 그린다** - index buffer가 처음으로 값을 하는
+    // 자리다. 정점 둘(9, 11)이 두 번씩 쓰인다.
+    // 위 셋과 같은 순서로 적는다(y-up 기준 CCW).
+    constexpr Vertex kQuad[] = {
+        {{-1.4f,  0.45f, -0.8f}, {0.95f, 0.75f, 0.15f}},   // 9
+        {{-1.4f, -0.45f, -0.8f}, {0.95f, 0.75f, 0.15f}},   // 10
+        {{-0.5f, -0.45f, -0.8f}, {0.95f, 0.75f, 0.15f}},   // 11
+        {{-0.5f,  0.45f, -0.8f}, {0.95f, 0.75f, 0.15f}},   // 12
+    };
+
+    Vertex vertices[std::size(kTriangles) + std::size(kQuad)]{};
+    std::memcpy(vertices, kTriangles, sizeof(kTriangles));
+    std::memcpy(vertices + std::size(kTriangles), kQuad, sizeof(kQuad));
+
+    // Index buffer. 삼각형 셋은 정점을 그대로 한 번씩 가리키고(재사용 없음),
+    // quad만 9와 11을 두 번 가리킨다.
+    //
+    // **타입이 vkCmdBindIndexBuffer의 VK_INDEX_TYPE_UINT16과 짝이다.** 어긋나면
+    // 컴파일도 실행도 되는데 엉뚱한 정점이 나온다 - 검증 레이어도 못 잡는다.
+    constexpr uint16_t kIndices[] = {
+        0, 1, 2,          // 초록 삼각형
+        3, 4, 5,          // 빨강 삼각형
+        6, 7, 8,          // 파랑 삼각형 (반투명)
+        9, 10, 11,        // quad 앞쪽 절반
+        11, 12, 9,        // quad 뒤쪽 절반 - 두 정점을 다시 쓴다
+    };
+
+    if (!CreateDeviceLocalBuffer(dev, commands, vertices, sizeof(vertices),
+                                 VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &vertexBuffer)) {
+        return 1;
+    }
+    if (!CreateDeviceLocalBuffer(dev, commands, kIndices, sizeof(kIndices),
+                                 VK_BUFFER_USAGE_INDEX_BUFFER_BIT, &indexBuffer)) {
         return 1;
     }
 
@@ -484,10 +484,62 @@ int main() {
         if (begun == FrameResult::Fatal) { break; }
         if (begun == FrameResult::Skip) { continue; }
 
+        // 이번 frame에 그릴 것을 여기서 만든다
+        // --------------------------------------------------------------------
+        //
+        // 전에는 이 계산이 RecordScenePass 안에 있었다. 시간도 카메라도 물체도
+        // 장면의 상태지 기록의 일이 아니라 위로 올렸다. 기록 쪽으로 내려가는 것은
+        // DrawItem 배열 하나뿐이고, 그 안에는 Transform도 Geometry도 안 남는다 -
+        // 카메라와 곱해진 행렬 하나, index 범위, pipeline이 전부다.
+        const float t = static_cast<float>(glfwGetTime());
+
+        // aspect는 창이 아니라 render target 크기에서 나온다 (Config.h가 정한 값).
+        const VkExtent2D sceneExtent = target.draw->extent;
+        const float aspect = static_cast<float>(sceneExtent.width)
+                           / static_cast<float>(sceneExtent.height);
+
+        // 카메라. 오른손 좌표계라 -z 쪽을 본다. z=2에 둔 이유는 화면에 차는 크기를
+        // 맞추려는 것뿐이다.
+        //
+        // proj[1][1]에 -1을 곱하지 않는다 - viewport height가 이미 음수다.
+        // 깊이가 [0,1]로 나오는 것은 GLM_FORCE_DEPTH_ZERO_TO_ONE 덕이고 CMake의 glm
+        // 타깃에 붙어 있다. near를 0.1로 잡았다 (깊이 정밀도는 near 근처에 몰린다).
+        const glm::mat4 view = glm::lookAt(glm::vec3(0.0f, 0.0f, 2.0f),
+                                           glm::vec3(0.0f, 0.0f, 0.0f),
+                                           glm::vec3(0.0f, 1.0f, 0.0f));
+        const glm::mat4 proj =
+            glm::perspective(glm::radians(60.0f), aspect, 0.1f, 100.0f);
+        const glm::mat4 camera = proj * view;
+
+        // **순서가 규칙이다.** 같은 pipeline끼리 붙어 있으면 bind가 줄고, 반투명은
+        // 맨 뒤여야 한다(depth write를 껐으므로 depth가 순서를 안 지켜준다).
+        // 지금은 물체 5개에 bind가 3번 나간다.
+        const glm::vec3 kZAxis{0.0f, 0.0f, 1.0f};
+        const DrawItem items[] = {
+            // 초록. 원점에서 z축 회전 (축이 z라 깊이가 안 바뀐다)
+            {&pipeline,   {camera * glm::rotate(glm::mat4(1.0f), t, kZAxis), 1.0f}, 0, 3},
+
+            // 빨강. 반대 방향으로 더 천천히
+            {&pipeline,   {camera * glm::rotate(glm::mat4(1.0f), -t * 0.5f, kZAxis), 1.0f}, 3, 3},
+
+            // Quad. 안 움직인다 - Transform이 아무것도 아닐 수도 있다
+            {&pipeline,   {camera, 1.0f}, 9, 6},
+
+            // 초록을 한 번 더, 이번엔 선으로. **index 범위가 첫째와 같다** -
+            // 정점을 안 늘리고 물체만 늘었다
+            {&wireframe,  {camera * glm::scale(
+                               glm::translate(glm::mat4(1.0f),
+                                              glm::vec3(0.9f, -0.6f, -0.5f)),
+                               glm::vec3(0.5f)), 1.0f}, 0, 3},
+
+            // 반투명 파랑. 마지막이어야 한다
+            {&translucent, {camera, 0.5f}, 6, 3},
+        };
+
         // 아래 셋은 continue가 아니라 break다. acquire까지 갔는데 제출을 안 하면
         // 신호된 세마포어와 리셋된 펜스를 기다릴 사람이 없어진다.
-        if (!RecordFrame(dev.table, frame.cmd, target, pipeline, wireframe,
-                         translucent, vertexBuffer, fullscreen)) {
+        if (!RecordFrame(dev.table, frame.cmd, target, vertexBuffer, indexBuffer,
+                         items, static_cast<uint32_t>(std::size(items)), fullscreen)) {
             break;
         }
 

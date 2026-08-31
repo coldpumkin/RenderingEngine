@@ -45,11 +45,12 @@ Buffer::~Buffer() {
     vmaDestroyBuffer(dev->allocator, handle, allocation);
 }
 
-bool CreateVertexBuffer(const VulkanDevice& dev,
-                        const Commands& commands,
-                        const void* data,
-                        VkDeviceSize size,
-                        Buffer* out) noexcept {
+bool CreateDeviceLocalBuffer(const VulkanDevice& dev,
+                             const Commands& commands,
+                             const void* data,
+                             VkDeviceSize size,
+                             VkBufferUsageFlags usage,
+                             Buffer* out) noexcept {
     // Staging: CPU가 쓸 수 있는 임시 buffer. 지역 변수라 어느 경로로 나가든
     // ~Buffer가 정리한다.
     //
@@ -76,8 +77,7 @@ bool CreateVertexBuffer(const VulkanDevice& dev,
     // usage flag는 여전히 우리가 말한다 - VMA가 대신하는 것은 "어느 메모리에 놓을까"이지
     // "무엇에 쓸 buffer인가"가 아니다.
     if (!CreateBuffer(dev, size,
-                      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
-                          | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                      usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                       VMA_MEMORY_USAGE_AUTO,
                       0,
                       out)) {
@@ -106,7 +106,7 @@ bool CreateVertexBuffer(const VulkanDevice& dev,
     //
     // 실패 경로가 command buffer를 반납해야 해서 lambda로 묶었다.
     const auto fail = [&](const char* what) {
-        LOG("[vk] %s failed (vertex upload)\n", what);
+        LOG("[vk] %s failed (device-local upload)\n", what);
         dev.table.vkFreeCommandBuffers(dev.handle, commands.graphics, 1, &cmd);
         return false;
     };
