@@ -38,15 +38,14 @@ struct Descriptors {
     Descriptors& operator=(const Descriptors&) = delete;
 };
 
-// Input:  각 fragment shader의 .spv 경로 - layout 모양이 거기서 나온다 - 와
-//         그 layout으로 뽑을 set의 개수. 개수를 따로 받는 이유는 pool이 재는 것이
-//         둘이고 근거도 달라서다(texture 개수 / frames-in-flight):
+// Input:  각 fragment shader의 .spv 경로(layout 모양이 거기서 나온다)와, 그
+//         layout으로 뽑을 set의 개수. **두 개수는 set이 가리킬 image의 개수다** -
+//         scene은 texture마다, present는 frame의 resolve마다.
 //
 //   maxSets          set의 개수         = sceneSets + presentSets
 //   descriptorCount  descriptor의 개수  = 가중합. set마다 binding 수가 다르다
 //
 // Contract: 여기 넘긴 shader가 그 layout으로 만들 pipeline의 shader와 같아야 한다.
-//           main이 같은 상수를 양쪽에 넘겨서 맞춘다.
 bool CreateDescriptors(const VulkanDevice& dev,
                        const char* sceneFragPath, uint32_t sceneSets,
                        const char* presentFragPath, uint32_t presentSets,

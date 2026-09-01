@@ -376,17 +376,25 @@ int main() {
     Texture        checker;
     Mesh           mesh;          // dies first
 
-    // Fill, in dependency order. An early return leaks nothing.
+    // Counted from the Texture declarations above. Deriving it wants them in an
+    // array, which turns a name into an index -- worth it once they are chosen by id.
+    constexpr uint32_t kTextureCount = 1;
+
+    // Ask, then build
     // ========================================================================
+    //
+    //   ask     instance and surface are inputs to the questions, not results
+    //   build   device -> commands and descriptors -> what needs them
+    //
+    // Command buffers divide by when they run, descriptor sets by what they name.
 
     // glfwInit is first only because windowSystem is declared first and so dies last.
     if (!InitWindowSystem(&windowSystem)) { return 1; }
     if (!CreateInstance(&inst)) { return 1; }
     if (!OpenWindow(inst, 1280, 720, "Lambda Engine", &window)) { return 1; }
 
-    // Pick the GPU and ask it everything at once. Two formats have to be kept in step:
-    //   formats               what our render targets use
-    //   window.surfaceFormat  what the swapchain uses; the present pass matches it
+    //   formats               our render targets
+    //   window.surfaceFormat  the swapchain's; the present pass matches it
     const PhysicalDeviceSelection selection = PickPhysicalDevice(inst, window.surface);
     if (selection.gpu == VK_NULL_HANDLE) { return 1; }
 
@@ -401,42 +409,19 @@ int main() {
     if (!CreateDevice(inst, selection, &dev)) { return 1; }
     if (!CreateCommands(dev, &commands)) { return 1; }
 
-    // One pair per pass. They live here because two places need the same path: the
-    // set layout is built from the fragment shader, and the pipeline is built from
-    // both. Passing different files to the two would build a layout for one shader
-    // and a pipeline for another.
+    // One pair per pass, here because the set layout comes from the fragment shader
+    // and the pipeline from both.
     constexpr const char* kSceneVert = "Shaders/triangle.vert.spv";
     constexpr const char* kSceneFrag = "Shaders/triangle.frag.spv";
     constexpr const char* kPresentVert = "Shaders/fullscreen.vert.spv";
     constexpr const char* kPresentFrag = "Shaders/fullscreen.frag.spv";
 
-    // Two set counts, counted from different things: one scene set per texture, one
-    // present set per frame. The pool never grows, so a missed increment fails
-    // allocation later.
-    //
-    // Contract: kTextureCount must equal the number of Texture declarations above.
-    // Deriving it needs the textures in an array, which would turn a name into an
-    // index -- worth it only once textures are chosen by id rather than by name.
-    constexpr uint32_t kTextureCount = 1;
+    // Both counts are how many images the sets will name: one per texture, one per frame.
     if (!CreateDescriptors(dev, kSceneFrag, kTextureCount,
                            kPresentFrag, kFramesInFlight, &descriptors)) { return 1; }
 
-    // The render resolution, decided here rather than inside CreateFrame: it is the
-    // other half of "what our render targets look like", and formats is already here.
-    constexpr VkExtent2D kRenderExtent{kRenderWidth, kRenderHeight};
-
-    // The present set is allocated per frame, which is where CreateDescriptors got
-    // its presentSets count. Doing it here keeps RenderTargets free of the present
-    // pass, the same rule the textures follow.
-    for (Frame& f : frames) {
-        if (!CreateFrame(dev, commands, formats, kRenderExtent, &f)) { return 1; }
-        f.resolveSet = AllocatePresentSet(descriptors, f.targets.resolve.view);
-        if (f.resolveSet == VK_NULL_HANDLE) { return 1; }
-    }
-
-    // Both passes, written out. viewportY and cullMode are here because they are the
-    // pass's conventions, not the shader's -- and the recording side reads the same
-    // viewportY back out of the pipeline.
+    // viewportY and cullMode are the pass's, not the shader's. A pipeline and a frame's
+    // targets never create each other but must agree on formats -- a pair per pass.
     GraphicsPipelineDesc sceneDesc;
     sceneDesc.vertPath = kSceneVert;
     sceneDesc.fragPath = kSceneFrag;
@@ -451,22 +436,27 @@ int main() {
     sceneDesc.blending = Blending::Opaque;
     if (!CreateGraphicsPipeline(dev, sceneDesc, &pipeline)) { return 1; }
 
-    // Outlives creation: the surface format can change and only that field moves.
-    //
-    //   no vertexInput  the shader builds three points from gl_VertexIndex
-    //   no depthFormat  depth means nothing for a screen-covering triangle
-    //   samples 1       the swapchain image is handed to us; MSAA ended at the resolve
-    //   viewportY Down  the shader makes its own uv, so frontFace comes out opposite
-    //
-    // Culling is on so a broken winding blacks the screen out rather than going unseen.
+    // Outlives creation: only colorFormat moves when the surface format changes.
+    // No vertex input, no depth, 1 sample -- MSAA ended at the resolve.
     GraphicsPipelineDesc presentDesc;
     presentDesc.vertPath = kPresentVert;
     presentDesc.fragPath = kPresentFrag;
     presentDesc.colorFormat = window.surfaceFormat.format;
     presentDesc.setLayout = descriptors.presentLayout;
-    presentDesc.viewportY = ViewportY::Down;
+    presentDesc.viewportY = ViewportY::Down;   // the shader makes its own uv
     presentDesc.cullMode = VK_CULL_MODE_BACK_BIT;
     if (!CreateGraphicsPipeline(dev, presentDesc, &fullscreen)) { return 1; }
+
+    // The other half of what a render target looks like; formats is the first.
+    constexpr VkExtent2D kRenderExtent{kRenderWidth, kRenderHeight};
+
+    // One present set per frame, allocated here so RenderTargets stays clear of the
+    // present pass. If the pool ever resets per frame, that field moves down here.
+    for (Frame& f : frames) {
+        if (!CreateFrame(dev, commands, formats, kRenderExtent, &f)) { return 1; }
+        f.resolveSet = AllocatePresentSet(descriptors, f.targets.resolve.view);
+        if (f.resolveSet == VK_NULL_HANDLE) { return 1; }
+    }
 
     // World space; CCW in y-up, so reversing the winding culls the face.
     // Flat in z=0, so all three share one normal (+z) and one tangent (+x, w=1).

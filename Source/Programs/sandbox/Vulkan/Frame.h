@@ -18,7 +18,6 @@
 // Recording happens between BeginFrame and SubmitFrame and appears nowhere in
 // this file: drawing and synchronization change for different reasons.
 
-#include "Config.h"
 #include "Vulkan/Commands.h"
 #include "Vulkan/RenderTargets.h"
 #include "Vulkan/Window.h"

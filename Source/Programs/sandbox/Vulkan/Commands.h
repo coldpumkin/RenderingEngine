@@ -1,6 +1,5 @@
 ﻿#pragma once
 
-#include "Config.h"
 #include "Vulkan/Device.h"
 
 // Command pool - queue family마다 하나
