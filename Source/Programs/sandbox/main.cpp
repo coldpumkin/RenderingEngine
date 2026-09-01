@@ -13,10 +13,10 @@
 
 #include "Config.h"
 #include "Vulkan/Barrier.h"
-#include "Vulkan/Buffer.h"
 #include "Vulkan/Commands.h"
 #include "Vulkan/Descriptors.h"
 #include "Vulkan/Frame.h"
+#include "Vulkan/Mesh.h"
 #include "Vulkan/Pipeline.h"
 #include "Vulkan/Texture.h"
 #include "Vulkan/Window.h"
@@ -97,16 +97,18 @@ struct DrawItem {
 
 // Scene pass
 //
-// Input:  cmd, draw, vertex/index buffer, items
+// Input:  cmd, draw, mesh, items
 // Effect: appends commands that draw into draw.color / draw.depth
 //
 // No swapchain, so this works without a window. No camera and no time either: those
 // are scene state, not recording. All this knows is "draw this index span with this
 // pipeline and this texture, using this matrix".
+//
+// One mesh for every item: the spans in items index into it. A second mesh means
+// another BindVertexBuffers, which is why the bind sits above the loop and not in it.
 static void RecordScenePass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
                             const RenderTargets& draw,
-                            const Buffer& vertexBuffer,
-                            const Buffer& indexBuffer,
+                            const Mesh& mesh,
                             const DrawItem* items, uint32_t itemCount) noexcept {
     const VkExtent2D extent = draw.extent;   // render resolution, not window size
 
@@ -195,11 +197,11 @@ static void RecordScenePass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
     // binding 0 matches the pipeline's binding 0. offset changes once several meshes
     // share one buffer.
     const VkDeviceSize offset = 0;
-    vk.vkCmdBindVertexBuffers(cmd, 0, 1, &vertexBuffer.handle, &offset);
+    vk.vkCmdBindVertexBuffers(cmd, 0, 1, &mesh.vertices.handle, &offset);
 
     // Index buffers have no slot number: a command buffer holds exactly one.
     // Contract: this type must match the element type of kIndices.
-    vk.vkCmdBindIndexBuffer(cmd, indexBuffer.handle, 0, VK_INDEX_TYPE_UINT16);
+    vk.vkCmdBindIndexBuffer(cmd, mesh.indices.handle, 0, mesh.indexType);
 
     // Order is whatever the caller wrote into the array. This layer does not sort.
     //
@@ -321,14 +323,13 @@ static void RecordPresentPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
                            VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 }
 
-// Input:  cmd, target, vertex/index buffer, items, fullscreen
+// Input:  cmd, target, mesh, items, fullscreen
 // Effect: resets cmd and records both passes
 // Output: false means cmd is invalid and must not be submitted
 bool RecordFrame(const VolkDeviceTable& vk,
                  VkCommandBuffer cmd,
                  const FrameTarget& target,
-                 const Buffer& vertexBuffer,
-                 const Buffer& indexBuffer,
+                 const Mesh& mesh,
                  const DrawItem* items, uint32_t itemCount,
                  const Pipeline& fullscreen) noexcept {
     // The pool has RESET_COMMAND_BUFFER_BIT, so one buffer can rewind on its own.
@@ -344,7 +345,7 @@ bool RecordFrame(const VolkDeviceTable& vk,
         return false;
     }
 
-    RecordScenePass(vk, cmd, *target.draw, vertexBuffer, indexBuffer,
+    RecordScenePass(vk, cmd, *target.draw, mesh,
                     items, itemCount);
     RecordPresentPass(vk, cmd, *target.draw, *target.present,
                       target.presentExtent, fullscreen);
@@ -373,8 +374,7 @@ int main() {
     Pipeline       pipeline;
     Pipeline       fullscreen;
     Texture        checker;
-    Buffer         vertexBuffer;
-    Buffer         indexBuffer;   // dies first
+    Mesh           mesh;          // dies first
 
     // Fill, in dependency order. An early return leaks nothing.
     // ========================================================================
@@ -448,12 +448,8 @@ int main() {
     static_assert(kGreenIndices.End() == std::size(kIndices),
                   "spans do not cover the index array");
 
-    if (!CreateDeviceLocalBuffer(dev, commands, vertices, sizeof(vertices),
-                                 VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &vertexBuffer)) {
-        return 1;
-    }
-    if (!CreateDeviceLocalBuffer(dev, commands, kIndices, sizeof(kIndices),
-                                 VK_BUFFER_USAGE_INDEX_BUFFER_BIT, &indexBuffer)) {
+    if (!CreateMesh(dev, commands, vertices, sizeof(vertices),
+                    kIndices, static_cast<uint32_t>(std::size(kIndices)), &mesh)) {
         return 1;
     }
 
@@ -610,7 +606,7 @@ int main() {
 
         // These break instead of continue. After the acquire, skipping the submit leaves
         // a signalled semaphore and a reset fence with nobody to wait on them.
-        if (!RecordFrame(dev.table, frame.cmd, target, vertexBuffer, indexBuffer,
+        if (!RecordFrame(dev.table, frame.cmd, target, mesh,
                          items, static_cast<uint32_t>(std::size(items)), fullscreen)) {
             break;
         }

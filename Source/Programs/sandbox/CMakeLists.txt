@@ -23,6 +23,7 @@ add_executable(sandbox
     Vulkan/Frame.h       Vulkan/Frame.cpp       # 프레임 자원(프레임마다) + 프레임 여닫기
     Vulkan/Pipeline.h    Vulkan/Pipeline.cpp
     Vulkan/Buffer.h      Vulkan/Buffer.cpp
+    Vulkan/Mesh.h        Vulkan/Mesh.cpp        # 한 draw가 늘 같이 bind하는 버퍼 둘
 
     main.cpp                # 한 프레임이 어떻게 도나 (런타임 경로)
 )
