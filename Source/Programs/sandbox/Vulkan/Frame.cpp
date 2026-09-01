@@ -5,7 +5,8 @@ bool CreateFrame(const VulkanDevice& dev, const Commands& commands,
                  RenderTargetFormats formats, Frame* out) noexcept {
     out->dev = &dev;
 
-    // PRIMARY: queue에 직접 제출할 수 있다. SECONDARY는 다른 buffer 안에서만 실행된다.
+    // PRIMARY can be submitted to a queue directly. SECONDARY only runs inside
+    // another buffer.
     VkCommandBufferAllocateInfo allocInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
     allocInfo.commandPool = commands.graphics;
     allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
@@ -22,7 +23,7 @@ bool CreateFrame(const VulkanDevice& dev, const Commands& commands,
         return false;
     }
 
-    // Signaled로 만든다 - 첫 frame엔 기다릴 이전 frame이 없다.
+    // Created signaled: the first frame has no previous submit to wait for.
     VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
     fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
     if (dev.table.vkCreateFence(dev.handle, &fenceInfo, nullptr, &out->inFlight) != VK_SUCCESS) {
@@ -30,7 +31,8 @@ bool CreateFrame(const VulkanDevice& dev, const Commands& commands,
         return false;
     }
 
-    // 창을 안 보고 만든다. Swapchain이 아직 없어도(최소화된 채로 실행) 성립한다.
+    // Built without looking at the window, so this works while minimized - there
+    // may be no swapchain yet.
     const VkExtent2D renderExtent{kRenderWidth, kRenderHeight};
     if (!CreateRenderTargets(dev, descriptors, renderExtent, formats, &out->targets)) {
         return false;
@@ -46,10 +48,10 @@ Frame::~Frame() {
     if (imageAvailable != VK_NULL_HANDLE) {
         dev->table.vkDestroySemaphore(dev->handle, imageAvailable, nullptr);
     }
-    // cmd는 따로 반납하지 않는다 - pool이 파괴될 때 같이 사라진다.
+    // cmd is not returned: the pool frees it.
 }
 
-// 여닫기 - 동기화만 있고 그리는 것은 하나도 없다
+// Opening and closing. Synchronization only - nothing here draws.
 
 FrameResult BeginFrame(const VulkanDevice& dev,
                        Window* window,
@@ -57,27 +59,29 @@ FrameResult BeginFrame(const VulkanDevice& dev,
                        FrameTarget* out) noexcept {
     *out = FrameTarget{};
 
-    // Skip이지 Fatal이 아니다. 창이 그릴 수 있는 크기인지는 루프가 이미 확인했지만
-    // 그 확인과 여기 사이에 창이 바뀔 수 있다(리사이즈 드래그 중). Fatal로 보면
-    // 리사이즈 도중에 앱이 죽는다.
+    // Skip, not Fatal. The loop already checked the window is drawable, but it
+    // can change between that check and here (mid resize-drag), and treating
+    // that as fatal kills the app while the user drags.
     //
-    // 대가: 크기가 0이 아닌데 생성이 계속 실패하면 여기서 돈다. 정상 경로가 아니라
-    // 재시도 횟수를 세는 복잡도는 아직 안 넣는다.
+    // The cost: if creation keeps failing at a non-zero size, this spins. Not a
+    // normal path, so no retry counter yet.
     if (!EnsureSwapchain(dev, window)) {
         return FrameResult::Skip;
     }
     Swapchain& swapchain = *window->swapchain;
 
-    // frames-in-flight의 값어치가 드러나는 자리다. 1이면 직전 frame을, 2면 두 frame
-    // 전 것을 기다린다. 실측(120Hz, 삼각형 하나)으로 여기 쓰는 시간은 0.4%뿐이었고
-    // frame 시간의 90%가 아래 acquire다 - GPU가 바빠져야 이 대기가 의미를 갖는다.
+    // This is where frames-in-flight earns its keep: at 1 we wait on the previous
+    // frame, at 2 on the one before that. Measured at 120Hz with one triangle it
+    // costs 0.4% of the frame while 90% goes to the acquire below - the wait only
+    // starts to matter once the GPU is busy.
     //
-    // 타임아웃이 UINT64_MAX인데도 반환값을 본다. 스펙상 여기 나올 수 있는 실패는
-    // DEVICE_LOST와 OOM이고, DEVICE_LOST면 이 fence는 영원히 signal되지 않는다.
+    // The return value matters even with an infinite timeout: the failures the
+    // spec allows here are DEVICE_LOST and OOM, and after DEVICE_LOST this fence
+    // is never signaled by anyone.
     const VkResult waited =
         dev.table.vkWaitForFences(dev.handle, 1, &frame.inFlight, VK_TRUE, UINT64_MAX);
     if (waited != VK_SUCCESS) {
-        LOG("[vk] vkWaitForFences failed (%d) - 디바이스를 잃었을 수 있다\n", waited);
+        LOG("[vk] vkWaitForFences failed (%d) - the device may be lost\n", waited);
         return FrameResult::Fatal;
     }
 
@@ -86,20 +90,20 @@ FrameResult BeginFrame(const VulkanDevice& dev,
         dev.handle, swapchain.handle, UINT64_MAX,
         frame.imageAvailable, VK_NULL_HANDLE, &imageIndex);
 
-    // SUBOPTIMAL은 성공이다 - image를 받았고 semaphore도 signal된다.
+    // SUBOPTIMAL counts as success: an image came back and the semaphore will signal.
     if (acquired == VK_ERROR_OUT_OF_DATE_KHR) {
         window->swapchainOutOfDate = true;
-        return FrameResult::Skip;   // 다음 frame 시작에 재생성된다
+        return FrameResult::Skip;   // rebuilt at the start of the next frame
     }
     if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR) {
-        // DEVICE_LOST · SURFACE_LOST · OOM은 다시 만들어도 안 고쳐진다. Skip을 주면
-        // 다음 순회에 똑같이 실패하며 무한히 돈다.
+        // DEVICE_LOST, SURFACE_LOST and OOM do not survive a rebuild. Returning
+        // Skip would fail identically next round, forever.
         LOG("[vk] vkAcquireNextImageKHR failed (%d)\n", acquired);
         return FrameResult::Fatal;
     }
 
-    // Fence는 여기서 reset하지 않는다 - reset의 짝은 submit이다(SubmitFrame 참고).
-    // draw는 acquire와 무관하다. acquire가 정하는 것은 내보낼 곳뿐이다.
+    // The fence is not reset here - reset pairs with submit (see SubmitFrame).
+    // draw is unrelated to acquire: acquire only decides where the result goes.
     out->draw = &frame.targets;
     out->present = &swapchain.images[imageIndex];
     out->presentExtent = swapchain.extent;
@@ -109,17 +113,15 @@ FrameResult BeginFrame(const VulkanDevice& dev,
 bool SubmitFrame(const VulkanDevice& dev,
                  const Frame& frame,
                  VkSemaphore signalWhenDone) noexcept {
-    // 대기 지점은 swapchain image를 처음 만지는 곳이다. Present pass가 swapchain에
-    // 직접 그리므로 COLOR_ATTACHMENT_OUTPUT이다. Scene pass는 우리 image에만 그리므로
-    // acquire를 안 기다려도 안전하다(겹쳐 돌 수 있지만 재보지 않았다 - FIFO에 frame
-    // 시간의 92%가 acquire 대기라 관측이 안 된다).
+    // Wait where the swapchain image is first touched. The present pass draws
+    // into it directly, so that is COLOR_ATTACHMENT_OUTPUT. The scene pass only
+    // touches our own images and can run before the acquire completes.
     //
-    // 이 값은 RecordPresentPass의 barrier srcStageMask와 겹쳐야 한다. 같을 필요는 없다 -
-    // sync validation으로 확인했다:
-    //   wait=BLIT,           barrier=BLIT|COPY   -> 0건
-    //   wait=BLIT|COLOR_OUT, barrier=BLIT        -> 0건
-    //   wait=BLIT,           barrier=COPY        -> 20건 (겹치는 게 없다)
-    // 원래 버그였던 barrier=TOP_OF_PIPE가 마지막 경우다.
+    // This has to overlap RecordPresentPass's barrier srcStageMask - overlap, not
+    // match. Checked with sync validation:
+    //   wait=BLIT,           barrier=BLIT|COPY   -> 0 reports
+    //   wait=BLIT|COLOR_OUT, barrier=BLIT        -> 0 reports
+    //   wait=BLIT,           barrier=COPY        -> 20 reports (no overlap)
     VkSemaphoreSubmitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
     wait.semaphore = frame.imageAvailable;
     wait.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -139,20 +141,22 @@ bool SubmitFrame(const VulkanDevice& dev,
     submit.signalSemaphoreInfoCount = 1;
     submit.pSignalSemaphoreInfos = &signal;
 
-    // Reset은 submit 바로 앞이다. Fence를 signal하는 것은 submit뿐이고 submit은
-    // unsignaled fence만 받는다. 그래서 reset과 submit 사이에 실패할 수 있는 것이 끼면
-    // 그 frame의 fence는 unsignaled로 남고 신호할 사람이 없어진다 - 다음 순회의
-    // vkWaitForFences(UINT64_MAX)가 영원히 걸린다.
+    // The reset sits immediately before the submit. Only a submit signals this
+    // fence, and a submit only accepts an unsignaled one, so anything that can
+    // fail in between leaves the fence unsignaled with nobody left to signal it -
+    // and next round's vkWaitForFences(UINT64_MAX) never returns.
     //
-    // Reset 실패도 본다. Signaled fence로 submit하는 것은 에러가 아니라 invalid usage라
-    // validation layer를 끄면 조용히 UB가 된다.
+    // The reset's result is checked too: submitting with a signaled fence is not
+    // an error but invalid usage, so it turns into silent UB without the
+    // validation layer.
     if (dev.table.vkResetFences(dev.handle, 1, &frame.inFlight) != VK_SUCCESS) {
         LOG("[vk] vkResetFences failed\n");
         return false;
     }
 
-    // 실패하면 못 되돌린다 - 일반 fence를 CPU에서 signal하는 API가 없다(timeline
-    // semaphore에만 있다). 어차피 OOM / DEVICE_LOST뿐이라 루프를 끝낸다.
+    // A failure here cannot be undone: there is no API to signal an ordinary
+    // fence from the CPU (only timeline semaphores have one). It is OOM or
+    // DEVICE_LOST anyway, so the loop ends.
     if (dev.table.vkQueueSubmit2(dev.queues.graphics, 1, &submit, frame.inFlight)
             != VK_SUCCESS) {
         LOG("[vk] vkQueueSubmit2 failed\n");
@@ -169,26 +173,26 @@ bool PresentFrame(const VulkanDevice& dev,
     VkPresentInfoKHR present{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
     present.waitSemaphoreCount = 1;
     present.pWaitSemaphores = &image.renderFinished;
-    // 배열이다 - 창이 여럿이면 한 번에 내보낸다. Present가 늘어나는 축이 창 개수라는
-    // 뜻이고 submit(queue 개수)과 다르다.
+    // Arrays, because several windows present at once. That is the axis present
+    // grows on, and it is not the one submit grows on.
     present.swapchainCount = 1;
     present.pSwapchains = &swapchainHandle;
     present.pImageIndices = &image.index;
 
     const VkResult presented = dev.table.vkQueuePresentKHR(dev.queues.present, &present);
 
-    // 어느 쪽이든 submit은 이미 됐고 fence는 signal된다. 갈리는 건 다시 만들면
-    // 고쳐지는가다. 회복 가능: 창 크기가 달라졌을 뿐이다.
+    // Either way the submit already happened and the fence will signal. What
+    // splits the cases is whether a rebuild fixes it. These are only a size change.
     if (presented == VK_ERROR_OUT_OF_DATE_KHR || presented == VK_SUBOPTIMAL_KHR) {
         window->swapchainOutOfDate = true;
         return true;
     }
 
-    // 회복 불가: DEVICE_LOST · SURFACE_LOST_KHR · OOM. 다시 만들어도 안 고쳐진다
-    // (SURFACE_LOST면 그 surface로는 생성 자체가 실패한다).
+    // Unrecoverable: DEVICE_LOST, SURFACE_LOST_KHR, OOM. A rebuild does not help
+    // (after SURFACE_LOST, creating against that surface fails outright).
     //
-    // 현재 정책: 이유를 말하고 끝낸다. Unreal은 SURFACE_LOST도 재생성으로 4번까지
-    // 시도하는데(DoCheckedSwapChainJob) 출하 엔진이라 어떻게든 살아남아야 해서다.
+    // Our policy is to say why and stop. Unreal retries even SURFACE_LOST up to
+    // four times (DoCheckedSwapChainJob) because a shipping engine has to survive.
     if (presented != VK_SUCCESS) {
         LOG("[vk] vkQueuePresentKHR failed (%d)\n", presented);
         return false;
