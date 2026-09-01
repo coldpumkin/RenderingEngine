@@ -55,16 +55,17 @@ static VkShaderModule LoadShader(const VulkanDevice& dev, const char* path) noex
 // CreateGraphicsPipeline once. A field is here because a shared constant would
 // be wrong for one of the two passes.
 //
-// The fields group by who decides them, and that grouping is what the
+// The fields group by where they come from, and that grouping is what the
 // Create*Pipeline signatures below expose:
 //
-//   the shader decides   vertPath . fragPath . vertexInput . pushConstants
-//                        viewportY . cullMode
-//   the target decides   colorFormat . depthFormat . samples
-//   the caller decides   polygonMode . blending
+//   the shader requires    vertPath . fragPath . vertexInput . pushConstants
+//                          viewportY . cullMode
+//   the caller chooses     polygonMode . blending
 //
-// setLayout is a fourth case: the shader decides its shape but Descriptors owns
-// the object, so it is passed through rather than decided anywhere here.
+// Two more are neither: colorFormat, depthFormat and samples are the three
+// fields of RenderTargetFormats, copied across one for one, and setLayout is
+// owned by Descriptors. Nothing here decides them - they are passed through so
+// that both sides of a baked-in contract read the same value.
 struct GraphicsPipelineDesc {
     const char* vertPath = nullptr;
     const char* fragPath = nullptr;

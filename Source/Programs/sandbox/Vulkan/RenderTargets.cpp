@@ -2,19 +2,13 @@
 
 #include "Config.h"
 
-#include <initializer_list>   // 소멸자의 for (Image* : {...})
+#include <initializer_list>   // the destructor's for (Image* : {...})
 
-// Image + memory + view를 한 번에.
+// Independent of the swapchain format - the present pass sits between the two.
+// HDR is the change that would make this R16G16B16A16_SFLOAT.
 //
-// 호출자가 둘(color, depth)이라 함수가 됐다. Texture가 오면 세 번째가 되는데 usage에
-// SAMPLED가 붙고 upload 경로가 따라오므로 그때 이 함수를 그대로 쓸 수 있는지 다시 본다.
-//
-// Contract: usage와 aspect가 서로 맞아야 하는데 컴파일러가 못 잡는다.
-// Swapchain format과 독립이다 - present pass가 매개한다. HDR로 갈 때 여기가
-// R16G16B16A16_SFLOAT가 되는 자리다.
-//
-// Header에 안 내놓는다. 공개돼 있으면 RenderTargetFormats를 우회해 직접 읽게 되고,
-// 실제로 그래서 "color는 직접 읽고 depth는 인자로 받는" 비대칭이 생겼었다.
+// Kept out of the header so nothing can read it directly and bypass
+// RenderTargetFormats.
 static constexpr VkFormat kRenderColorFormat = VK_FORMAT_R8G8B8A8_SRGB;
 
 RenderTargetFormats ChooseRenderTargetFormats(const VulkanInstance& inst,
@@ -22,10 +16,9 @@ RenderTargetFormats ChooseRenderTargetFormats(const VulkanInstance& inst,
     RenderTargetFormats formats;
     formats.color = kRenderColorFormat;
 
-    // 정밀도 높은 순서. Stencil 없는 것을 먼저 보는 이유는 우리가 stencil을 안 쓰기
-    // 때문이다 - 붙어 있으면 메모리를 더 쓰고 barrier/view의 aspectMask에 STENCIL까지
-    // 얹어야 해서 실수할 자리가 는다. optimalTilingFeatures를 보는 이유는 render target을
-    // linear로 두지 않기 때문이다.
+    // Most precise first, and stencil-free ahead of stencil since we never use
+    // stencil: carrying it costs memory and puts another aspectMask on every
+    // barrier and view. optimalTiling because render targets are never linear.
     for (const VkFormat candidate : {VK_FORMAT_D32_SFLOAT,
                                      VK_FORMAT_X8_D24_UNORM_PACK32,
                                      VK_FORMAT_D32_SFLOAT_S8_UINT,
@@ -39,18 +32,18 @@ RenderTargetFormats ChooseRenderTargetFormats(const VulkanInstance& inst,
         }
     }
 
-    // Sample 수는 color와 depth가 같아야 한다 - pipeline의 rasterizationSamples 하나가
-    // 그 pass의 모든 attachment에 적용되기 때문이다. 그래서 교집합을 본다.
+    // Color and depth must land on the same count: one rasterizationSamples
+    // covers every attachment in the pass. Hence the intersection.
     //
-    // framebuffer~SampleCounts는 format이 아니라 device의 한도다. 그래서 위 반복문과
-    // 달리 format별로 다시 묻지 않는다.
+    // These are device limits, not format properties, so unlike the loop above
+    // there is nothing to ask per format.
     VkPhysicalDeviceProperties props{};
     inst.table.vkGetPhysicalDeviceProperties(gpu, &props);
     const VkSampleCountFlags supported = props.limits.framebufferColorSampleCounts
                                          & props.limits.framebufferDepthSampleCounts;
 
-    // 높은 것부터. VkSampleCountFlagBits는 비트값이 곧 sample 수라(4_BIT == 0x4)
-    // 요청값과 그대로 비교된다 - 표를 따로 두지 않는 이유다.
+    // Highest first. A VkSampleCountFlagBits is its own sample count (4_BIT == 0x4),
+    // so it compares against the request directly and needs no lookup table.
     for (const VkSampleCountFlagBits candidate : {VK_SAMPLE_COUNT_8_BIT,
                                                   VK_SAMPLE_COUNT_4_BIT,
                                                   VK_SAMPLE_COUNT_2_BIT}) {
@@ -66,50 +59,46 @@ RenderTargetFormats ChooseRenderTargetFormats(const VulkanInstance& inst,
     return formats;
 }
 
+// The three images differ only in sample count and usage, and those two lines
+// are where each one's job is written down.
 bool CreateRenderTargets(const VulkanDevice& dev, const Descriptors& descriptors,
                          VkExtent2D extent, RenderTargetFormats formats,
                          RenderTargets* out) noexcept {
     out->dev = &dev;
     out->extent = extent;
 
-    // 그리는 곳이다. SAMPLED가 없는 것이 resolve와 갈리는 자리다 - multisample image는
-    // 우리 셰이더가 읽을 수 없고, 읽으라고 시키면 여기서 usage가 모자란다.
+    // Drawn into. No SAMPLED: our shaders cannot read a multisample image, and
+    // asking them to would run out of usage right here.
     if (!CreateImage2D(dev, extent, formats.color, formats.samples,
                        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
                        VK_IMAGE_ASPECT_COLOR_BIT, &out->color)) {
         return false;
     }
 
-    // 내보내는 곳이다. SAMPLED가 붙는 것이 off-screen의 표식이고, COLOR_ATTACHMENT는
-    // resolve 대상이라 필요하다 - 우리가 여기 직접 그리지는 않는다.
+    // Read by the present pass, which is what SAMPLED means here.
+    // COLOR_ATTACHMENT is for being a resolve target - we never draw into it.
     if (!CreateImage2D(dev, extent, formats.color, VK_SAMPLE_COUNT_1_BIT,
                        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                        VK_IMAGE_ASPECT_COLOR_BIT, &out->resolve)) {
         return false;
     }
 
-    // Depth는 아무 데도 안 나간다. 이 frame 안에서만 쓰이고 버려진다.
-    //
-    // Sample 수는 color를 따라간다. resolve를 안 하는데도 그런 이유는 pipeline의
-    // rasterizationSamples가 pass 전체에 하나뿐이기 때문이다 - depth만 1로 두면
-    // 그리는 순간 어긋난다.
+    // Goes nowhere: used within the frame and dropped. The sample count still
+    // follows color, because one rasterizationSamples covers the whole pass.
     if (!CreateImage2D(dev, extent, formats.depth, formats.samples,
                        VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
                        VK_IMAGE_ASPECT_DEPTH_BIT, &out->depth)) {
         return false;
     }
 
-    // Image가 생긴 뒤에야 그것을 가리키는 set을 만들 수 있다.
-    //
-    // present용이다 - 이 set을 읽는 것은 fullscreen.frag이고 sampler2D가 하나다.
-    // color가 아니라 resolve를 준다. color를 주면 여기서는 통과하고 draw에서 잡힌다.
+    // resolve, not color. Handing over color passes here and fails at the draw.
     out->resolveSet = AllocatePresentSet(descriptors, out->resolve.view);
     if (out->resolveSet == VK_NULL_HANDLE) { return false; }
     return true;
 }
 
-// 반쯤 만들어진 상태도 견딘다 - vkDestroy~는 VK_NULL_HANDLE에 no-op이다(스펙 보장).
-// 그래서 CreateRenderTargets에 되돌리기 코드가 없다.
+// Survives a half-built state: vkDestroy* is a no-op on VK_NULL_HANDLE by spec,
+// which is why CreateRenderTargets has no unwind path.
 RenderTargets::~RenderTargets() {
     if (dev == nullptr) { return; }
     const VulkanDevice& d = *dev;

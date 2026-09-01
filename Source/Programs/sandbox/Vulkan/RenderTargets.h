@@ -1,47 +1,38 @@
 ﻿#pragma once
 
-// Render targets - 우리가 그리는 곳. swapchain과 무관하다.
+// Render targets - where we draw. Nothing here touches the swapchain.
 // ============================================================================
 //
-// Surface와 swapchain은 optional extension이라 창 없이도 렌더링이 성립한다
-// (off-screen rendering). 그래서 render target이 swapchain image를 참조할 수 없다.
-// 방향은 반대다: 여기에 그린 다음 결과를 swapchain으로 내보낸다.
+// The scene pass draws here; the present pass copies the result out. So the
+// direction is one way, and rendering works with no window at all.
 //
-// Frame이 소유하는 이유: 개수의 근거가 "동시에 그려지는 frame 수" = kFramesInFlight다.
-// Swapchain image 수와 상관없다. 한때 depth를 SwapchainImage에 뒀는데 재생성 경로가
-// 거기 있어서 편했을 뿐이고, 개수도 3개가 되어 2개면 되는 것을 하나 더 만들었다.
+// Three images, and what happens to each is most of this file:
 //
-// Frame.h가 아니라 따로 있는 이유: 바뀌는 이유가 다르다.
-//   semaphore · fence · queue를 바꾸면        -> Frame
-//   그릴 곳의 구성을 바꾸면(HDR · MSAA · G-buffer) -> 여기
+//   color     drawn into, MSAA. Discarded once it has been resolved
+//   resolve   filled by vkCmdEndRendering, 1-sample. The present pass samples it
+//   depth     tested and written, MSAA. Never leaves the frame
+//
+// Frame owns one set of these because the count comes from kFramesInFlight -
+// how many frames are drawn at once, not how many swapchain images exist.
+//
+// Separate from Frame.h because the two change for different reasons: semaphores
+// and fences there, the shape of what we draw into here.
 
 #include "Vulkan/Descriptors.h"
 #include "Vulkan/Image.h"
 
-// 한 frame이 그려 넣을 한 벌. kFramesInFlight개 존재한다.
 struct RenderTargets {
-    const VulkanDevice* dev = nullptr;   // 파괴에 필요한 non-owning 상태
+    const VulkanDevice* dev = nullptr;   // non-owning, needed to destroy
 
-    // color는 그리는 곳(MSAA), resolve는 내보내는 곳(1-sample)이다.
-    //
-    // 둘로 갈린 이유는 sample 수 하나뿐이다. Multisample image는 sampler2D로 못
-    // 읽히므로(sampler2DMS가 따로 있다) present pass가 볼 것이 따로 있어야 한다.
-    // 우리 구조가 이걸 거저 얻었다 - off-screen이라 present가 읽을 1-sample image가
-    // 이미 있었고, 그것이 그대로 resolve 대상이 됐다.
-    //
-    // 옮기는 것은 dynamic rendering이 한다 (main.cpp의 resolveImageView). 별도
-    // vkCmdResolveImage도, pass 하나 더도 없다.
+    // color and resolve differ in exactly one thing: sample count. A multisample
+    // image cannot be read through sampler2D, so the present pass needs its own.
     Image color;
     Image resolve;
     Image depth;
     VkExtent2D extent{};
 
-    // 위 resolve.view를 가리키는 descriptor set. Pass 2가 이걸 bind한다.
-    //
-    // 여기 있는 이유: 따로 들고 다니면 다른 frame의 image를 가리켜도 컴파일된다.
-    // 같은 draw에서 color.view(그린다) · resolve.view(옮겨진다) · resolveSet(읽는다)이
-    // 나오면 pass 사이의 연결이 코드에 보인다.
-    // Pool이 죽을 때 같이 사라지므로 소멸자가 안 지운다.
+    // Names resolve.view. It lives here so it cannot end up naming another
+    // frame's image. The pool frees it, so the destructor does not.
     VkDescriptorSet resolveSet = VK_NULL_HANDLE;
 
     RenderTargets() = default;
@@ -50,36 +41,31 @@ struct RenderTargets {
     RenderTargets& operator=(const RenderTargets&) = delete;
 };
 
-// Format 계약. 값 둘이 아니라 하나다.
+// The contract between the images we create and the pipeline that draws into them.
 //
-// 만드는 쪽(CreateRenderTargets)과 맞추는 쪽(pipeline)이 같은 것을 봐야 한다 -
-// dynamic rendering은 format을 pipeline에 박기 때문이다. 따로 넘기면 어긋나도 컴파일된다.
+// Dynamic rendering bakes all three of these into the pipeline, so both sides
+// have to read the same values. One struct rather than three arguments means
+// passing it whole is enough to keep them in step.
 //
-// Device가 아니라 여기 있는 이유: 후보 목록과 우선순위는 우리 render target의
-// 정책이지 GPU의 성질이 아니다. GPU는 "지원하나"에만 답한다.
-//
-// 커지는 자리다 - HDR color format, G-buffer의 attachment 여럿. MSAA가 첫 번째였다.
-//
-// samples가 여기 있는 이유는 format과 같다: **pipeline에 박히고 image에도 박히는데
-// 둘이 어긋나면 컴파일된다.** 한 값으로 두면 CreateTrianglePipeline이 이 구조체를
-// 통째로 받는 것만으로 짝이 맞는다 - 실제로 samples를 넣어도 그 시그니처가 안 바뀌었다.
+// Here rather than in VulkanDevice because the candidate list and its priority
+// are our render target's policy. The GPU only answers "is this supported".
 struct RenderTargetFormats {
     VkFormat color = VK_FORMAT_UNDEFINED;
     VkFormat depth = VK_FORMAT_UNDEFINED;
-
-    // Color와 depth 양쪽이 지원하는 것 중 kDesiredSampleCount 이하 최대값.
-    // 1이면 MSAA 없음인데 지금 코드는 그 경우를 안 다룬다 (Config.h).
+    // Highest count both color and depth support, capped by kDesiredSampleCount.
+    // 1 would mean no MSAA, which the resolve path does not handle (Config.h).
     VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
 };
 
 // Input:  inst, gpu
-// Output: 이 GPU에서 쓸 format 한 쌍 + sample 수
-//         (실패하면 depth가 VK_FORMAT_UNDEFINED)
+// Output: the formats and sample count to use on this GPU
+//         (depth is VK_FORMAT_UNDEFINED if none worked)
 //
-// 조회가 instance level이라 inst를 받는다. Logical device는 필요 없다.
+// Takes inst because these queries are instance level. No logical device needed.
 RenderTargetFormats ChooseRenderTargetFormats(const VulkanInstance& inst,
                                               VkPhysicalDevice gpu) noexcept;
 
+// Effect: creates the three images and the set the present pass reads.
 bool CreateRenderTargets(const VulkanDevice& dev, const Descriptors& descriptors,
                          VkExtent2D extent, RenderTargetFormats formats,
                          RenderTargets* out) noexcept;
