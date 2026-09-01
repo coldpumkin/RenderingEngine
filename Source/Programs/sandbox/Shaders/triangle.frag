@@ -9,7 +9,6 @@ layout(location = 1) in vec2 fragUV;
 //
 // fullscreen.frag는 sampler2D가 하나라 presentLayout으로 갈렸다.
 layout(set = 0, binding = 0) uniform sampler2D tex;
-layout(set = 0, binding = 1) uniform sampler2D detail;
 
 layout(location = 0) out vec4 outColor;
 
@@ -26,7 +25,6 @@ void main() {
     // blendEnable이 꺼져 있어 이 값이 통째로 무시된다.
     // 곱한다. texture가 흰 칸이면 정점 색 그대로, 어두운 칸이면 어두워진다 -
     // 물체마다 다른 색을 유지한 채 무늬만 얹힌다.
-    // 두 image를 곱한다. 하나만 읽을 때와 눈으로 구분되는 것이 목적이다.
-    const vec3 base = texture(tex, fragUV).rgb * texture(detail, fragUV).rgb;
+    const vec3 base = texture(tex, fragUV).rgb;
     outColor = vec4(fragColor * base, pc.alpha);
 }

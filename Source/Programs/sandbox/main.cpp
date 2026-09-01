@@ -86,9 +86,8 @@ struct IndexRange {
 // Not an object: no transform, no mesh, no material. Only what actually differs
 // between draws.
 //
-// pipeline and texture are handles because several items share one and the loop binds
-// only on change. They are separate fields because they change at different items --
-// five objects give three pipeline binds and four texture binds. Two axes.
+// pipeline and texture are handles because several items can share one and the loop
+// binds only on change. With one item each is bound exactly once.
 struct DrawItem {
     const Pipeline* pipeline = nullptr;
     VkDescriptorSet texture = VK_NULL_HANDLE;
@@ -202,10 +201,10 @@ static void RecordScenePass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
     // Contract: this type must match the element type of kIndices.
     vk.vkCmdBindIndexBuffer(cmd, indexBuffer.handle, 0, VK_INDEX_TYPE_UINT16);
 
-    // Order is whatever the caller wrote into the array, including the rule that
-    // translucent goes last.
+    // Order is whatever the caller wrote into the array. This layer does not sort.
     //
-    // Two bind conditions stand side by side because they change at different items.
+    // Two bind conditions stand side by side: they are separate because pipeline and
+    // texture need not change at the same item.
     const Pipeline* boundPipeline = nullptr;
     VkDescriptorSet boundTexture = VK_NULL_HANDLE;
     for (uint32_t i = 0; i < itemCount; ++i) {
@@ -372,11 +371,8 @@ int main() {
     Descriptors    descriptors;   // frames take sets from this pool
     Frame          frames[kFramesInFlight];
     Pipeline       pipeline;
-    Pipeline       wireframe;     // same vertices as lines
-    Pipeline       translucent;   // blend on, depth write off
     Pipeline       fullscreen;
     Texture        checker;
-    Texture        stripe;
     Buffer         vertexBuffer;
     Buffer         indexBuffer;   // dies first
 
@@ -410,9 +406,9 @@ int main() {
     // allocation later.
     //
     // Contract: kTextureCount must equal the number of Texture declarations above.
-    // Deriving it needs the textures in an array, which would turn checker/stripe into
-    // indices -- worth it only once textures are chosen by id rather than by name.
-    constexpr uint32_t kTextureCount = 2;
+    // Deriving it needs the textures in an array, which would turn a name into an
+    // index -- worth it only once textures are chosen by id rather than by name.
+    constexpr uint32_t kTextureCount = 1;
     if (!CreateDescriptors(dev, kTextureCount, kFramesInFlight, &descriptors)) { return 1; }
 
     for (Frame& f : frames) {
@@ -423,73 +419,33 @@ int main() {
     // what we draw into, the set layout is what the shader reads.
     if (!CreateTrianglePipeline(dev, formats, descriptors.sceneLayout,
                                 VK_POLYGON_MODE_FILL, Blending::Opaque, &pipeline)) { return 1; }
-    if (!CreateTrianglePipeline(dev, formats, descriptors.sceneLayout,
-                                VK_POLYGON_MODE_LINE, Blending::Opaque, &wireframe)) { return 1; }
-    if (!CreateTrianglePipeline(dev, formats, descriptors.sceneLayout,
-                                VK_POLYGON_MODE_FILL, Blending::Translucent, &translucent)) { return 1; }
     if (!CreateFullscreenPipeline(dev, window.surfaceFormat.format,
                                   descriptors.presentLayout, &fullscreen)) {
         return 1;
     }
 
-    // Two triangles overlap and are drawn in the opposite order to their depth, so the
-    // overlap shows whether the depth test runs: green means on, red means off.
-    //
     // Coordinates are world space, so z is distance from the camera and equally sized
     // triangles shrink with distance.
     // uv runs y-down: world is y-up, so the top vertex is v=0.
-    constexpr Vertex kTriangles[] = {
-        // near (z=0, 2 from the camera), drawn first -- green
+    // Winding is CCW in y-up; reversing it gets the face culled.
+    constexpr Vertex vertices[] = {
+        // z=0, 2 from the camera -- green
         {{-0.7f,  0.5f,  0.0f}, {0.1f, 0.9f, 0.2f}, {0.0f, 0.0f}},
         {{-0.7f, -0.5f,  0.0f}, {0.1f, 0.9f, 0.2f}, {0.0f, 1.0f}},
         {{ 0.3f,  0.0f,  0.0f}, {0.1f, 0.9f, 0.2f}, {1.0f, 0.5f}},
-
-        // far (z=-1.5, 3.5 from the camera), drawn second -- red
-        {{ 0.7f,  0.5f, -1.5f}, {0.9f, 0.2f, 0.1f}, {1.0f, 0.0f}},
-        {{-0.3f,  0.0f, -1.5f}, {0.9f, 0.2f, 0.1f}, {0.0f, 0.5f}},
-        {{ 0.7f, -0.5f, -1.5f}, {0.9f, 0.2f, 0.1f}, {1.0f, 1.0f}},
-
-        // nearest (z=0.5, 1.5 from the camera) -- translucent blue
-        {{-0.2f,  0.6f,  0.5f}, {0.2f, 0.3f, 0.95f}, {0.0f, 0.0f}},
-        {{-0.2f, -0.4f,  0.5f}, {0.2f, 0.3f, 0.95f}, {0.0f, 1.0f}},
-        {{ 0.8f,  0.1f,  0.5f}, {0.2f, 0.3f, 0.95f}, {1.0f, 0.5f}},
     };
 
-    // Four vertices, two triangles: two of them get indexed twice.
-    // Same winding as above (CCW in y-up); reversing it gets the face culled.
-    constexpr Vertex kQuad[] = {
-        {{-1.4f,  0.45f, -0.8f}, {0.95f, 0.75f, 0.15f}, {0.0f, 0.0f}},
-        {{-1.4f, -0.45f, -0.8f}, {0.95f, 0.75f, 0.15f}, {0.0f, 1.0f}},
-        {{-0.5f, -0.45f, -0.8f}, {0.95f, 0.75f, 0.15f}, {1.0f, 1.0f}},
-        {{-0.5f,  0.45f, -0.8f}, {0.95f, 0.75f, 0.15f}, {1.0f, 0.0f}},
-    };
-
-    Vertex vertices[std::size(kTriangles) + std::size(kQuad)]{};
-    std::memcpy(vertices, kTriangles, sizeof(kTriangles));
-    std::memcpy(vertices + std::size(kTriangles), kQuad, sizeof(kQuad));
-
-    // kQuadBase is where the memcpy above placed the quad. Deriving it means adding a
-    // triangle cannot silently point the quad at the wrong vertices.
-    //
     // Contract: the element type must match VK_INDEX_TYPE_UINT16 at the bind site.
     // A mismatch compiles, runs, and draws the wrong vertices.
-    constexpr uint16_t kQuadBase = static_cast<uint16_t>(std::size(kTriangles));
     constexpr uint16_t kIndices[] = {
         0, 1, 2,          // green triangle
-        3, 4, 5,          // red triangle
-        6, 7, 8,          // blue triangle (translucent)
-        kQuadBase + 0, kQuadBase + 1, kQuadBase + 2,   // quad, first half
-        kQuadBase + 2, kQuadBase + 3, kQuadBase + 0,   // quad, second half
     };
 
     // Which span belongs to which object. Declared in the same order as kIndices, each
     // one starting where the previous ended, so inserting in the middle shifts the rest.
     // These must stay next to kIndices: that adjacency is half of the guard.
     constexpr IndexRange kGreenIndices{0, 3};
-    constexpr IndexRange kRedIndices{kGreenIndices.End(), 3};
-    constexpr IndexRange kBlueIndices{kRedIndices.End(), 3};
-    constexpr IndexRange kQuadIndices{kBlueIndices.End(), 6};
-    static_assert(kQuadIndices.End() == std::size(kIndices),
+    static_assert(kGreenIndices.End() == std::size(kIndices),
                   "spans do not cover the index array");
 
     if (!CreateDeviceLocalBuffer(dev, commands, vertices, sizeof(vertices),
@@ -502,14 +458,11 @@ int main() {
     }
 
     if (!CreateCheckerTexture(dev, commands, &checker)) { return 1; }
-    if (!CreateStripeTexture(dev, commands, &stripe)) { return 1; }
 
-    // A set now names two images, so it is a pair rather than a property of one texture.
-    // Both textures have to exist before either set can be filled, which is why this sits
-    // here instead of inside Create*Texture.
-    checker.set = AllocateSceneSet(descriptors, checker.image.view, stripe.image.view);
-    stripe.set = AllocateSceneSet(descriptors, stripe.image.view, checker.image.view);
-    if (checker.set == VK_NULL_HANDLE || stripe.set == VK_NULL_HANDLE) { return 1; }
+    // The set is allocated here rather than inside CreateCheckerTexture: what a set
+    // names is the pass's business, not the image's.
+    checker.set = AllocateSceneSet(descriptors, checker.image.view);
+    if (checker.set == VK_NULL_HANDLE) { return 1; }
 
     // No swapchain here. The loop's EnsureSwapchain creates it, and the first creation
     // takes the same path as a recreation: "nothing to draw into" is a normal state.
@@ -646,35 +599,13 @@ int main() {
         const glm::mat4 view = glm::lookAt(eye, eye + forward, kWorldUp);
         const glm::mat4 camera = proj * view;
 
-        // Three ordering rules now, and the last two disagree.
-        //   translucent last    correctness: depth write is off, so depth cannot order it
-        //   group by pipeline   cost
-        //   group by texture    cost
-        //
-        // This array groups by pipeline: 3 pipeline binds, 4 texture binds. Grouping by
-        // texture reverses that. Choosing between them is where a sort key appears, and
-        // with five objects there is nothing to measure.
+        // One item, so nothing here orders anything yet. Order becomes a question at
+        // two items, and a measurable one further out.
         const glm::vec3 kZAxis{0.0f, 0.0f, 1.0f};
         const DrawItem items[] = {
             // green, spinning about z so its depth does not change
             {&pipeline, checker.set,
              {camera * glm::rotate(glm::mat4(1.0f), t, kZAxis), 1.0f}, kGreenIndices},
-
-            // red, spinning the other way and slower
-            {&pipeline, stripe.set,
-             {camera * glm::rotate(glm::mat4(1.0f), -t * 0.5f, kZAxis), 1.0f}, kRedIndices},
-
-            // quad, still
-            {&pipeline, checker.set, {camera, 1.0f}, kQuadIndices},
-
-            // green again as lines, over the same index span
-            {&wireframe, checker.set,
-             {camera * glm::scale(
-                  glm::translate(glm::mat4(1.0f), glm::vec3(0.9f, -0.6f, -0.5f)),
-                  glm::vec3(0.5f)), 1.0f}, kGreenIndices},
-
-            // translucent blue, and it has to be last
-            {&translucent, stripe.set, {camera, 0.5f}, kBlueIndices},
         };
 
         // These break instead of continue. After the acquire, skipping the submit leaves

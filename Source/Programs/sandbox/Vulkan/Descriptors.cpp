@@ -4,12 +4,12 @@
 
 // 각 layout이 요구하는 binding 개수. 출처는 shader이고 여기는 받아적는 쪽이다.
 //
-//   scene    triangle.frag   sampler2D tex(0) · detail(1)
+//   scene    triangle.frag   sampler2D tex(0)
 //   present  fullscreen.frag sampler2D sceneColor(0)
 //
 // Contract: shader의 sampler2D 선언 개수와 같아야 한다. 어느 컴파일러도 양쪽을
 //           같이 안 보고, 어긋나면 validation layer가 draw에서 잡는다.
-constexpr uint32_t kSceneBindingCount = 2;
+constexpr uint32_t kSceneBindingCount = 1;
 constexpr uint32_t kPresentBindingCount = 1;
 
 // AllocateImageSet의 배열 크기. 그 함수를 두 layout이 공유하므로 **둘 중 큰 쪽**이
@@ -144,8 +144,8 @@ static VkDescriptorSet AllocateImageSet(const Descriptors& descriptors,
 }
 
 VkDescriptorSet AllocateSceneSet(const Descriptors& descriptors,
-                                 VkImageView view0, VkImageView view1) noexcept {
-    const VkImageView views[kSceneBindingCount] = {view0, view1};
+                                 VkImageView view) noexcept {
+    const VkImageView views[kSceneBindingCount] = {view};
     return AllocateImageSet(descriptors, descriptors.sceneLayout, views, kSceneBindingCount);
 }
 

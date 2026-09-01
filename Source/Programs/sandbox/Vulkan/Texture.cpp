@@ -17,7 +17,8 @@ Texture::~Texture() {
 // 파일 로딩이 오면 그때 크기가 인자가 된다 - 파일이 정하는 값이라서다.
 constexpr uint32_t kTextureSize = 8;
 
-// 두 texture의 공통부. 실제로 갈리는 것은 **픽셀과 이름**뿐이라 그 둘만 받는다.
+// 픽셀과 이름만 받는다. 나머지 - staging · image · layout 전이 둘 · 복사 - 는
+// 어떤 texture든 같다.
 //
 // **SRGB다.** vertex color와 곱해지는 값이라 render target과 같은 공간이어야 한다.
 // UNORM으로 만들면 shader가 받는 값이 밝아져 곱한 결과가 뜬다.
@@ -99,8 +100,6 @@ static bool CreateTextureFromPixels(const VulkanDevice& dev,
     return true;
 }
 
-// 아래 둘이 서로 다른 부분의 전부다.
-
 bool CreateCheckerTexture(const VulkanDevice& dev,
                           const Commands& commands,
                           Texture* out) noexcept {
@@ -113,19 +112,4 @@ bool CreateCheckerTexture(const VulkanDevice& dev,
         }
     }
     return CreateTextureFromPixels(dev, commands, pixels, "checker", out);
-}
-
-bool CreateStripeTexture(const VulkanDevice& dev,
-                         const Commands& commands,
-                         Texture* out) noexcept {
-    // y를 안 본다 - 그래서 세로 줄이 되고 checker와 눈으로 구분된다.
-    uint8_t pixels[kTextureSize * kTextureSize * 4]{};
-    for (uint32_t y = 0; y < kTextureSize; ++y) {
-        for (uint32_t x = 0; x < kTextureSize; ++x) {
-            const uint8_t v = (x % 2 == 0) ? 255 : 70;
-            uint8_t* p = pixels + (y * kTextureSize + x) * 4;
-            p[0] = v; p[1] = v; p[2] = v; p[3] = 255;
-        }
-    }
-    return CreateTextureFromPixels(dev, commands, pixels, "stripe", out);
 }

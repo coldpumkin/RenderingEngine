@@ -15,14 +15,12 @@
 // 앞의 셋은 프로그램이 사는 동안 안 변해서 여기 한 덩어리다.
 // 갈릴 때: sampler가 여럿이 되면 (mipmap·anisotropy·address mode가 다른 texture들).
 //
-// **setLayout은 pass마다 다르다.** 두 pass의 shader가 요구하는 모양이 다르기
-// 때문이고, 그것 말고 다른 근거는 없다:
+// **setLayout은 pass마다 하나씩이다.** 근거는 shader가 요구하는 모양뿐이다:
 //
-//   scene    triangle.frag가 sampler2D 둘 (tex · detail)   -> binding 0, 1
+//   scene    triangle.frag가 sampler2D 하나 (tex)         -> binding 0
 //   present  fullscreen.frag가 sampler2D 하나 (sceneColor) -> binding 0
 //
-// 하나로 합쳐봤더니 present 쪽 set이 안 읽힐 binding 1을 채워야 했다 - 고를 것이
-// 없는 자리를 채우는 코드가 생기고, 무엇을 넣든 옳다.
+// 지금 둘의 모양이 같다.
 
 #include "Vulkan/Device.h"
 
@@ -31,7 +29,7 @@ struct Descriptors {
 
     VkSampler sampler = VK_NULL_HANDLE;
 
-    VkDescriptorSetLayout sceneLayout = VK_NULL_HANDLE;     // binding 0, 1
+    VkDescriptorSetLayout sceneLayout = VK_NULL_HANDLE;     // binding 0
     VkDescriptorSetLayout presentLayout = VK_NULL_HANDLE;   // binding 0
 
     VkDescriptorPool pool = VK_NULL_HANDLE;
@@ -55,14 +53,14 @@ bool CreateDescriptors(const VulkanDevice& dev,
                        uint32_t sceneSets, uint32_t presentSets,
                        Descriptors* out) noexcept;
 
-// Input:  descriptors, view0 (binding 0), view1 (binding 1)
+// Input:  descriptors, view (binding 0)
 // Output: sceneLayout 모양의 set (실패하면 VK_NULL_HANDLE)
 // Contract: 개별 반납은 없다. pool이 죽을 때 같이 사라진다.
 //
-// view가 둘인 것은 layout이 binding 둘을 요구해서다. 안 채운 자리를 shader가 읽으면
+// view 개수는 layout이 요구하는 binding 개수다. 안 채운 자리를 shader가 읽으면
 // draw에서 잡히므로 인자로 강제한다.
 VkDescriptorSet AllocateSceneSet(const Descriptors& descriptors,
-                                 VkImageView view0, VkImageView view1) noexcept;
+                                 VkImageView view) noexcept;
 
 // Input:  descriptors, view (binding 0)
 // Output: presentLayout 모양의 set (실패하면 VK_NULL_HANDLE)

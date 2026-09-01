@@ -9,7 +9,7 @@
 //
 // 실측(120Hz, 삼각형 하나): 1이든 2든 차이 없음. frame 시간의 90%가 acquire(모니터
 // 대기)라 CPU가 GPU를 기다리는 상황이 아니었다. GPU가 바빠져야 의미가 생긴다.
-constexpr uint32_t kFramesInFlight = 2;
+constexpr uint32_t kFramesInFlight = 1;
 
 // swapchain image를 몇 장 요청할까. frames-in-flight와 다른 축이다:
 //   frames-in-flight  CPU가 몇 frame 앞서나  (fence가 막는다)
