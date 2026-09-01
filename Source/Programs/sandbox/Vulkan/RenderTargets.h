@@ -18,7 +18,6 @@
 // Separate from Frame.h because the two change for different reasons: semaphores
 // and fences there, the shape of what we draw into here.
 
-#include "Vulkan/Descriptors.h"
 #include "Vulkan/Image.h"
 
 struct RenderTargets {
@@ -30,10 +29,6 @@ struct RenderTargets {
     Image resolve;
     Image depth;
     VkExtent2D extent{};
-
-    // Names resolve.view. It lives here so it cannot end up naming another
-    // frame's image. The pool frees it, so the destructor does not.
-    VkDescriptorSet resolveSet = VK_NULL_HANDLE;
 
     RenderTargets() = default;
     ~RenderTargets();
@@ -66,6 +61,6 @@ RenderTargetFormats ChooseRenderTargetFormats(const VulkanInstance& inst,
                                               VkPhysicalDevice gpu) noexcept;
 
 // Effect: creates the three images and the set the present pass reads.
-bool CreateRenderTargets(const VulkanDevice& dev, const Descriptors& descriptors,
+bool CreateRenderTargets(const VulkanDevice& dev,
                          VkExtent2D extent, RenderTargetFormats formats,
                          RenderTargets* out) noexcept;

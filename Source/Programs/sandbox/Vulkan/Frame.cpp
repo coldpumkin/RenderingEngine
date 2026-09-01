@@ -1,8 +1,8 @@
 ﻿#include "Vulkan/Frame.h"
 
 bool CreateFrame(const VulkanDevice& dev, const Commands& commands,
-                 const Descriptors& descriptors,
-                 RenderTargetFormats formats, Frame* out) noexcept {
+                 RenderTargetFormats formats, VkExtent2D extent,
+                 Frame* out) noexcept {
     out->dev = &dev;
 
     // PRIMARY can be submitted to a queue directly. SECONDARY only runs inside
@@ -33,8 +33,7 @@ bool CreateFrame(const VulkanDevice& dev, const Commands& commands,
 
     // Built without looking at the window, so this works while minimized - there
     // may be no swapchain yet.
-    const VkExtent2D renderExtent{kRenderWidth, kRenderHeight};
-    if (!CreateRenderTargets(dev, descriptors, renderExtent, formats, &out->targets)) {
+    if (!CreateRenderTargets(dev, extent, formats, &out->targets)) {
         return false;
     }
     return true;
@@ -105,6 +104,7 @@ FrameResult BeginFrame(const VulkanDevice& dev,
     // The fence is not reset here - reset pairs with submit (see SubmitFrame).
     // draw is unrelated to acquire: acquire only decides where the result goes.
     out->draw = &frame.targets;
+    out->drawResolveSet = frame.resolveSet;
     out->present = &swapchain.images[imageIndex];
     out->presentExtent = swapchain.extent;
     return FrameResult::Ready;

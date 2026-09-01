@@ -1,54 +1,44 @@
 ﻿#include "Vulkan/Descriptors.h"
 
-#include <algorithm>   // kMaxBindingCount의 std::max
+#include "Vulkan/Shader.h"
 
-// 각 layout이 요구하는 binding 개수. 출처는 shader이고 여기는 받아적는 쪽이다.
+// Effect: builds a layout shaped exactly like the fragment shader's set 0, and
+//         reports how many bindings that turned out to be.
 //
-//   scene    triangle.frag   sampler2D tex(0)
-//   present  fullscreen.frag sampler2D sceneColor(0)
-//
-// Contract: shader의 sampler2D 선언 개수와 같아야 한다. 어느 컴파일러도 양쪽을
-//           같이 안 보고, 어긋나면 validation layer가 draw에서 잡는다.
-constexpr uint32_t kSceneBindingCount = 1;
-constexpr uint32_t kPresentBindingCount = 1;
+// Every value here comes out of the SPIR-V. The type is the shader's (sampler2D
+// becomes COMBINED_IMAGE_SAMPLER), and stageFlags is FRAGMENT because that is the
+// only stage we reflect for descriptors -- a vertex shader reading a texture would
+// need its own pass over that stage.
+static bool CreateSetLayoutFromShader(const VulkanDevice& dev, const char* fragPath,
+                                      VkDescriptorSetLayout* out,
+                                      uint32_t* outBindingCount) noexcept {
+    ShaderInterface iface;
+    if (!ReflectShaderFile(fragPath, &iface)) { return false; }
 
-// AllocateImageSet의 배열 크기. 그 함수를 두 layout이 공유하므로 **둘 중 큰 쪽**이
-// 필요하고, 그것이 이 이름의 뜻 전부다.
-//
-// 유도하는 이유: 손으로 고르면 지금은 맞고 나중에 조용히 틀린다. 여기가 모자라면
-// 스택을 밟는데 컴파일러도 validation layer도 안 잡는다 - 이 파일에서 그 둘이
-// 아무 말도 안 해주는 유일한 자리다.
-//
-// Contract: layout이 셋째로 늘면 그 상수도 이 max에 들어가야 한다.
-constexpr uint32_t kMaxBindingCount = std::max(kSceneBindingCount, kPresentBindingCount);
-
-// 두 layout이 같은 모양의 binding을 쓴다 - 개수만 다르다.
-// Effect: bindingCount개를 0번부터 채운 layout을 만든다
-static bool CreateImageSetLayout(const VulkanDevice& dev, uint32_t bindingCount,
-                                 VkDescriptorSetLayout* out) noexcept {
-    // COMBINED_IMAGE_SAMPLER: image와 sampler를 한 자리에 묶는다(GLSL의 sampler2D).
-    VkDescriptorSetLayoutBinding bindings[kSceneBindingCount]{};
-    for (uint32_t i = 0; i < bindingCount; ++i) {
+    VkDescriptorSetLayoutBinding bindings[kMaxBindingsPerSet]{};
+    for (uint32_t i = 0; i < iface.bindingCount; ++i) {
         bindings[i].binding = i;
-        bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        bindings[i].descriptorType = iface.bindingTypes[i];
         bindings[i].descriptorCount = 1;
-        bindings[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;   // 읽는 곳이 fragment뿐이다
+        bindings[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     }
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    layoutInfo.bindingCount = bindingCount;
+    layoutInfo.bindingCount = iface.bindingCount;
     layoutInfo.pBindings = bindings;
     if (dev.table.vkCreateDescriptorSetLayout(dev.handle, &layoutInfo, nullptr, out)
             != VK_SUCCESS) {
-        LOG("[vk] vkCreateDescriptorSetLayout failed (%u bindings)\n", bindingCount);
+        LOG("[vk] vkCreateDescriptorSetLayout failed: %s\n", fragPath);
         return false;
     }
+    *outBindingCount = iface.bindingCount;
     return true;
 }
 
 bool CreateDescriptors(const VulkanDevice& dev,
-                       uint32_t sceneSets, uint32_t presentSets,
+                       const char* sceneFragPath, uint32_t sceneSets,
+                       const char* presentFragPath, uint32_t presentSets,
                        Descriptors* out) noexcept {
     out->dev = &dev;
 
@@ -70,8 +60,10 @@ bool CreateDescriptors(const VulkanDevice& dev,
         return false;
     }
 
-    if (!CreateImageSetLayout(dev, kSceneBindingCount, &out->sceneLayout)) { return false; }
-    if (!CreateImageSetLayout(dev, kPresentBindingCount, &out->presentLayout)) { return false; }
+    if (!CreateSetLayoutFromShader(dev, sceneFragPath,
+                                   &out->sceneLayout, &out->sceneBindingCount)) { return false; }
+    if (!CreateSetLayoutFromShader(dev, presentFragPath,
+                                   &out->presentLayout, &out->presentBindingCount)) { return false; }
 
     // Pool은 자라지 않아서 크기를 미리 정한다. 타입별 개수도 같이 말해야 한다.
     //
@@ -81,8 +73,8 @@ bool CreateDescriptors(const VulkanDevice& dev,
 
     VkDescriptorPoolSize poolSize{};
     poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSize.descriptorCount = sceneSets * kSceneBindingCount
-                             + presentSets * kPresentBindingCount;
+    poolSize.descriptorCount = sceneSets * out->sceneBindingCount
+                             + presentSets * out->presentBindingCount;
 
     VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     poolInfo.maxSets = maxSets;
@@ -123,8 +115,8 @@ static VkDescriptorSet AllocateImageSet(const Descriptors& descriptors,
     //
     // imageLayout은 bind 시점이 아니라 읽는 시점의 layout이다. Texture 업로드와
     // RecordPresentPass가 그 전에 SHADER_READ_ONLY_OPTIMAL로 전이시키는 것과 짝이다.
-    VkDescriptorImageInfo imageInfo[kMaxBindingCount]{};
-    VkWriteDescriptorSet write[kMaxBindingCount]{};
+    VkDescriptorImageInfo imageInfo[kMaxBindingsPerSet]{};
+    VkWriteDescriptorSet write[kMaxBindingsPerSet]{};
     for (uint32_t i = 0; i < viewCount; ++i) {
         imageInfo[i].sampler = descriptors.sampler;
         imageInfo[i].imageView = views[i];
@@ -145,13 +137,24 @@ static VkDescriptorSet AllocateImageSet(const Descriptors& descriptors,
 
 VkDescriptorSet AllocateSceneSet(const Descriptors& descriptors,
                                  VkImageView view) noexcept {
-    const VkImageView views[kSceneBindingCount] = {view};
-    return AllocateImageSet(descriptors, descriptors.sceneLayout, views, kSceneBindingCount);
+    // One view, so the shader that built this layout has to want exactly one.
+    if (descriptors.sceneBindingCount != 1) {
+        LOG("[vk] scene layout wants %u bindings, this fills one\n",
+            descriptors.sceneBindingCount);
+        return VK_NULL_HANDLE;
+    }
+    const VkImageView views[1] = {view};
+    return AllocateImageSet(descriptors, descriptors.sceneLayout, views, 1);
 }
 
 VkDescriptorSet AllocatePresentSet(const Descriptors& descriptors, VkImageView view) noexcept {
-    const VkImageView views[kPresentBindingCount] = {view};
-    return AllocateImageSet(descriptors, descriptors.presentLayout, views, kPresentBindingCount);
+    if (descriptors.presentBindingCount != 1) {
+        LOG("[vk] present layout wants %u bindings, this fills one\n",
+            descriptors.presentBindingCount);
+        return VK_NULL_HANDLE;
+    }
+    const VkImageView views[1] = {view};
+    return AllocateImageSet(descriptors, descriptors.presentLayout, views, 1);
 }
 
 Descriptors::~Descriptors() {

@@ -47,17 +47,25 @@ struct Frame {
     // Where this frame draws: our image, not a swapchain one.
     RenderTargets targets;
 
+    // How the present pass reads targets.resolve. A scene resource and its present
+    // set are different passes' business, so the set sits beside the targets rather
+    // than inside them. main fills it; the pool frees it.
+    VkDescriptorSet resolveSet = VK_NULL_HANDLE;
+
     Frame() = default;
     ~Frame();
     Frame(const Frame&) = delete;
     Frame& operator=(const Frame&) = delete;
 };
 
-// Contract: formats must be what the pipelines were given. main chooses once and
-//           hands the same value to both.
+// Effect: allocates the command buffer, semaphore, fence and render targets. The
+//         resolveSet is not filled here - main allocates it from Descriptors.
+//
+// Contract: formats and extent must be what the pipelines were given. main chooses
+//           once and hands the same values to both.
 bool CreateFrame(const VulkanDevice& dev, const Commands& commands,
-                 const Descriptors& descriptors,
-                 RenderTargetFormats formats, Frame* out) noexcept;
+                 RenderTargetFormats formats, VkExtent2D extent,
+                 Frame* out) noexcept;
 
 // Where this frame draws and where it presents. BeginFrame fills it in.
 //
@@ -70,6 +78,7 @@ bool CreateFrame(const VulkanDevice& dev, const Commands& commands,
 // SwapchainImage rather than beside it.
 struct FrameTarget {
     const RenderTargets* draw = nullptr;
+    VkDescriptorSet drawResolveSet = VK_NULL_HANDLE;   // present reads draw->resolve
     const SwapchainImage* present = nullptr;
     VkExtent2D presentExtent{};   // window size, which may differ from draw->extent
 };

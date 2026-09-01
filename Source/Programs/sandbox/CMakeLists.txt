@@ -21,6 +21,7 @@ add_executable(sandbox
     Vulkan/Descriptors.h Vulkan/Descriptors.cpp # 셰이더가 이미지를 읽게 하는 장치
     Vulkan/Commands.h    Vulkan/Commands.cpp    # 커맨드 풀 (큐 패밀리마다)
     Vulkan/Frame.h       Vulkan/Frame.cpp       # 프레임 자원(프레임마다) + 프레임 여닫기
+    Vulkan/Shader.h      Vulkan/Shader.cpp      # .spv 읽기 + SPIR-V reflection
     Vulkan/Pipeline.h    Vulkan/Pipeline.cpp
     Vulkan/Buffer.h      Vulkan/Buffer.cpp
     Vulkan/Mesh.h        Vulkan/Mesh.cpp        # 한 draw가 늘 같이 bind하는 버퍼 둘
@@ -33,7 +34,7 @@ target_include_directories(sandbox PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 # 평평하게 쓰는 동안은 sandbox가 volk와 GLFW를 직접 든다.
 # 중간 모듈이 없으므로 숨길 것도 없다.
-target_link_libraries(sandbox PRIVATE volk glfw vma glm)
+target_link_libraries(sandbox PRIVATE volk glfw vma glm spirv-reflect)
 
 # std::fopen이 MSVC에서 C4996(deprecated)로 경고를 낸다. fopen_s는 표준이 아니라
 # 이 파일이 MSVC 전용이 되고, 여기서는 셰이더 파일 하나를 읽을 뿐이라 얻는 게 없다.

@@ -5,7 +5,6 @@ bool CreateMesh(const VulkanDevice& dev,
                 const void* vertices, VkDeviceSize vertexBytes,
                 const uint16_t* indices, uint32_t indexCount,
                 Mesh* out) noexcept {
-    // usage is not an argument: a mesh's two buffers are what they are.
     if (!CreateDeviceLocalBuffer(dev, commands, vertices, vertexBytes,
                                  VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &out->vertices)) {
         return false;

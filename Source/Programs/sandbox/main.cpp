@@ -252,7 +252,7 @@ static void RecordScenePass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
 // draw.color is never touched here. It is the multisample image, which our shader
 // cannot sample; the scene pass already averaged it into draw.resolve.
 static void RecordPresentPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
-                              const RenderTargets& draw,
+                              const RenderTargets& draw, VkDescriptorSet drawResolveSet,
                               const SwapchainImage& present,
                               VkExtent2D presentExtent,
                               const Pipeline& fullscreen) noexcept {
@@ -308,7 +308,7 @@ static void RecordPresentPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
     // An image cannot ride in the command stream the way a push constant does, so the
     // command only says "attach this set at slot 0".
     vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, fullscreen.layout,
-                               0, 1, &draw.resolveSet, 0, nullptr);
+                               0, 1, &drawResolveSet, 0, nullptr);
 
     // 3 vertices, no buffer. The shader builds them from gl_VertexIndex.
     vk.vkCmdDraw(cmd, 3, 1, 0, 0);
@@ -347,7 +347,7 @@ bool RecordFrame(const VolkDeviceTable& vk,
 
     RecordScenePass(vk, cmd, *target.draw, mesh,
                     items, itemCount);
-    RecordPresentPass(vk, cmd, *target.draw, *target.present,
+    RecordPresentPass(vk, cmd, *target.draw, target.drawResolveSet, *target.present,
                       target.presentExtent, fullscreen);
 
     if (vk.vkEndCommandBuffer(cmd) != VK_SUCCESS) {
@@ -401,6 +401,15 @@ int main() {
     if (!CreateDevice(inst, selection, &dev)) { return 1; }
     if (!CreateCommands(dev, &commands)) { return 1; }
 
+    // One pair per pass. They live here because two places need the same path: the
+    // set layout is built from the fragment shader, and the pipeline is built from
+    // both. Passing different files to the two would build a layout for one shader
+    // and a pipeline for another.
+    constexpr const char* kSceneVert = "Shaders/triangle.vert.spv";
+    constexpr const char* kSceneFrag = "Shaders/triangle.frag.spv";
+    constexpr const char* kPresentVert = "Shaders/fullscreen.vert.spv";
+    constexpr const char* kPresentFrag = "Shaders/fullscreen.frag.spv";
+
     // Two set counts, counted from different things: one scene set per texture, one
     // present set per frame. The pool never grows, so a missed increment fails
     // allocation later.
@@ -409,34 +418,64 @@ int main() {
     // Deriving it needs the textures in an array, which would turn a name into an
     // index -- worth it only once textures are chosen by id rather than by name.
     constexpr uint32_t kTextureCount = 1;
-    if (!CreateDescriptors(dev, kTextureCount, kFramesInFlight, &descriptors)) { return 1; }
+    if (!CreateDescriptors(dev, kSceneFrag, kTextureCount,
+                           kPresentFrag, kFramesInFlight, &descriptors)) { return 1; }
 
+    // The render resolution, decided here rather than inside CreateFrame: it is the
+    // other half of "what our render targets look like", and formats is already here.
+    constexpr VkExtent2D kRenderExtent{kRenderWidth, kRenderHeight};
+
+    // The present set is allocated per frame, which is where CreateDescriptors got
+    // its presentSets count. Doing it here keeps RenderTargets free of the present
+    // pass, the same rule the textures follow.
     for (Frame& f : frames) {
-        if (!CreateFrame(dev, commands, descriptors, formats, &f)) { return 1; }
+        if (!CreateFrame(dev, commands, formats, kRenderExtent, &f)) { return 1; }
+        f.resolveSet = AllocatePresentSet(descriptors, f.targets.resolve.view);
+        if (f.resolveSet == VK_NULL_HANDLE) { return 1; }
     }
 
-    // Two things differ per pass, and they differ for different reasons: the format is
-    // what we draw into, the set layout is what the shader reads.
-    if (!CreateTrianglePipeline(dev, formats, descriptors.sceneLayout,
-                                VK_POLYGON_MODE_FILL, Blending::Opaque, &pipeline)) { return 1; }
-    if (!CreateFullscreenPipeline(dev, window.surfaceFormat.format,
-                                  descriptors.presentLayout, &fullscreen)) {
-        return 1;
-    }
+    // Both passes, written out. viewportY and cullMode are here because they are the
+    // pass's conventions, not the shader's -- and the recording side reads the same
+    // viewportY back out of the pipeline.
+    GraphicsPipelineDesc sceneDesc;
+    sceneDesc.vertPath = kSceneVert;
+    sceneDesc.fragPath = kSceneFrag;
+    sceneDesc.vertexInput = &VertexInput();
+    sceneDesc.colorFormat = formats.color;
+    sceneDesc.depthFormat = formats.depth;
+    sceneDesc.samples = formats.samples;
+    sceneDesc.setLayout = descriptors.sceneLayout;
+    sceneDesc.viewportY = ViewportY::Up;            // our world is y-up
+    sceneDesc.cullMode = VK_CULL_MODE_BACK_BIT;
+    sceneDesc.polygonMode = VK_POLYGON_MODE_FILL;
+    sceneDesc.blending = Blending::Opaque;
+    if (!CreateGraphicsPipeline(dev, sceneDesc, &pipeline)) { return 1; }
 
-    // Coordinates are world space, so z is distance from the camera and equally sized
-    // triangles shrink with distance.
-    // uv runs y-down: world is y-up, so the top vertex is v=0.
-    // Winding is CCW in y-up; reversing it gets the face culled.
+    // Outlives creation: the surface format can change and only that field moves.
+    //
+    //   no vertexInput  the shader builds three points from gl_VertexIndex
+    //   no depthFormat  depth means nothing for a screen-covering triangle
+    //   samples 1       the swapchain image is handed to us; MSAA ended at the resolve
+    //   viewportY Down  the shader makes its own uv, so frontFace comes out opposite
+    //
+    // Culling is on so a broken winding blacks the screen out rather than going unseen.
+    GraphicsPipelineDesc presentDesc;
+    presentDesc.vertPath = kPresentVert;
+    presentDesc.fragPath = kPresentFrag;
+    presentDesc.colorFormat = window.surfaceFormat.format;
+    presentDesc.setLayout = descriptors.presentLayout;
+    presentDesc.viewportY = ViewportY::Down;
+    presentDesc.cullMode = VK_CULL_MODE_BACK_BIT;
+    if (!CreateGraphicsPipeline(dev, presentDesc, &fullscreen)) { return 1; }
+
+    // World space; CCW in y-up, so reversing the winding culls the face.
+    // Flat in z=0, so all three share one normal (+z) and one tangent (+x, w=1).
     constexpr Vertex vertices[] = {
-        // z=0, 2 from the camera -- green
-        {{-0.7f,  0.5f,  0.0f}, {0.1f, 0.9f, 0.2f}, {0.0f, 0.0f}},
-        {{-0.7f, -0.5f,  0.0f}, {0.1f, 0.9f, 0.2f}, {0.0f, 1.0f}},
-        {{ 0.3f,  0.0f,  0.0f}, {0.1f, 0.9f, 0.2f}, {1.0f, 0.5f}},
+        {{-0.7f,  0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f}, {1.0f, 0.0f, 0.0f, 1.0f}},
+        {{-0.7f, -0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}, {1.0f, 0.0f, 0.0f, 1.0f}},
+        {{ 0.3f,  0.0f, 0.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 0.5f}, {1.0f, 0.0f, 0.0f, 1.0f}},
     };
 
-    // Contract: the element type must match VK_INDEX_TYPE_UINT16 at the bind site.
-    // A mismatch compiles, runs, and draws the wrong vertices.
     constexpr uint16_t kIndices[] = {
         0, 1, 2,          // green triangle
     };
@@ -467,15 +506,11 @@ int main() {
     // Projection: its period is the render target's lifetime, not the frame.
     // ========================================================================
     //
-    // The render target extent is a compile-time constant, so aspect cannot change
-    // while the targets live -- a window resize does not touch it. It would change only
-    // if the render resolution became a runtime value, and that comes with a render
-    // target rebuild path for these lines to follow.
-    //
-    // Read from frames[0] because every frame is built at the same size.
-    const VkExtent2D sceneExtent = frames[0].targets.extent;
-    const float aspect = static_cast<float>(sceneExtent.width)
-                       / static_cast<float>(sceneExtent.height);
+    // kRenderExtent is a compile-time constant, so aspect cannot change while the
+    // targets live -- a window resize does not touch it. It changes only once the
+    // render resolution becomes a runtime value, which brings a rebuild path with it.
+    const float aspect = static_cast<float>(kRenderExtent.width)
+                       / static_cast<float>(kRenderExtent.height);
 
     // No proj[1][1] *= -1: the viewport height is already negative.
     // Depth lands in [0,1] thanks to GLM_FORCE_DEPTH_ZERO_TO_ONE on the CMake target.
@@ -529,8 +564,8 @@ int main() {
         if (window.surfaceFormatChanged) {
             dev.table.vkDeviceWaitIdle(dev.handle);
             DestroyPipeline(dev, &fullscreen);
-            if (!CreateFullscreenPipeline(dev, window.surfaceFormat.format,
-                                          descriptors.presentLayout, &fullscreen)) {
+            presentDesc.colorFormat = window.surfaceFormat.format;   // the only field that moved
+            if (!CreateGraphicsPipeline(dev, presentDesc, &fullscreen)) {
                 break;
             }
             window.surfaceFormatChanged = false;   // cleared by whoever handled it

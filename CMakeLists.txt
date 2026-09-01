@@ -38,6 +38,7 @@ add_subdirectory(Source/ThirdParty/volk)
 add_subdirectory(Source/ThirdParty/vma)
 add_subdirectory(Source/ThirdParty/glfw)
 add_subdirectory(Source/ThirdParty/glm)
+add_subdirectory(Source/ThirdParty/spirv-reflect)
 
 # 모듈이 없다. sandbox 하나에 평평하게 쓴다.
 #

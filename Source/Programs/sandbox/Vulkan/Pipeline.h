@@ -3,78 +3,53 @@
 #include "Vulkan/Descriptors.h"
 #include "Vulkan/RenderTargets.h"
 
-// PushConstants holds a mat4. Header-only, so it costs nothing at link time.
-#include <glm/glm.hpp>
+#include <glm/glm.hpp>   // PushConstants holds a mat4
 
-// Viewport y direction - one decision that shows up in two places
+// ViewportY - one sign that decides two things
 // ============================================================================
 //
-// A Vulkan framebuffer has y pointing down. A negative viewport height makes the
-// shader side y-up (VK_KHR_maintenance1, core in 1.1), and the same negation
-// flips the winding test: front and back come from the sign of the triangle's
-// area in framebuffer space, and a negative y scale flips that sign.
+// A negative viewport height makes the shader side y-up, and the same negation
+// flips the winding test. So the sign also chooses frontFace; written by hand in
+// two places they disagree silently until culling is turned on.
 //
-// So choosing the viewport sign also chooses frontFace. Written by hand in two
-// places they can disagree, and nothing happens while culling is off - the
-// screen goes empty the moment it is turned on.
-//
-// Contract: both shaders emit triangles whose shoelace area is positive in clip
-//           space. The mapping below holds only on top of that. Counted:
-//             triangle.vert    two world-space triangles, +1.0 each
-//             fullscreen.vert  (-1,-1) (3,-1) (-1,3) -> +8
-//
-// The mapping is measured, not derived. Both pipelines run with CULL_MODE_BACK
-// and check.ps1 reproduces the baseline pixel ratios.
+// Contract: both shaders emit triangles with positive shoelace area in clip space.
+//           Measured, not derived - both pipelines run CULL_MODE_BACK.
 enum class ViewportY {
     Down,   // Vulkan default, positive height
-    Up,     // negative height - our world coordinates are y-up
+    Up,     // negative height - our world is y-up
 };
 
-// Input:  the viewport y direction this pipeline draws with
 // Output: the frontFace that makes the Contract triangles front-facing
 constexpr VkFrontFace FrontFaceFor(ViewportY y) noexcept {
     return y == ViewportY::Up ? VK_FRONT_FACE_COUNTER_CLOCKWISE
                               : VK_FRONT_FACE_CLOCKWISE;
 }
 
-// Input:  extent, and the viewportY of the pipeline about to draw
-// Output: a viewport with the sign applied, ready for vkCmdSetViewport
-//
-// The caller never writes the sign by hand, so it cannot disagree with the
-// frontFace baked into the pipeline.
+// Output: a viewport with the sign applied. The caller never writes the sign, so it
+//         cannot disagree with the frontFace baked into the pipeline.
 VkViewport MakeViewport(VkExtent2D extent, ViewportY y) noexcept;
 
-// Opaque or translucent - one value that decides two states
+// Blending - one value, because blend and depth write cannot disagree
 // ============================================================================
 //
-// Translucency takes more than turning blending on: depth write has to go off
-// with it. Left on, a translucent surface records its own depth and hides what
-// is drawn behind it afterwards. Two separate flags would make "blend on, write
-// on" expressible at all.
-//
-// The cost is that ordering becomes the recording side's job - opaque first,
-// translucent back to front. That is the work depth was doing for us.
-//
-// Depth test stays on: a translucent surface behind an opaque one should be hidden.
+// A translucent surface with depth write on hides what is drawn behind it later.
+// Two flags would make that state expressible. The cost: ordering moves to the
+// recording side. Depth test stays on either way.
 enum class Blending {
     Opaque,        // blend off - depth write on
     Translucent,   // blend on  - depth write off
 };
 
-// Graphics pipeline - what we draw with
-// ============================================================================
-//
-// Dynamic rendering bakes the attachment formats into the pipeline. Size is not
-// baked: viewport and scissor are dynamic state, so a resize rebuilds nothing.
+// Dynamic rendering bakes the attachment formats in. Size is not baked - viewport
+// and scissor are dynamic state, so a resize rebuilds nothing.
 struct Pipeline {
     const VulkanDevice* dev = nullptr;   // non-owning, needed to destroy
 
     VkPipelineLayout layout = VK_NULL_HANDLE;
     VkPipeline handle = VK_NULL_HANDLE;
 
-    // frontFace was derived from this and is already baked in. Kept here so the
-    // recording side can hand the same value to MakeViewport - the other half
-    // of the pair, and the only value in this struct that leaves the file.
+    // frontFace is already baked from this. Kept so the recording side hands the
+    // same value to MakeViewport.
     ViewportY viewportY = ViewportY::Down;
 
     Pipeline() = default;
@@ -83,73 +58,96 @@ struct Pipeline {
     Pipeline& operator=(const Pipeline&) = delete;
 };
 
-// Effect: destroys the pipeline and its layout and leaves the struct empty.
-//         The destructor calls this.
+// Effect: destroys pipeline and layout, leaves the struct empty. The destructor
+//         calls this; main calls it directly to rebuild in place when the surface
+//         format changes.
 //
-// The destructor alone falls short in one case: rebuilding while the owner stays
-// alive. When the surface format changes, the fullscreen pipeline still has the
-// old format baked in, so main destroys and rebuilds it in place. Same shape as
-// DestroyImage.
-//
-// Contract: every command buffer referencing this pipeline must have finished.
-//           With two frames in flight another frame's cmd may still be running,
-//           so the caller calls vkDeviceWaitIdle first.
+// Contract: every command buffer using this pipeline must have finished, so the
+//           caller calls vkDeviceWaitIdle - one frame's fence is not enough.
 void DestroyPipeline(const VulkanDevice& dev, Pipeline* pipeline) noexcept;
 
-// Values handed to the shader every frame. They ride inside the command buffer,
-// so there is no pool, no set, no update and no lifetime to manage. The spec
-// guarantees at least 128 bytes.
+// Rides inside the command buffer: no pool, no set, no lifetime. At least 128 bytes
+// are guaranteed, which is why the three matrices are multiplied on the CPU - sent
+// apart they would be 192. Lighting that wants world space splits model back out.
 //
-// The three matrices are multiplied on the CPU and sent as one. Sent apart they
-// would be 192 bytes, past that 128 guarantee, and no shader needs them
-// separately yet - lighting that wants world coordinates is what splits model
-// back out.
-//
-// glm::mat4 is 64 bytes, column-major, and matches the GLSL mat4 layout: it
-// rides as is, no transpose (ThirdParty/glm/VERSION.md has the numbers).
-//
-// alpha sits beside mvp because their cycle is the same - both are decided per
-// object and change per draw. A different cycle would mean a different home.
-//
-// Contract: field order and types must match the shader's layout(push_constant)
-//           block. A mismatch compiles and runs, only the values come out wrong.
-//           The validation layer checks the size but not the field order, and
-//           nothing else looks at both sides.
-//
-// Contract: every stage that reads this block must appear in
-//           pushRange.stageFlags. fragment reads alpha, so VERTEX is not enough.
+// Contract: field order and types match the shader's push_constant block. The layer
+//           checks the size, not the order.
+// Contract: every stage that reads it must be in pushRange.stageFlags - fragment
+//           reads alpha, so VERTEX alone is not enough.
 struct PushConstants {
     glm::mat4 mvp;   // model -> world -> view -> clip
-    float alpha;     // 1.0 is opaque. Ignored by opaque pipelines: blending is off
+    float alpha;     // 1.0 is opaque. Opaque pipelines ignore it: blending is off
 };
 
-// For the scene pass. Reads a vertex buffer and tests depth. viewportY = Up.
+// Vertex - stride 48, all float so no padding. Offsets leave via offsetof.
 //
-// polygonMode is the one argument here because the caller genuinely has a
-// choice: the same vertices can be drawn as faces or as lines. The rest - vertex
-// layout, push size, y-up, culling - is the scene pass convention, so it is
-// decided inside where the caller cannot get it wrong.
+//   position  12   world space
+//   normal    12   +z for a z=0 face wound CCW in y-up
+//   uv         8   (0,0) top-left, y down
+//   tangent   16   xyz, w = bitangent sign (glTF TANGENT)
 //
-// Contract: formats must be what RenderTargets actually created.
-//           LINE requires the device's fillModeNonSolid (Core.h).
-bool CreateTrianglePipeline(const VulkanDevice& dev,
-                            RenderTargetFormats formats,
-                            VkDescriptorSetLayout setLayout,
-                            VkPolygonMode polygonMode,
-                            Blending blending,
-                            Pipeline* out) noexcept;
+// Appending never moves an earlier offset, so a new field cannot disturb a shader.
+//
+// Contract: a field is not an attribute. VertexInput() declares only what
+//           the shader reads -- the layer warns about any extra. tangent has none.
+struct Vertex {
+    float position[3];   // location 0
+    float normal[3];     // location 1
+    float uv[2];         // location 2
+    float tangent[4];    // no attribute yet
+};
 
-// For the present pass. Samples what the scene pass resolved and draws it to the
-// swapchain.
+// One pipeline's worth of decisions. Everything not here is the same in both of
+// ours and lives in CreateGraphicsPipeline. The rows are where each value comes
+// from, which is the whole reason this is a struct and not five arguments:
 //
-// What differs from the triangle pipeline shows up in the contract:
-//   colorFormat   the swapchain's, not our render target's
-//   samples       1 - MSAA already ended in the scene pass resolve
-//   depth         none
-//   vertex input  none, the shader builds three points from gl_VertexIndex
-//   setLayout     presentLayout - fullscreen.frag reads one sampler2D
-//   viewportY     Down - the shader makes its own uv, flipping would invert it
-bool CreateFullscreenPipeline(const VulkanDevice& dev,
-                              VkFormat colorFormat,
-                              VkDescriptorSetLayout setLayout,
-                              Pipeline* out) noexcept;
+//   the shader requires   vertPath . fragPath . vertexInput
+//   the pass decides      viewportY . cullMode
+//   the caller chooses    polygonMode . blending
+//   passed through        colorFormat . depthFormat . samples . setLayout
+//
+// The last row decides nothing: it carries values from RenderTargets and Descriptors
+// so both sides of a baked-in contract read the same one.
+struct GraphicsPipelineDesc {
+    const char* vertPath = nullptr;
+    const char* fragPath = nullptr;
+
+    // nullptr means no vertex buffer - the shader builds its points from
+    // gl_VertexIndex.
+    const VkPipelineVertexInputStateCreateInfo* vertexInput = nullptr;
+
+    VkFormat colorFormat = VK_FORMAT_UNDEFINED;
+    // UNDEFINED means no depth attachment and no depth test. A separate bool
+    // would make "format given, test off" expressible.
+    VkFormat depthFormat = VK_FORMAT_UNDEFINED;
+
+    // Must equal the sample count of the attachments. A mismatch is caught at
+    // vkCmdBeginRendering.
+    VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
+
+    // The push range is not here: the shaders declare it and CreateGraphicsPipeline
+    // reads it out of them.
+    VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
+
+    ViewportY viewportY = ViewportY::Down;
+    VkCullModeFlags cullMode = VK_CULL_MODE_NONE;
+
+    // LINE needs the device's fillModeNonSolid (Core.h).
+    VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL;
+
+    Blending blending = Blending::Opaque;
+};
+
+// The vertex layout for Vertex. Callers hand this to desc.vertexInput; a shader that
+// builds its own points (fullscreen) leaves that null.
+const VkPipelineVertexInputStateCreateInfo& VertexInput() noexcept;
+
+// Effect: builds one pipeline from desc. The push range and the shader stages come
+//         out of the .spv; everything else is desc.
+//
+// Contract: colorFormat, depthFormat and samples must be what the attachments
+//           actually are, and setLayout must be built from desc.fragPath.
+//           LINE polygonMode requires the device's fillModeNonSolid (Core.h).
+bool CreateGraphicsPipeline(const VulkanDevice& dev,
+                            const GraphicsPipelineDesc& desc,
+                            Pipeline* out) noexcept;

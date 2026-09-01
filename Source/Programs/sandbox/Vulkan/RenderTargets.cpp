@@ -61,7 +61,7 @@ RenderTargetFormats ChooseRenderTargetFormats(const VulkanInstance& inst,
 
 // The three images differ only in sample count and usage, and those two lines
 // are where each one's job is written down.
-bool CreateRenderTargets(const VulkanDevice& dev, const Descriptors& descriptors,
+bool CreateRenderTargets(const VulkanDevice& dev,
                          VkExtent2D extent, RenderTargetFormats formats,
                          RenderTargets* out) noexcept {
     out->dev = &dev;
@@ -91,9 +91,6 @@ bool CreateRenderTargets(const VulkanDevice& dev, const Descriptors& descriptors
         return false;
     }
 
-    // resolve, not color. Handing over color passes here and fails at the draw.
-    out->resolveSet = AllocatePresentSet(descriptors, out->resolve.view);
-    if (out->resolveSet == VK_NULL_HANDLE) { return false; }
     return true;
 }
 
