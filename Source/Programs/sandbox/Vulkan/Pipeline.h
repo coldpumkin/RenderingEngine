@@ -3,77 +3,78 @@
 #include "Vulkan/Descriptors.h"
 #include "Vulkan/RenderTargets.h"
 
-// PushConstants가 mat4를 들고 있어서 필요하다. 헤더 온리라 링크에 영향이 없다.
+// PushConstants holds a mat4. Header-only, so it costs nothing at link time.
 #include <glm/glm.hpp>
 
-// Viewport의 y 방향 - 한 결정이 두 곳에 나타난다
+// Viewport y direction - one decision that shows up in two places
 // ============================================================================
 //
-// Vulkan framebuffer는 y가 아래로 향한다. viewport height를 음수로 주면 shader 쪽이
-// y-up이 되는데(VK_KHR_maintenance1, 1.1 core), **그 순간 winding 판정도 같이
-// 뒤집힌다** - front/back은 framebuffer 좌표에서 계산한 넓이의 부호로 정해지고,
-// y에 음수 배율이 걸리면 그 부호가 반대가 되기 때문이다.
+// A Vulkan framebuffer has y pointing down. A negative viewport height makes the
+// shader side y-up (VK_KHR_maintenance1, core in 1.1), and the same negation
+// flips the winding test: front and back come from the sign of the triangle's
+// area in framebuffer space, and a negative y scale flips that sign.
 //
-// 그래서 viewport의 부호를 정하면 frontFace도 정해진다. 둘을 따로 적으면 어긋나도
-// culling이 꺼져 있는 동안은 아무 일도 안 일어나고, 켜는 순간 화면이 빈다.
+// So choosing the viewport sign also chooses frontFace. Written by hand in two
+// places they can disagree, and nothing happens while culling is off - the
+// screen goes empty the moment it is turned on.
 //
-// Contract: 두 shader 모두 clip 좌표에서 shoelace 넓이가 양수인 삼각형을 낸다.
-//           그 전제 위에서만 아래 유도가 성립한다. 세어본 값:
-//             triangle.vert   world 좌표의 두 삼각형이 각각 +1.0
-//             fullscreen.vert (-1,-1) (3,-1) (-1,3) -> +8
+// Contract: both shaders emit triangles whose shoelace area is positive in clip
+//           space. The mapping below holds only on top of that. Counted:
+//             triangle.vert    two world-space triangles, +1.0 each
+//             fullscreen.vert  (-1,-1) (3,-1) (-1,3) -> +8
 //
-// **아래 매핑은 추론이 아니라 실측이다.** 넓이 부호와 enum 이름이 어느 쪽으로
-// 대응하는지 스펙을 안 열고 추론했다가 반대로 짚어 화면이 통째로 검게 나왔다
-// (두 pipeline이 동시에 culling됐다). 둘 다 CULL_MODE_BACK으로 켜둔 채
-// check.ps1이 기준선 픽셀 비율을 되찾는 것으로 확정했다.
+// The mapping is measured, not derived. Both pipelines run with CULL_MODE_BACK
+// and check.ps1 reproduces the baseline pixel ratios.
 enum class ViewportY {
-    Down,   // Vulkan 기본. height가 양수
-    Up,     // height가 음수. world 좌표가 y-up이라는 우리 규약
+    Down,   // Vulkan default, positive height
+    Up,     // negative height - our world coordinates are y-up
 };
 
-// Input:  이 pipeline을 그릴 때 쓸 viewport의 y 방향
-// Output: 그 방향에서 위 Contract의 삼각형이 앞면이 되는 frontFace
+// Input:  the viewport y direction this pipeline draws with
+// Output: the frontFace that makes the Contract triangles front-facing
 constexpr VkFrontFace FrontFaceFor(ViewportY y) noexcept {
     return y == ViewportY::Up ? VK_FRONT_FACE_COUNTER_CLOCKWISE
                               : VK_FRONT_FACE_CLOCKWISE;
 }
 
-// Input:  extent, 그리고 그릴 pipeline의 viewportY
-// Output: 부호까지 맞춰진 viewport (기록할 때 vkCmdSetViewport에 그대로 넘긴다)
+// Input:  extent, and the viewportY of the pipeline about to draw
+// Output: a viewport with the sign applied, ready for vkCmdSetViewport
 //
-// 호출자가 부호를 손으로 안 적는 것이 요점이다 - pipeline이 든 값을 그대로 넘기면
-// 위의 frontFace와 어긋날 수가 없다.
+// The caller never writes the sign by hand, so it cannot disagree with the
+// frontFace baked into the pipeline.
 VkViewport MakeViewport(VkExtent2D extent, ViewportY y) noexcept;
 
-// 불투명인가 반투명인가 - 이것도 한 값이 둘을 정한다
+// Opaque or translucent - one value that decides two states
 // ============================================================================
 //
-// 반투명은 blend를 켜는 것만으로 안 된다. **depth write를 같이 꺼야 한다** - 켜두면
-// 앞의 반투명이 자기 깊이를 남겨서 그 뒤에 그리는 것이 가려진다. 둘을 따로 두면
-// *"blend는 켰는데 write도 켰다"* 는 어긋난 조합이 표현 가능해진다.
+// Translucency takes more than turning blending on: depth write has to go off
+// with it. Left on, a translucent surface records its own depth and hides what
+// is drawn behind it afterwards. Two separate flags would make "blend on, write
+// on" expressible at all.
 //
-// **대신 순서를 지키는 책임이 기록 쪽으로 넘어간다.** 불투명을 먼저, 반투명을 뒤에서
-// 앞으로. depth가 대신 해주던 일이 사라지는 것이 이 값의 진짜 대가다.
+// The cost is that ordering becomes the recording side's job - opaque first,
+// translucent back to front. That is the work depth was doing for us.
 //
-// depth test는 끄지 않는다. 반투명이 불투명 뒤에 있으면 가려지는 게 맞다.
+// Depth test stays on: a translucent surface behind an opaque one should be hidden.
 enum class Blending {
-    Opaque,        // blend 끔 · depth write 켬
-    Translucent,   // blend 켬  · depth write 끔
+    Opaque,        // blend off - depth write on
+    Translucent,   // blend on  - depth write off
 };
 
-// Graphics pipeline - 무엇으로 그리는가
+// Graphics pipeline - what we draw with
 // ============================================================================
 //
-// Dynamic rendering이 attachment format을 pipeline에 박는다. 크기에는 안 묶인다 -
-// viewport/scissor를 dynamic state로 뒀으므로 리사이즈로 재생성이 필요 없다.
+// Dynamic rendering bakes the attachment formats into the pipeline. Size is not
+// baked: viewport and scissor are dynamic state, so a resize rebuilds nothing.
 struct Pipeline {
-    const VulkanDevice* dev = nullptr;   // 파괴에 필요한 non-owning 상태
+    const VulkanDevice* dev = nullptr;   // non-owning, needed to destroy
 
     VkPipelineLayout layout = VK_NULL_HANDLE;
     VkPipeline handle = VK_NULL_HANDLE;
 
-    // frontFace가 이 값에서 유도돼 pipeline에 들어가 있다. 기록할 때 MakeViewport에
-    // 그대로 넘기라고 여기 남긴다 - 짝이 맞아야 하는 반대편이다.
+    // frontFace was derived from this and is already baked in. Kept here so the
+    // recording side can hand the same value to MakeViewport - the other half
+    // of the pair, and the only value in this struct that leaves the file.
     ViewportY viewportY = ViewportY::Down;
 
     Pipeline() = default;
@@ -82,48 +83,55 @@ struct Pipeline {
     Pipeline& operator=(const Pipeline&) = delete;
 };
 
-// Effect: pipeline과 layout을 지우고 빈 상태로 되돌린다. 소멸자가 이걸 부른다.
+// Effect: destroys the pipeline and its layout and leaves the struct empty.
+//         The destructor calls this.
 //
-// 소멸자만으로 부족한 경우가 실제로 하나 있다 - **소유자를 살려둔 채 다시 만드는
-// 것**이다. Surface format이 바뀌면 fullscreen pipeline이 옛 format을 박은 채
-// 남으므로 main이 그 자리에서 지우고 다시 만든다. `DestroyImage`와 같은 모양이다.
+// The destructor alone falls short in one case: rebuilding while the owner stays
+// alive. When the surface format changes, the fullscreen pipeline still has the
+// old format baked in, so main destroys and rebuilds it in place. Same shape as
+// DestroyImage.
 //
-// Contract: 호출 전에 이 pipeline을 참조하는 command buffer가 전부 끝나 있어야 한다.
-//           frames-in-flight가 둘이라 **다른 frame의 cmd가 아직 실행 중일 수 있다** -
-//           그래서 호출자가 vkDeviceWaitIdle을 먼저 부른다.
+// Contract: every command buffer referencing this pipeline must have finished.
+//           With two frames in flight another frame's cmd may still be running,
+//           so the caller calls vkDeviceWaitIdle first.
 void DestroyPipeline(const VulkanDevice& dev, Pipeline* pipeline) noexcept;
 
-// Shader에 매 frame 넘기는 값. Command buffer에 값이 그대로 실려 가므로 pool도
-// set도 갱신도 수명 관리도 없다. 스펙이 최소 128바이트를 보장한다.
+// Values handed to the shader every frame. They ride inside the command buffer,
+// so there is no pool, no set, no update and no lifetime to manage. The spec
+// guarantees at least 128 bytes.
 //
-// Contract: shader의 layout(push_constant) 블록과 필드 순서·타입이 같아야 한다.
-//           어긋나면 컴파일도 실행도 되는데 값만 이상해진다 - validation layer가
-//           크기는 보지만 필드 순서는 못 본다.
-// **셋을 CPU에서 곱해 하나로 보낸다.** mat4 셋을 따로 보내면 192바이트라 위의 128
-// 보장을 넘는다. 그리고 shader가 셋을 각각 알아야 할 이유가 아직 없다 - 조명이
-// world 좌표를 필요로 하게 되면 그때 model이 갈라져 나온다.
+// The three matrices are multiplied on the CPU and sent as one. Sent apart they
+// would be 192 bytes, past that 128 guarantee, and no shader needs them
+// separately yet - lighting that wants world coordinates is what splits model
+// back out.
 //
-// glm::mat4는 64바이트 column-major이고 GLSL의 mat4와 레이아웃이 같다. 전치도
-// 변환도 없이 그대로 실린다 (`ThirdParty/glm/VERSION.md`가 숫자로 확인해뒀다).
-// alpha가 mvp와 같은 자리에 실리는 이유: **주기가 같다.** 둘 다 물체마다 정해지고
-// draw마다 바뀐다. 주기가 갈리면 그때 자리도 갈린다.
+// glm::mat4 is 64 bytes, column-major, and matches the GLSL mat4 layout: it
+// rides as is, no transpose (ThirdParty/glm/VERSION.md has the numbers).
 //
-// Contract: 이 블록을 읽는 stage가 pushRange.stageFlags에 전부 있어야 한다.
-//           alpha를 fragment가 읽으므로 VERTEX만으로는 부족하다.
+// alpha sits beside mvp because their cycle is the same - both are decided per
+// object and change per draw. A different cycle would mean a different home.
+//
+// Contract: field order and types must match the shader's layout(push_constant)
+//           block. A mismatch compiles and runs, only the values come out wrong.
+//           The validation layer checks the size but not the field order, and
+//           nothing else looks at both sides.
+//
+// Contract: every stage that reads this block must appear in
+//           pushRange.stageFlags. fragment reads alpha, so VERTEX is not enough.
 struct PushConstants {
     glm::mat4 mvp;   // model -> world -> view -> clip
-    float alpha;     // 1.0이면 불투명. Opaque pipeline에서는 blend가 꺼져 무시된다
+    float alpha;     // 1.0 is opaque. Ignored by opaque pipelines: blending is off
 };
 
-// Scene pass용. Vertex buffer를 읽고 depth test를 한다. viewportY = Up.
+// For the scene pass. Reads a vertex buffer and tests depth. viewportY = Up.
 //
-// polygonMode를 인자로 받는 유일한 항목인 이유: **호출자에게 실제로 고를 것이
-// 있다.** 같은 정점을 면으로 그릴지 선으로 그릴지는 우리가 정할 수 없다.
-// 나머지(vertex layout · push 크기 · y-up · culling)는 scene pass의 규약이라
-// 호출자가 고를 수 없고, 그래서 안에서 정한다.
+// polygonMode is the one argument here because the caller genuinely has a
+// choice: the same vertices can be drawn as faces or as lines. The rest - vertex
+// layout, push size, y-up, culling - is the scene pass convention, so it is
+// decided inside where the caller cannot get it wrong.
 //
-// Contract: formats가 RenderTargets가 실제로 만든 것과 같아야 한다.
-//           LINE은 device의 fillModeNonSolid를 요구한다 (Core.h).
+// Contract: formats must be what RenderTargets actually created.
+//           LINE requires the device's fillModeNonSolid (Core.h).
 bool CreateTrianglePipeline(const VulkanDevice& dev,
                             RenderTargetFormats formats,
                             VkDescriptorSetLayout setLayout,
@@ -131,14 +139,16 @@ bool CreateTrianglePipeline(const VulkanDevice& dev,
                             Blending blending,
                             Pipeline* out) noexcept;
 
-// Present pass용. Pass 1의 결과를 texture로 읽어 swapchain에 그린다.
+// For the present pass. Samples what the scene pass resolved and draws it to the
+// swapchain.
 //
-// Triangle pipeline과 다른 점이 계약에서 드러난다:
-//   colorFormat  swapchain format이다 (우리 render target format이 아니다)
-//   depth        없다
-//   vertex input 없다 - shader가 gl_VertexIndex로 세 점을 만든다
-//   setLayout    presentLayout이다 - fullscreen.frag가 sampler2D를 하나만 읽는다
-//   viewportY    Down이다 - shader가 uv를 직접 만들어 쓰므로 뒤집으면 안 된다
+// What differs from the triangle pipeline shows up in the contract:
+//   colorFormat   the swapchain's, not our render target's
+//   samples       1 - MSAA already ended in the scene pass resolve
+//   depth         none
+//   vertex input  none, the shader builds three points from gl_VertexIndex
+//   setLayout     presentLayout - fullscreen.frag reads one sampler2D
+//   viewportY     Down - the shader makes its own uv, flipping would invert it
 bool CreateFullscreenPipeline(const VulkanDevice& dev,
                               VkFormat colorFormat,
                               VkDescriptorSetLayout setLayout,
