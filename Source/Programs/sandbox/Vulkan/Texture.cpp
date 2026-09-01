@@ -93,7 +93,7 @@ static bool CreateTextureFromPixels(const VulkanDevice& dev,
     // set은 여기서 안 만든다. binding이 둘이 되면서 set이 image 하나가 아니라 둘의
     // 조합이 됐고, 그 짝은 texture 자신이 모른다 - 호출자가 정한다.
     //
-    // 위에서 전이시킨 SHADER_READ_ONLY_OPTIMAL이 AllocateImageSet이 적어두는 값과
+    // 위에서 전이시킨 SHADER_READ_ONLY_OPTIMAL이 descriptor에 적히는 값과
     // 같아야 한다. 어긋나면 검증 레이어가 draw에서 잡는다.
     LOG("[vk] %s texture ready (%ux%u)\n", label, kSize, kSize);
     return true;

@@ -1,5 +1,7 @@
 ﻿#include "Vulkan/Descriptors.h"
 
+#include <algorithm>   // kMaxBindingCount의 std::max
+
 // 각 layout이 요구하는 binding 개수. 출처는 shader이고 여기는 받아적는 쪽이다.
 //
 //   scene    triangle.frag   sampler2D tex(0) · detail(1)
@@ -9,6 +11,16 @@
 //           같이 안 보고, 어긋나면 validation layer가 draw에서 잡는다.
 constexpr uint32_t kSceneBindingCount = 2;
 constexpr uint32_t kPresentBindingCount = 1;
+
+// AllocateImageSet의 배열 크기. 그 함수를 두 layout이 공유하므로 **둘 중 큰 쪽**이
+// 필요하고, 그것이 이 이름의 뜻 전부다.
+//
+// 유도하는 이유: 손으로 고르면 지금은 맞고 나중에 조용히 틀린다. 여기가 모자라면
+// 스택을 밟는데 컴파일러도 validation layer도 안 잡는다 - 이 파일에서 그 둘이
+// 아무 말도 안 해주는 유일한 자리다.
+//
+// Contract: layout이 셋째로 늘면 그 상수도 이 max에 들어가야 한다.
+constexpr uint32_t kMaxBindingCount = std::max(kSceneBindingCount, kPresentBindingCount);
 
 // 두 layout이 같은 모양의 binding을 쓴다 - 개수만 다르다.
 // Effect: bindingCount개를 0번부터 채운 layout을 만든다
@@ -90,6 +102,7 @@ bool CreateDescriptors(const VulkanDevice& dev,
 //
 // Contract: viewCount는 layout이 요구하는 binding 개수와 같아야 한다. 모자라면
 //           안 채운 자리를 shader가 읽다가 draw에서 잡힌다.
+//           그리고 kMaxBindingCount를 넘으면 안 된다 - 이쪽은 아무도 안 잡는다.
 static VkDescriptorSet AllocateImageSet(const Descriptors& descriptors,
                                         VkDescriptorSetLayout layout,
                                         const VkImageView* views, uint32_t viewCount) noexcept {
@@ -110,8 +123,8 @@ static VkDescriptorSet AllocateImageSet(const Descriptors& descriptors,
     //
     // imageLayout은 bind 시점이 아니라 읽는 시점의 layout이다. Texture 업로드와
     // RecordPresentPass가 그 전에 SHADER_READ_ONLY_OPTIMAL로 전이시키는 것과 짝이다.
-    VkDescriptorImageInfo imageInfo[kSceneBindingCount]{};
-    VkWriteDescriptorSet write[kSceneBindingCount]{};
+    VkDescriptorImageInfo imageInfo[kMaxBindingCount]{};
+    VkWriteDescriptorSet write[kMaxBindingCount]{};
     for (uint32_t i = 0; i < viewCount; ++i) {
         imageInfo[i].sampler = descriptors.sampler;
         imageInfo[i].imageView = views[i];

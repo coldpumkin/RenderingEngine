@@ -27,7 +27,10 @@ struct Texture {
     Image image;
 
     // 이 texture가 binding 0에 걸린 set. binding 1은 다른 texture라 짝을 여기서
-    // 못 정한다 - 호출자가 AllocateImageSet으로 채운다. pool이 죽을 때 같이 사라진다.
+    // 못 정한다 - 호출자가 AllocateSceneSet으로 채운다. pool이 죽을 때 같이 사라진다.
+    //
+    // 그래서 이 필드는 이름만큼 자기 것이 아니다 - 내용은 (이 texture, 다른 texture)
+    // 조합이고, 그 배치는 texture가 둘이라서 성립한다. 셋이 되면 갈릴 자리다.
     VkDescriptorSet set = VK_NULL_HANDLE;
 
     Texture() = default;
