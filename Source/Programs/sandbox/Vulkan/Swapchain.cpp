@@ -127,7 +127,7 @@ bool CreateSwapchain(const VulkanInstance& inst,
     info.imageColorSpace = surfaceFormat.colorSpace;
     info.imageExtent = caps.currentExtent;
     info.imageArrayLayers = 1;
-    // Present stage가 여기에 직접 그리므로 COLOR_ATTACHMENT만 있으면 된다.
+    // Post-process pass가 여기에 직접 그리므로 COLOR_ATTACHMENT만 있으면 된다.
     // 스펙이 supportedUsageFlags에 항상 넣는 유일한 용도라 확인도 필요 없다.
     info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     // 현재 정책: swapchain image는 graphics queue만 만진다. Compute가 여기 직접 써야
@@ -173,7 +173,7 @@ bool CreateSwapchain(const VulkanInstance& inst,
     sc.images.resize(actualCount);
     for (uint32_t i = 0; i < actualCount; ++i) {
         // 조회한 image에 우리가 만든 view를 붙인다. desc는 이 image가 무엇인지 -
-        // present stage의 pipeline이 같은 format으로 만들어져야 한다.
+        // post-process pass의 pipeline이 같은 format으로 만들어져야 한다.
         Texture& texture = sc.images[i].texture;
         texture.desc = {sc.extent, surfaceFormat.format, VK_SAMPLE_COUNT_1_BIT,
                         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT};

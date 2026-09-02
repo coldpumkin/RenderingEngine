@@ -122,7 +122,7 @@ void UpdateSet(const Descriptors& descriptors, const DescriptorLayout& layout,
     // 뽑은 set은 비어 있어서 binding마다 채운다. type이 어느 info를 쓸지 정한다.
     //
     // imageLayout은 bind 시점이 아니라 읽는 시점의 layout이다. Texture 업로드와
-    // RecordPresentStage가 그 전에 SHADER_READ_ONLY_OPTIMAL로 전이시키는 것과 짝이다.
+    // RecordPostProcessPass가 그 전에 SHADER_READ_ONLY_OPTIMAL로 전이시키는 것과 짝이다.
     VkDescriptorImageInfo imageInfo[kMaxBindingsPerSet]{};
     VkDescriptorBufferInfo bufferInfo[kMaxBindingsPerSet]{};
     VkWriteDescriptorSet write[kMaxBindingsPerSet]{};

@@ -197,8 +197,8 @@ FrameResult BeginFrame(const VulkanDevice& dev,
 
 bool SubmitFrame(const VulkanDevice& dev, const FrameSlot& slot,
                  const SwapchainImage& image) noexcept {
-    // Wait where the swapchain image is first touched -- the present stage draws
-    // into it. The opaque stage may run before the acquire completes.
+    // Wait where the swapchain image is first touched -- the post-process pass draws
+    // into it. The scene pass may run before the acquire completes.
     //
     // Must overlap RecordPresentPass's barrier srcStageMask, not match it. Checked
     // with sync validation: no overlap gave 20 reports, partial overlap gave 0.

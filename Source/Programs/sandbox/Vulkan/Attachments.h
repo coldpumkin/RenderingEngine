@@ -1,6 +1,6 @@
 ﻿#pragma once
 
-// Attachment formats - the spec a stage draws into
+// Attachment formats - the spec a pass draws into
 // ============================================================================
 //
 // Three values decide three Textures (color, its resolve, depth) and go unchanged

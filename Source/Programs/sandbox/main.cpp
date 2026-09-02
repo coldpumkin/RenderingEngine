@@ -76,7 +76,7 @@
 // A span inside the index buffer.
 //
 // Holding the two numbers together lets DrawItem carry a name instead of a position.
-// The named spans live next to kIndices; separating them breaks the guard.
+// The named spans live next to indices; separating them breaks the guard.
 struct IndexRange {
     uint32_t firstIndex = 0;
     uint32_t count = 0;
@@ -201,7 +201,7 @@ static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
     vk.vkCmdBindVertexBuffers(cmd, 0, 1, &mesh.vertices.handle, &offset);
 
     // Index buffers have no slot number: a command buffer holds exactly one.
-    // Contract: this type must match the element type of kIndices.
+    // Contract: this type must match the element type of indices.
     vk.vkCmdBindIndexBuffer(cmd, mesh.indices.handle, 0, mesh.desc.indexType);
 
     // Order is whatever the caller wrote into the array. This layer does not sort.
@@ -224,7 +224,7 @@ static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
     vk.vkCmdEndRendering(cmd);
 }
 
-// Present stage
+// Post-process pass
 //
 // Input:  the slot's resolve texture, and where to put it
 // Effect: appends commands that sample the resolve image into the swapchain image
@@ -259,7 +259,7 @@ static void RecordPostProcessPass(const FrameSlot& slot, const PostProcessPass& 
                            VK_IMAGE_LAYOUT_UNDEFINED,
                            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
-    // Window sized, unlike the opaque stage. The sampler's LINEAR filter scales.
+    // Window sized, unlike the scene pass. The sampler's LINEAR filter scales.
     VkRenderingAttachmentInfo swapColor{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
     swapColor.imageView = dest.image.view;
     swapColor.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
@@ -274,7 +274,7 @@ static void RecordPostProcessPass(const FrameSlot& slot, const PostProcessPass& 
 
     vk.vkCmdBeginRendering(cmd, &rendering);
 
-    // Opposite sign from the opaque stage: this pipeline is built ViewportY::Down.
+    // Opposite sign from the scene pass: this pipeline is built ViewportY::Down.
     const VkViewport viewport = MakeViewport(destExtent, pipeline.desc.viewportY);
     vk.vkCmdSetViewport(cmd, 0, 1, &viewport);
 
@@ -300,7 +300,7 @@ static void RecordPostProcessPass(const FrameSlot& slot, const PostProcessPass& 
                            VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 }
 
-// Effect: resets the slot's command buffer and records both stages from it
+// Effect: resets the slot's command buffer and records both passes from it
 // Output: false means the buffer is invalid and must not be submitted
 //
 // Takes the slot but never touches its fence or semaphore -- a rule, not a type.
@@ -446,8 +446,8 @@ int main() {
 
     // The only question asked of the hardware. It answers with the GPU, its queues,
     // and what we can draw into on it -- a GPU that cannot do the last one is not a
-    // candidate. The second stage's format is the swapchain's, and that is made in
-    // the loop, so nothing asks for it here.
+    // candidate. The post-process pass draws in the swapchain's format, and that is
+    // made in the loop, so nothing asks for it here.
     const PhysicalDeviceSelection selection = PickPhysicalDevice(inst, window.surface);
     if (selection.gpu == VK_NULL_HANDLE) { return 1; }
     const AttachmentFormats formats = selection.formats;
@@ -459,8 +459,9 @@ int main() {
     // Passes
     // ------------------------------------------------------------------------
     //
-    // One pipeline per stage. What stays fixed inside a stage lives here; what can
-    // change between draws belongs to a DrawItem.
+    // One pipeline each, which is where the passes happen to be, not a rule about
+    // them. What stays fixed inside a pass lives here; what can change between draws
+    // belongs to a DrawItem.
     //
     // viewportY and cullMode are the pass's, not the shader's. A pipeline and a frame's
     // targets never create each other but must agree on formats -- a pair per pass.
@@ -526,8 +527,8 @@ int main() {
     static_assert(kVertexCount <= 0xFFFF, "index type is uint16");
 
     Vertex vertices[kVertexCount]{};
-    uint16_t kIndices[kIndexCount]{};
-    MakeSphere(kStacks, kSlices, kRadius, vertices, kIndices);
+    uint16_t indices[kIndexCount]{};
+    MakeSphere(kStacks, kSlices, kRadius, vertices, indices);
 
     constexpr IndexRange kSphereIndices{0, kIndexCount};
     static_assert(kSphereIndices.End() == kIndexCount,
@@ -536,7 +537,7 @@ int main() {
     // stride is the one thing a mesh can say about its vertices; the pipeline says
     // which bytes are what.
     const MeshDesc meshDesc{sizeof(Vertex), kVertexCount, kIndexCount};
-    if (!CreateMesh(dev, commands, meshDesc, vertices, kIndices, &mesh)) { return 1; }
+    if (!CreateMesh(dev, commands, meshDesc, vertices, indices, &mesh)) { return 1; }
 
     constexpr uint32_t kCheckerSize = 8;
     uint8_t checkerPixels[kCheckerSize * kCheckerSize * 4]{};
@@ -690,11 +691,12 @@ int main() {
              1.0f, kSphereIndices},
         };
 
-        // Fill this frame's share
+        // Fill this frame's share of the pass
         //
         // Assignment only, so it belongs up here: what reaches the GPU, and when, is
         // RecordFrame's. The camera and light go to the pass because every draw in it
-        // reads them; the item list goes to the slot because it is this frame's.
+        // reads them. The item list is handed in as an argument instead -- it is this
+        // frame's alone and no pass owns it.
         FrameSlot& slot = slots[slotIndex];
         scene.frames[slotIndex].uniformValue =
             {camera, glm::vec4{lightDir, 0.0f},

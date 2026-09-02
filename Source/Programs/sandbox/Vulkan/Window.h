@@ -101,7 +101,7 @@ bool WindowHasDrawableSize(const Window& window) noexcept;
 // Logical device가 아니라 physical device를 받는다 - GPU에게 묻는 조회라
 // vkCreateDevice 전에도 부를 수 있다. 한때 VulkanDevice 전체를 받으면서 .gpu만 썼는데,
 // 그러면 "device가 있어야 한다"고 시그니처가 거짓말을 한다.
-// Output: what the present stage draws into. The swapchain decides it, unlike our own
+// Output: what the post-process pass draws into. The swapchain decides it, unlike our own
 //         attachments; colorSpace stays behind because only swapchain creation reads it.
 inline AttachmentFormats WindowAttachment(const Window& window) noexcept {
     return AttachmentFormats{window.surfaceFormat.format};
