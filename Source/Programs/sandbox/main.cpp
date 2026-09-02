@@ -52,8 +52,8 @@
 // the draw target is fixed inside it. The second stage reads what the first wrote:
 //
 //   [opaque stage]   knows nothing about the window
-//     barrier x3 (our color, its resolve target, depth)
-//     BeginRendering   attachment = slot.color / slot.depth, resolving into color's resolve
+//     barrier x3 (slot.color, slot.colorResolve, slot.depth)
+//     BeginRendering   attachment = slot.color / slot.depth, resolving into colorResolve
 //       BindVertexBuffers, BindIndexBuffer
 //       BindPipeline, BindDescriptorSets
 //       per item: PushConstants, DrawIndexed
@@ -121,7 +121,7 @@ static void RecordOpaqueStage(const FrameSlot& slot, const Pipeline& pipeline) n
 
     // The resolve target is written too, at the end of the pass, so it needs the same
     // layout and the same stage. Nothing here draws into it directly.
-    RecordLayoutTransition(vk, cmd, slot.color.resolve.handle, VK_IMAGE_ASPECT_COLOR_BIT,
+    RecordLayoutTransition(vk, cmd, slot.colorResolve.image.handle, VK_IMAGE_ASPECT_COLOR_BIT,
                            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
@@ -149,7 +149,7 @@ static void RecordOpaqueStage(const FrameSlot& slot, const Pipeline& pipeline) n
     color.imageView = slot.color.image.view;
     color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     color.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
-    color.resolveImageView = slot.color.resolve.view;
+    color.resolveImageView = slot.colorResolve.image.view;
     color.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     color.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -223,13 +223,13 @@ static void RecordOpaqueStage(const FrameSlot& slot, const Pipeline& pipeline) n
 static void RecordPresentStage(const FrameSlot& slot, const Pipeline& pipeline) noexcept {
     const VolkDeviceTable& vk = slot.dev->table;
     VkCommandBuffer cmd = slot.cmd;
-    const Texture& source = slot.color;
+    const Texture& source = slot.colorResolve;
     const Texture& dest = slot.image->texture;
     const VkExtent2D destExtent = dest.desc.extent;
 
     // Written as an attachment, read as a texture -- that is this whole pass. The
     // layout must equal the one recorded into the descriptor set.
-    RecordLayoutTransition(vk, cmd, source.resolve.handle, VK_IMAGE_ASPECT_COLOR_BIT,
+    RecordLayoutTransition(vk, cmd, source.image.handle, VK_IMAGE_ASPECT_COLOR_BIT,
                            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,

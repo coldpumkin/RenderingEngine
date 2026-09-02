@@ -43,11 +43,17 @@ bool CreateFrameSlot(const VulkanDevice& dev, const Commands& commands,
     // Built without looking at the window, so this works while minimized - there may
     // be no swapchain yet.
     //
-    // Two specs, and the difference is SAMPLED: color is read by the next stage, so it
-    // gets a resolve and a set; depth is not, so it gets neither.
+    // Three descs, and every difference is written out rather than derived inside
+    // CreateTexture: color is multisample and carries no SAMPLED (sampler2D cannot
+    // read a multisample image), colorResolve is the 1-sample copy the present pass
+    // reads, and depth never leaves the frame.
     if (!CreateTexture(dev, {extent, formats.color, formats.samples,
+                             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT}, &out->color)) {
+        return false;
+    }
+    if (!CreateTexture(dev, {extent, formats.color, VK_SAMPLE_COUNT_1_BIT,
                              VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
-                                 | VK_IMAGE_USAGE_SAMPLED_BIT}, &out->color)) {
+                                 | VK_IMAGE_USAGE_SAMPLED_BIT}, &out->colorResolve)) {
         return false;
     }
     if (!CreateTexture(dev, {extent, formats.depth, formats.samples,
@@ -72,13 +78,14 @@ bool CreateFrameSlot(const VulkanDevice& dev, const Commands& commands,
 
     // 이 slot 몫의 set 둘을 채운다. 뽑는 것은 pool이 이미 했다.
     const BindingValue opaque[] = {
-        {ReadView(input)},                                             // 0: texture
+        {input.image.view},                                            // 0: texture
         {VK_NULL_HANDLE, out->uniform.handle, sizeof(SceneUniform)},   // 1: scene
     };
     UpdateSet(descriptors, *descriptors.scene, descriptors.sceneSets[index],
               opaque, static_cast<uint32_t>(std::size(opaque)));
 
-    const BindingValue present[] = {{ReadView(out->color)}};
+    // The resolve, not color: the multisample image cannot be sampled.
+    const BindingValue present[] = {{out->colorResolve.image.view}};
     UpdateSet(descriptors, *descriptors.present, descriptors.presentSets[index],
               present, 1);
     return true;

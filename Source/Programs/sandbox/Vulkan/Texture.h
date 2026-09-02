@@ -1,19 +1,22 @@
 ﻿#pragma once
 
-// Texture - one attachment
+// Texture - one GPU image resource
 // ============================================================================
 //
-// One Texture is one attachment. Vulkan agrees: VkRenderingAttachmentInfo holds the
-// multisample view and its resolve view together, so resolve is a field of this
-// attachment, not a second one.
+// One Texture is one image. Being an attachment or a sampled input is not a property
+// of the type: desc.usage and the current layout decide that. Unreal's FRHITexture is
+// the same shape, and an attachment there (FColorEntry) points at two of them rather
+// than nesting one inside the other.
 //
-// desc decides the resolve, so the two cannot disagree:
-//   samples > 1 and SAMPLED  -> resolve exists, and the stage averages into it
+// So a resolve target is its own Texture, and the pass that owns both names them.
+// Holding it in here gave every sampled texture a field it never used, and turned
+// "which view do I read" into a question about a value (is resolve.view null?)
+// instead of a question the caller already knows the answer to.
 //
-// No descriptor set here: a set belongs to the stage that binds it, not to one of the
+// No descriptor set here: a set belongs to the pass that binds it, not to one of the
 // things it names -- it can name several.
 //
-// Two ways to fill one: draw into it (a stage does that) or upload pixels.
+// Two ways to fill one: draw into it (a pass does that) or upload pixels.
 
 #include "Vulkan/Image.h"
 
@@ -31,15 +34,7 @@ struct TextureDesc {
 struct Texture {
     TextureDesc desc;
     Image image;
-    Image resolve;   // only when desc.samples > 1
 };
-
-// Which view the next stage samples. A multisample image cannot be read through
-// sampler2D, so it is the resolve when there is one.
-inline VkImageView ReadView(const Texture& texture) noexcept {
-    return texture.resolve.view != VK_NULL_HANDLE ? texture.resolve.view
-                                                  : texture.image.view;
-}
 
 // Output: an empty texture. Something has to draw into it before it is worth reading.
 bool CreateTexture(const VulkanDevice& dev, const TextureDesc& desc,

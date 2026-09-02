@@ -49,9 +49,14 @@ struct FrameSlot {
     VkFence inFlight = VK_NULL_HANDLE;
 
     // Where the frame using this slot draws: our attachments, not swapchain ones.
-    // color carries its own resolve and the set that reads it; depth has neither,
-    // and that difference is in their descs, not in code here.
+    // Three separate Textures, because a Texture is one image and these are three:
+    //
+    //   color         multisample. Drawn into, then discarded
+    //   colorResolve  1 sample. vkCmdEndRendering averages into it, and the present
+    //                 pass samples it -- the only one that leaves the scene pass
+    //   depth         multisample. Tested and written, never read outside the frame
     Texture color;
+    Texture colorResolve;
     Texture depth;
 
     // What the scene brings. Pointers because the scene owns them and every slot
@@ -86,8 +91,8 @@ struct FrameSlot {
     FrameSlot& operator=(const FrameSlot&) = delete;
 };
 
-// Effect: allocates the command buffer, semaphore, fence and the two attachments,
-//         and points the slot at what the scene brings.
+// Effect: allocates the command buffer, semaphore, fence and the three attachment
+//         textures, and points the slot at what the scene brings.
 //
 // Contract: formats and extent must be what the pipelines were given. main chooses
 //           once and hands the same values to both.
