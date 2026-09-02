@@ -69,36 +69,3 @@ bool ChooseRenderTargetFormats(const VulkanInstance& inst, VkPhysicalDevice gpu,
     }
     return true;
 }
-
-// The three images differ only in sample count and usage, and those two lines
-// are where each one's job is written down.
-bool CreateRenderTargets(const VulkanDevice& dev,
-                         VkExtent2D extent, RenderTargetFormats formats,
-                         RenderTargets* out) noexcept {
-    out->extent = extent;
-
-    // Drawn into. No SAMPLED: our shaders cannot read a multisample image, and
-    // asking them to would run out of usage right here.
-    if (!CreateImage2D(dev, extent, formats.color, formats.samples,
-                       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, &out->color)) {
-        return false;
-    }
-
-    // Read by the present pass, which is what SAMPLED means here.
-    // COLOR_ATTACHMENT is for being a resolve target - we never draw into it.
-    if (!CreateImage2D(dev, extent, formats.color, VK_SAMPLE_COUNT_1_BIT,
-                       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                       &out->resolve.image)) {
-        return false;
-    }
-
-    // Goes nowhere: used within the frame and dropped. The sample count still
-    // follows color, because one rasterizationSamples covers the whole pass.
-    if (!CreateImage2D(dev, extent, formats.depth, formats.samples,
-                       VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, &out->depth)) {
-        return false;
-    }
-
-    return true;
-}
-

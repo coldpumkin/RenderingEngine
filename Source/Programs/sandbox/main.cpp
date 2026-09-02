@@ -93,7 +93,7 @@ struct DrawItem {
 
 // Scene pass
 //
-// Input:  the slot (target, pipeline), and what the scene brings: mesh, texture, items
+// Input:  the slot (images, pipeline), and what the scene brings: mesh, texture, items
 // Effect: appends commands that draw into draw.color / draw.depth
 //
 // No swapchain, so this works without a window. Takes the camera because a stage has
@@ -106,13 +106,12 @@ static void RecordScenePass(const VolkDeviceTable& vk, const FrameSlot& slot,
                             const glm::mat4& camera,
                             const DrawItem* items, uint32_t itemCount) noexcept {
     VkCommandBuffer cmd = slot.cmd;
-    const RenderTargets& draw = slot.targets;
     const Pipeline& pipeline = *slot.scene;
-    const VkExtent2D extent = draw.extent;   // render resolution, not window size
+    const VkExtent2D extent = slot.extent;   // render resolution, not window size
 
     // oldLayout UNDEFINED: loadOp=CLEAR overwrites, so the old contents are dead.
     // Asking to preserve them makes the driver actually copy.
-    RecordLayoutTransition(vk, cmd, draw.color.handle, VK_IMAGE_ASPECT_COLOR_BIT,
+    RecordLayoutTransition(vk, cmd, slot.color.image.handle, VK_IMAGE_ASPECT_COLOR_BIT,
                            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
@@ -121,7 +120,7 @@ static void RecordScenePass(const VolkDeviceTable& vk, const FrameSlot& slot,
 
     // The resolve target is written too, at the end of the pass, so it needs the same
     // layout and the same stage. Nothing here draws into it directly.
-    RecordLayoutTransition(vk, cmd, draw.resolve.image.handle, VK_IMAGE_ASPECT_COLOR_BIT,
+    RecordLayoutTransition(vk, cmd, slot.resolve.image.handle, VK_IMAGE_ASPECT_COLOR_BIT,
                            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
@@ -130,7 +129,7 @@ static void RecordScenePass(const VolkDeviceTable& vk, const FrameSlot& slot,
 
     // Depth test runs at EARLY/LATE_FRAGMENT_TESTS, ahead of COLOR_ATTACHMENT_OUTPUT.
     // Reusing the color stage here would let depth writes pass the barrier.
-    RecordLayoutTransition(vk, cmd, draw.depth.handle, VK_IMAGE_ASPECT_DEPTH_BIT,
+    RecordLayoutTransition(vk, cmd, slot.depth.image.handle, VK_IMAGE_ASPECT_DEPTH_BIT,
                            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                            VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT
                                | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
@@ -146,10 +145,10 @@ static void RecordScenePass(const VolkDeviceTable& vk, const FrameSlot& slot,
     // writing the multisample image back would be pure bandwidth. The resolve still
     // happens -- resolveMode is what drives it, not storeOp.
     VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-    color.imageView = draw.color.view;
+    color.imageView = slot.color.image.view;
     color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     color.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
-    color.resolveImageView = draw.resolve.image.view;
+    color.resolveImageView = slot.resolve.image.view;
     color.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     color.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -158,7 +157,7 @@ static void RecordScenePass(const VolkDeviceTable& vk, const FrameSlot& slot,
     // Clear 1.0 = farthest, paired with the pipeline's compareOp=LESS.
     // DONT_CARE: depth is used only within this frame.
     VkRenderingAttachmentInfo depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-    depth.imageView = draw.depth.view;
+    depth.imageView = slot.depth.image.view;
     depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
     depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -222,7 +221,7 @@ static void RecordScenePass(const VolkDeviceTable& vk, const FrameSlot& slot,
 static void RecordPresentPass(const VolkDeviceTable& vk, const FrameSlot& slot,
                               const AcquiredFrame& acquired) noexcept {
     VkCommandBuffer cmd = slot.cmd;
-    const Texture& source = slot.targets.resolve;
+    const Texture& source = slot.resolve;
     const Pipeline& pipeline = *slot.present;
     const SwapchainImage& dest = *acquired.image;
     const VkExtent2D destExtent = acquired.extent;
@@ -433,9 +432,9 @@ int main() {
         if (!CreateFrameSlot(dev, commands, formats, kRenderExtent, &s)) { return 1; }
         s.scene = &scene;
         s.present = &present;
-        s.targets.resolve.set = AllocateImageSet(descriptors, descriptors.present,
-                                                 s.targets.resolve.image.view);
-        if (s.targets.resolve.set == VK_NULL_HANDLE) { return 1; }
+        s.resolve.set = AllocateImageSet(descriptors, descriptors.present,
+                                         s.resolve.image.view);
+        if (s.resolve.set == VK_NULL_HANDLE) { return 1; }
     }
 
     // Scene

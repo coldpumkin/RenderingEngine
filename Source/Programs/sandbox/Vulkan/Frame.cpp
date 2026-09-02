@@ -30,9 +30,27 @@ bool CreateFrameSlot(const VulkanDevice& dev, const Commands& commands,
         return false;
     }
 
-    // Built without looking at the window, so this works while minimized - there
-    // may be no swapchain yet.
-    if (!CreateRenderTargets(dev, extent, formats, &out->targets)) {
+    // Built without looking at the window, so this works while minimized - there may
+    // be no swapchain yet. The three differ only in sample count and usage, and those
+    // two lines are where each one's job is written down.
+    out->extent = extent;
+
+    // No SAMPLED: our shaders cannot read a multisample image.
+    if (!CreateImage2D(dev, extent, formats.color, formats.samples,
+                       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, &out->color.image)) {
+        return false;
+    }
+
+    // COLOR_ATTACHMENT is for being a resolve target - we never draw into it.
+    if (!CreateImage2D(dev, extent, formats.color, VK_SAMPLE_COUNT_1_BIT,
+                       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                       &out->resolve.image)) {
+        return false;
+    }
+
+    // The sample count follows color: one rasterizationSamples covers the whole stage.
+    if (!CreateImage2D(dev, extent, formats.depth, formats.samples,
+                       VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, &out->depth.image)) {
         return false;
     }
     return true;

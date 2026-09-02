@@ -22,6 +22,7 @@
 
 #include "Vulkan/Commands.h"
 #include "Vulkan/RenderTargets.h"
+#include "Vulkan/Texture.h"
 #include "Vulkan/Window.h"
 
 struct Pipeline;
@@ -41,11 +42,15 @@ struct FrameSlot {
     VkSemaphore imageAvailable = VK_NULL_HANDLE;
     VkFence inFlight = VK_NULL_HANDLE;
 
-    // Where the frame using this slot draws: our image, not a swapchain one.
-    RenderTargets targets;
+    // Where the frame using this slot draws: our images, not swapchain ones. A set
+    // means the next stage reads it, so resolve has one and the other two do not.
+    VkExtent2D extent{};        // render resolution, not the window's
+    Texture color;              // MSAA. Averaged into resolve and dropped
+    Texture resolve;            // 1-sample. The present stage samples it
+    Texture depth;              // MSAA. Never leaves the frame
 
-    // The two stages in order. What the second one samples is targets.resolve, which
-    // carries its own set; what the first one samples comes from the scene.
+    // The two stages in order. What the second one samples is resolve, which carries
+    // its own set; what the first one samples comes from the scene.
     const Pipeline* scene = nullptr;
     const Pipeline* present = nullptr;
 
@@ -55,7 +60,7 @@ struct FrameSlot {
     FrameSlot& operator=(const FrameSlot&) = delete;
 };
 
-// Effect: allocates the command buffer, semaphore, fence and render targets. The
+// Effect: allocates the command buffer, semaphore, fence and the three images. The
 //         two stages are not filled here - main does that.
 //
 // Contract: formats and extent must be what the pipelines were given. main chooses
@@ -69,7 +74,7 @@ bool CreateFrameSlot(const VulkanDevice& dev, const Commands& commands,
 struct AcquiredFrame {
     const FrameSlot* slot = nullptr;
     const SwapchainImage* image = nullptr;
-    VkExtent2D extent{};          // window size, unlike slot->targets.extent
+    VkExtent2D extent{};          // window size, unlike slot->extent
 };
 
 // What the caller must do next, not what happened inside. A bool would collapse

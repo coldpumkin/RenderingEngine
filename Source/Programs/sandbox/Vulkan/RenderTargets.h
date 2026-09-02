@@ -1,34 +1,12 @@
 ﻿#pragma once
 
-// Render targets - where we draw. Nothing here touches the swapchain.
+// Render target formats - what the images and the pipeline must agree on
 // ============================================================================
 //
-// The scene pass draws here; the present pass copies the result out. So the
-// direction is one way, and rendering works with no window at all.
-//
-// Three images, and what happens to each is most of this file:
-//
-//   color     drawn into, MSAA. Discarded once it has been resolved
-//   resolve   filled by vkCmdEndRendering, 1-sample. Read by the next pass, so it
-//             carries the set that reads it -- the only one of the three that leaves
-//   depth     tested and written, MSAA. Never leaves the frame
-//
-// A FrameSlot owns one set of these because the count comes from kFramesInFlight -
-// how many frames are drawn at once, not how many swapchain images exist.
-//
-// Separate from Frame.h because the two change for different reasons: semaphores
-// and fences there, the shape of what we draw into here.
+// The images themselves live in a FrameSlot. Only the formats are here, because a
+// pipeline needs the same values and never sees the images.
 
-#include "Vulkan/Texture.h"
-
-struct RenderTargets {
-    // color and resolve differ in exactly one thing: sample count. A multisample
-    // image cannot be read through sampler2D, so the present pass needs its own.
-    Image color;
-    Texture resolve;
-    Image depth;
-    VkExtent2D extent{};
-};
+#include "Vulkan/Device.h"
 
 // The contract between the images we create and the pipeline that draws into them.
 //
@@ -53,8 +31,3 @@ struct RenderTargetFormats {
 // Takes inst because these queries are instance level. No logical device needed.
 bool ChooseRenderTargetFormats(const VulkanInstance& inst, VkPhysicalDevice gpu,
                                RenderTargetFormats* out) noexcept;
-
-// Effect: creates the three images and the set the present pass reads.
-bool CreateRenderTargets(const VulkanDevice& dev,
-                         VkExtent2D extent, RenderTargetFormats formats,
-                         RenderTargets* out) noexcept;
