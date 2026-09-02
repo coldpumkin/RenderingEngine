@@ -48,10 +48,12 @@
 //   pipeline <-> vertex buffer   vertex layout
 //   pipeline <-> descriptor set  set layout
 //
-// One pass, two stages: a stage is one pipeline and its own BeginRendering scope, and
-// the draw target is fixed inside it. The second stage reads what the first wrote:
+// Two passes. A pass is one render-target configuration with draws in it, inside its
+// own BeginRendering scope; how many pipelines those draws use is not fixed at one.
+// The second reads what the first wrote, and the order is the two calls in
+// RecordFrame -- nothing else enforces it:
 //
-//   [opaque stage]   knows nothing about the window
+//   [scene pass]   knows nothing about the window
 //     barrier x3 (the pass's color, colorResolve, depth for this slot)
 //     BeginRendering   attachment = color / depth, resolving into colorResolve
 //       BindVertexBuffers, BindIndexBuffer
@@ -59,7 +61,8 @@
 //       per item: PushConstants, DrawIndexed
 //     EndRendering    <- the multisample average happens here
 //
-//   [present stage] reads the resolve image only. A post effect goes here
+//   [post-process pass] samples the resolve. Nothing is applied to it yet, but this
+//                       is the scope an effect goes in
 //     barrier resolve   -> SHADER_READ_ONLY
 //     barrier swapchain -> COLOR_ATTACHMENT
 //     BeginRendering   attachment = swapchain image, in the swapchain's own format
@@ -82,33 +85,33 @@ struct IndexRange {
     constexpr uint32_t End() const noexcept { return firstIndex + count; }
 };
 
-// What differs between draws, once the stage has fixed everything else.
+// What differs between draws, once the pass has fixed everything else.
 //
-// No pipeline, texture or camera: the stage holds one of each. Each moves in here the
-// day one stage needs two of it, and the bind then moves into the loop with it.
+// No pipeline, texture or camera: the pass holds one of each. Each moves in here the
+// day one pass needs two of it, and the bind then moves into the loop with it.
 struct DrawItem {
     glm::mat4 model{1.0f};
     float alpha = 1.0f;
     IndexRange range{};
 };
 
-// Opaque stage
+// Scene pass
 //
-// Input:  the pass (attachments, mesh, texture) and the slot (command buffer, items)
+// Input:  the pass (attachments, mesh, texture, pipeline) and the slot (cmd, items)
 // Effect: appends commands that draw into this slot's color / depth
 //
 // No swapchain, so this works without a window. No camera either: it went into the
-// slot's uniform, which every draw in this stage reads.
+// pass's uniform, which every draw here reads.
 //
 // One mesh for every item: the spans in items index into it. A second mesh means
 // another BindVertexBuffers, which is why the bind sits above the loop and not in it.
-static void RecordOpaqueStage(const FrameSlot& slot, const ScenePass& scene,
-                              const Pipeline& pipeline) noexcept {
+static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene) noexcept {
     const VolkDeviceTable& vk = slot.dev->table;
     const DrawItem* items = slot.items;
     const uint32_t itemCount = slot.itemCount;
     VkCommandBuffer cmd = slot.cmd;
     const Mesh& mesh = *scene.mesh;
+    const Pipeline& pipeline = *scene.pipeline;
 
     // This slot's frame of the pass. index picks the descriptor sets too, so the
     // attachments and the sets that name them cannot come apart.
@@ -225,14 +228,15 @@ static void RecordOpaqueStage(const FrameSlot& slot, const ScenePass& scene,
 //
 // Input:  the slot's resolve texture, and where to put it
 // Effect: appends commands that sample the resolve image into the swapchain image
-static void RecordPresentStage(const FrameSlot& slot, const ScenePass& scene,
-                               const Pipeline& pipeline) noexcept {
+static void RecordPostProcessPass(const FrameSlot& slot,
+                                  const PostProcessPass& post) noexcept {
     const VolkDeviceTable& vk = slot.dev->table;
     VkCommandBuffer cmd = slot.cmd;
+    const Pipeline& pipeline = *post.pipeline;
 
     // What the scene pass left behind. The set bound below names this same image,
     // and both are picked by slot.index.
-    const Texture& source = scene.frames[slot.index].colorResolve;
+    const Texture& source = post.source->frames[slot.index].colorResolve;
     const Texture& dest = slot.image->texture;
     const VkExtent2D destExtent = dest.desc.extent;
 
@@ -301,7 +305,7 @@ static void RecordPresentStage(const FrameSlot& slot, const ScenePass& scene,
 //
 // Takes the slot but never touches its fence or semaphore -- a rule, not a type.
 bool RecordFrame(const FrameSlot& slot, const ScenePass& scene,
-                 const Pipeline& opaque, const Pipeline& present) noexcept {
+                 const PostProcessPass& post) noexcept {
     const VolkDeviceTable& vk = slot.dev->table;
 
     // The value and its GPU copy meet here. Safe because BeginFrame waited on this
@@ -322,8 +326,10 @@ bool RecordFrame(const FrameSlot& slot, const ScenePass& scene,
         return false;
     }
 
-    RecordOpaqueStage(slot, scene, opaque);
-    RecordPresentStage(slot, scene, present);
+    // The order is here, in these two lines, and nowhere else. post.source points at
+    // scene, but that is a dependency -- it would not stop these from being swapped.
+    RecordScenePass(slot, scene);
+    RecordPostProcessPass(slot, post);
 
     if (vk.vkEndCommandBuffer(cmd) != VK_SUCCESS) {
         LOG("[vk] vkEndCommandBuffer failed\n");
@@ -417,6 +423,7 @@ int main() {
     Pipeline       present;
     Descriptors    descriptors;   // borrows those layouts, so it dies before them
     ScenePass      scene;         // the attachments every frame draws into
+    PostProcessPass post{&scene, &present};   // reads scene, writes the swapchain
     FrameSlot      slots[kFramesInFlight];   // points at the pipelines, so dies first
     Texture        checker;
     Mesh           mesh;
@@ -541,7 +548,9 @@ int main() {
     //
     // The pass owns the attachments; a slot owns the command buffer and the sets that
     // name them. So the pass is built first, and every slot reads its own frame of it.
-    if (!CreateScenePass(dev, formats, kRenderExtent, mesh, checker, &scene)) { return 1; }
+    if (!CreateScenePass(dev, formats, kRenderExtent, mesh, checker, opaque, &scene)) {
+        return 1;
+    }
 
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
         if (!CreateFrameSlot(dev, commands, descriptors, i, scene, &slots[i])) { return 1; }
@@ -693,21 +702,13 @@ int main() {
 
         if (begun == FrameResult::Skip) { continue; }
 
-        // Both sides say what format they are, so the mismatch is the whole test -- no
-        // flag to raise and no flag to forget to clear. True on the first frame, and
-        // again whenever the window moves to a monitor with a different surface format.
-        //
-        // Right after BeginFrame, not at the top: the swapchain is remade in there, and
-        // one iteration later this frame would draw with the stale pipeline.
-        const VkFormat target = slot.image->texture.desc.format;
-        if (present.desc.formats.color != target
-            && !RebuildPipeline(dev, AttachmentFormats{target}, &present)) {
-            break;
-        }
+        // Right after BeginFrame, not at the top: the swapchain is remade in there,
+        // and one iteration later this frame would draw with the stale pipeline.
+        if (!EnsurePostProcessPipeline(dev, post, slot.image->texture)) { break; }
 
         // These break instead of continue. After the acquire, skipping the submit
         // leaves a signalled semaphore and a reset fence with nobody to wait on them.
-        if (!RecordFrame(slot, scene, opaque, present)) {
+        if (!RecordFrame(slot, scene, post)) {
             break;
         }
 

@@ -8,9 +8,10 @@
 // no swapchain yet, and nothing here depends on one.
 bool CreateScenePass(const VulkanDevice& dev, AttachmentFormats formats,
                      VkExtent2D extent, const Mesh& mesh, const Texture& input,
-                     ScenePass* out) noexcept {
+                     const Pipeline& pipeline, ScenePass* out) noexcept {
     out->mesh = &mesh;
     out->input = &input;
+    out->pipeline = &pipeline;
 
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
         ScenePass::PerFrame& frame = out->frames[i];
@@ -51,6 +52,15 @@ bool CreateScenePass(const VulkanDevice& dev, AttachmentFormats formats,
         }
     }
     return true;
+}
+
+// Both sides say what format they are, so the mismatch is the whole test -- no flag
+// to raise and no flag to forget to clear.
+bool EnsurePostProcessPipeline(const VulkanDevice& dev, const PostProcessPass& post,
+                               const Texture& target) noexcept {
+    if (post.pipeline->desc.formats.color == target.desc.format) { return true; }
+
+    return RebuildPipeline(dev, AttachmentFormats{target.desc.format}, post.pipeline);
 }
 
 bool CreateFrameSlot(const VulkanDevice& dev, const Commands& commands,

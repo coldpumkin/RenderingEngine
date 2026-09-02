@@ -56,6 +56,14 @@ struct ScenePass {
     const Mesh* mesh = nullptr;
     const Texture* input = nullptr;
 
+    // Non-owning, and a pointer rather than a value: a pass is a render-target
+    // configuration with draws in it, and how many pipelines those draws use is not
+    // fixed at one. This becomes a list the day a draw here needs a different one.
+    //
+    // It is here because the pass owns both sides of a pair -- the pipeline bakes in
+    // the attachment formats, and frames[].color is made from the same ones.
+    const Pipeline* pipeline = nullptr;
+
     struct PerFrame {
         Texture color;         // multisample. Drawn into, then discarded
         Texture colorResolve;  // 1 sample. vkCmdEndRendering averages into it, and
@@ -77,11 +85,39 @@ struct ScenePass {
 // Effect: creates each frame's attachments and uniform buffer, and points the pass at
 //         what the scene brings.
 //
-// Contract: formats and extent must be what the scene pipeline was built with.
-//           main chooses once and hands the same values to both.
+// Contract: formats must be what pipeline was built with. Both are arguments here so
+//           the mismatch is at least in one call, but nothing checks it.
 bool CreateScenePass(const VulkanDevice& dev, AttachmentFormats formats,
                      VkExtent2D extent, const Mesh& mesh, const Texture& input,
-                     ScenePass* out) noexcept;
+                     const Pipeline& pipeline, ScenePass* out) noexcept;
+
+
+// PostProcessPass - reads what the scene pass produced, writes the swapchain image
+// ============================================================================
+//
+// source is a dependency, not an order. Holding the pointer does not stop anyone from
+// recording this pass first; the order is the two lines in RecordFrame and stays
+// there. Passes ordered by the CPU is the point -- there is no graph to walk.
+//
+// No attachments of its own: what it draws into arrives from acquire, sized by the
+// swapchain's image count rather than by frames in flight.
+//
+// pipeline is non-const because the surface format can change under it -- dragging
+// the window to a monitor in another format. The pass holds the check because it
+// holds both sides of that pair.
+struct PostProcessPass {
+    const ScenePass* source = nullptr;
+    Pipeline* pipeline = nullptr;      // non-owning
+};
+
+// Effect: rebuilds post.pipeline when target's format is not the one it was built for
+// Output: false is fatal -- the old pipeline is already destroyed
+//
+// Call after BeginFrame, not before it: the swapchain is remade in there, and one
+// iteration later this frame would draw with the stale pipeline. True on the first
+// frame too, since the pipeline starts with no format at all.
+bool EnsurePostProcessPipeline(const VulkanDevice& dev, const PostProcessPass& post,
+                               const Texture& target) noexcept;
 
 
 // cmd, imageAvailable and inFlight are sized by kFramesInFlight because one signal
