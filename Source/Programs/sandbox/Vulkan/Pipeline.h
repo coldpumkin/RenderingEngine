@@ -1,6 +1,6 @@
 ﻿#pragma once
 
-#include "Vulkan/RenderTargets.h"
+#include "Vulkan/Attachments.h"
 
 #include <glm/glm.hpp>   // PushConstants holds a mat4
 
@@ -115,14 +115,9 @@ struct GraphicsPipelineDesc {
     // gl_VertexIndex.
     const VkPipelineVertexInputStateCreateInfo* vertexInput = nullptr;
 
-    VkFormat colorFormat = VK_FORMAT_UNDEFINED;
-    // UNDEFINED means no depth attachment and no depth test. A separate bool
-    // would make "format given, test off" expressible.
-    VkFormat depthFormat = VK_FORMAT_UNDEFINED;
-
-    // Must equal the sample count of the attachments. A mismatch is caught at
-    // vkCmdBeginRendering.
-    VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
+    // The same values the attachments were made from -- dynamic rendering bakes them
+    // in, so a mismatch is caught at vkCmdBeginRendering. depth UNDEFINED = no depth.
+    AttachmentFormats formats;
 
     // The push range is not here: the shaders declare it and CreateGraphicsPipeline
     // reads it out of them.

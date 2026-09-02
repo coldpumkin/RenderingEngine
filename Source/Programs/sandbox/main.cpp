@@ -357,8 +357,8 @@ int main() {
     const PhysicalDeviceSelection selection = PickPhysicalDevice(inst, window.surface);
     if (selection.gpu == VK_NULL_HANDLE) { return 1; }
 
-    RenderTargetFormats formats;
-    if (!ChooseRenderTargetFormats(inst, selection.gpu, &formats)) { return 1; }
+    AttachmentFormats formats;
+    if (!ChooseAttachmentFormats(inst, selection.gpu, &formats)) { return 1; }
     if (!SelectSurfaceFormat(inst, selection.gpu, &window)) { return 1; }
 
     // selection is absorbed into dev here.
@@ -389,9 +389,7 @@ int main() {
     sceneDesc.vertPath = kSceneVert;
     sceneDesc.fragPath = kSceneFrag;
     sceneDesc.vertexInput = &VertexInput();
-    sceneDesc.colorFormat = formats.color;
-    sceneDesc.depthFormat = formats.depth;
-    sceneDesc.samples = formats.samples;
+    sceneDesc.formats = formats;
     sceneDesc.setLayout = descriptors.scene.handle;
     sceneDesc.viewportY = ViewportY::Up;            // our world is y-up
     sceneDesc.cullMode = VK_CULL_MODE_BACK_BIT;
@@ -404,7 +402,7 @@ int main() {
     GraphicsPipelineDesc presentDesc;
     presentDesc.vertPath = kPresentVert;
     presentDesc.fragPath = kPresentFrag;
-    presentDesc.colorFormat = window.surfaceFormat.format;
+    presentDesc.formats.color = window.surfaceFormat.format;   // no depth, 1 sample
     presentDesc.setLayout = descriptors.present.handle;
     presentDesc.viewportY = ViewportY::Down;   // the shader makes its own uv
     presentDesc.cullMode = VK_CULL_MODE_BACK_BIT;
@@ -586,7 +584,7 @@ int main() {
         if (window.surfaceFormatChanged) {
             dev.table.vkDeviceWaitIdle(dev.handle);
             DestroyPipeline(dev, &present);
-            presentDesc.colorFormat = window.surfaceFormat.format;   // the only field that moved
+            presentDesc.formats.color = window.surfaceFormat.format;   // the only field that moved
             if (!CreateGraphicsPipeline(dev, presentDesc, &present)) {
                 break;
             }

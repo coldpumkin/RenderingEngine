@@ -1,7 +1,7 @@
 ﻿#include "Vulkan/Frame.h"
 
 bool CreateFrameSlot(const VulkanDevice& dev, const Commands& commands,
-                 RenderTargetFormats formats, VkExtent2D extent,
+                 AttachmentFormats formats, VkExtent2D extent,
                  FrameSlot* out) noexcept {
     out->dev = &dev;
 

@@ -21,7 +21,7 @@
 // Recording sits between BeginFrame and SubmitFrame and is absent here.
 
 #include "Vulkan/Commands.h"
-#include "Vulkan/RenderTargets.h"
+#include "Vulkan/Attachments.h"
 #include "Vulkan/Texture.h"
 #include "Vulkan/Window.h"
 
@@ -66,7 +66,7 @@ struct FrameSlot {
 // Contract: formats and extent must be what the pipelines were given. main chooses
 //           once and hands the same values to both.
 bool CreateFrameSlot(const VulkanDevice& dev, const Commands& commands,
-                 RenderTargetFormats formats, VkExtent2D extent,
+                 AttachmentFormats formats, VkExtent2D extent,
                  FrameSlot* out) noexcept;
 
 // The slot a frame borrowed and the image acquire gave it. Recording sits between

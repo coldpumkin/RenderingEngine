@@ -1,4 +1,4 @@
-﻿#include "Vulkan/RenderTargets.h"
+﻿#include "Vulkan/Attachments.h"
 
 #include "Config.h"
 
@@ -8,12 +8,12 @@
 // HDR is the change that would make this R16G16B16A16_SFLOAT.
 //
 // Kept out of the header so nothing can read it directly and bypass
-// RenderTargetFormats.
+// AttachmentFormats.
 static constexpr VkFormat kRenderColorFormat = VK_FORMAT_R8G8B8A8_SRGB;
 
-bool ChooseRenderTargetFormats(const VulkanInstance& inst, VkPhysicalDevice gpu,
-                               RenderTargetFormats* out) noexcept {
-    RenderTargetFormats& formats = *out;
+bool ChooseAttachmentFormats(const VulkanInstance& inst, VkPhysicalDevice gpu,
+                               AttachmentFormats* out) noexcept {
+    AttachmentFormats& formats = *out;
     formats.color = kRenderColorFormat;
 
     // Most precise first, and stencil-free ahead of stencil since we never use

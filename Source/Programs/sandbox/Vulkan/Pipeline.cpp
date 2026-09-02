@@ -155,13 +155,13 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     rasterization.lineWidth = 1.0f;   // used by LINE only. Above 1.0 needs wideLines
 
     // --- Fragment output: samples, blending, depth --------------------------
-    // desc.samples and desc.blending decide; every other value is fixed for both.
+    // desc.formats.samples and desc.blending decide; every other value is fixed for both.
 
     VkPipelineMultisampleStateCreateInfo multisample{
         VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
     // sampleShadingEnable stays off: the aliasing we see is on edges, which the
     // rasterizer already handles. Shimmering textures would make the case for it.
-    multisample.rasterizationSamples = desc.samples;
+    multisample.rasterizationSamples = desc.formats.samples;
 
     // One value, two states. Keeping them apart would let them disagree.
     const bool translucent = desc.blending == Blending::Translucent;
@@ -187,7 +187,7 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     colorBlend.pAttachments = &blendAttachment;
 
     // depthFormat decides whether this state exists at all, further down.
-    const bool useDepth = desc.depthFormat != VK_FORMAT_UNDEFINED;
+    const bool useDepth = desc.formats.depth != VK_FORMAT_UNDEFINED;
     VkPipelineDepthStencilStateCreateInfo depthStencil{
         VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
     depthStencil.depthTestEnable = VK_TRUE;   // translucent behind opaque is still hidden
@@ -221,8 +221,8 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     VkPipelineRenderingCreateInfo pipelineRendering{
         VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
     pipelineRendering.colorAttachmentCount = 1;
-    pipelineRendering.pColorAttachmentFormats = &desc.colorFormat;
-    pipelineRendering.depthAttachmentFormat = desc.depthFormat;   // UNDEFINED = no depth
+    pipelineRendering.pColorAttachmentFormats = &desc.formats.color;
+    pipelineRendering.depthAttachmentFormat = desc.formats.depth;   // UNDEFINED = no depth
 
     // --- Assemble and compile -----------------------------------------------
 

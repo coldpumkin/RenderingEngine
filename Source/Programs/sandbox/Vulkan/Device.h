@@ -90,7 +90,7 @@ struct VulkanDevice {
     VkPhysicalDeviceMemoryProperties memoryProperties{};
 
     // Depth format은 여기 없다 - 후보 목록과 우선순위는 우리 render target의 정책이지
-    // GPU의 성질이 아니다. RenderTargets.h의 ChooseRenderTargetFormats에 있다.
+    // GPU의 성질이 아니다. Attachments.h의 ChooseAttachmentFormats에 있다.
 
     // GPU memory allocator. Device가 만들고 device와 함께 죽는다.
     VmaAllocator allocator = VK_NULL_HANDLE;

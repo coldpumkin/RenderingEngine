@@ -1,10 +1,11 @@
 ﻿#pragma once
 
-// Render target formats - what the images and the pipeline must agree on
+// Attachment formats - the spec a stage draws into
 // ============================================================================
 //
-// The images themselves live in a FrameSlot. Only the formats are here, because a
-// pipeline needs the same values and never sees the images.
+// Three values decide three Textures (color, its resolve, depth) and go unchanged
+// into the pipeline, so no type has to bundle the results. extent is not here: the
+// pipeline never sees it, its viewport being dynamic.
 
 #include "Vulkan/Device.h"
 
@@ -16,7 +17,7 @@
 //
 // Here rather than in VulkanDevice because the candidate list and its priority
 // are our render target's policy. The GPU only answers "is this supported".
-struct RenderTargetFormats {
+struct AttachmentFormats {
     VkFormat color = VK_FORMAT_UNDEFINED;
     VkFormat depth = VK_FORMAT_UNDEFINED;
     // Highest count both color and depth support, capped by kDesiredSampleCount.
@@ -29,5 +30,5 @@ struct RenderTargetFormats {
 //         no multisampling, which the resolve path requires.
 //
 // Takes inst because these queries are instance level. No logical device needed.
-bool ChooseRenderTargetFormats(const VulkanInstance& inst, VkPhysicalDevice gpu,
-                               RenderTargetFormats* out) noexcept;
+bool ChooseAttachmentFormats(const VulkanInstance& inst, VkPhysicalDevice gpu,
+                               AttachmentFormats* out) noexcept;

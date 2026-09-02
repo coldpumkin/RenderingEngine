@@ -15,7 +15,7 @@ add_executable(sandbox
     Vulkan/Window.h      Vulkan/Window.cpp      # 창 시스템 · 창 · 서피스
     Vulkan/Swapchain.h   Vulkan/Swapchain.cpp
     Vulkan/Image.h       Vulkan/Image.cpp       # image + view (render target과 texture가 같이 쓴다)
-    Vulkan/RenderTargets.h Vulkan/RenderTargets.cpp  # 우리가 그리는 곳 (스왑체인과 무관)
+    Vulkan/Attachments.h Vulkan/Attachments.cpp  # 무엇에 그리는지의 명세 (포맷·샘플 수)
     Vulkan/Texture.h     Vulkan/Texture.cpp     # 셰이더가 읽는 image
     Vulkan/Barrier.h     Vulkan/Barrier.cpp     # 이미지 레이아웃 전이
     Vulkan/Descriptors.h Vulkan/Descriptors.cpp # 셰이더가 이미지를 읽게 하는 장치
