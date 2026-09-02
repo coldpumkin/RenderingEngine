@@ -10,8 +10,7 @@
 // only stage we reflect for descriptors -- a vertex shader reading a texture would
 // need its own pass over that stage.
 static bool CreateSetLayoutFromShader(const VulkanDevice& dev, const char* fragPath,
-                                      VkDescriptorSetLayout* out,
-                                      uint32_t* outBindingCount) noexcept {
+                                      DescriptorLayout* out) noexcept {
     ShaderInterface iface;
     if (!ReflectShaderFile(fragPath, &iface)) { return false; }
 
@@ -27,12 +26,12 @@ static bool CreateSetLayoutFromShader(const VulkanDevice& dev, const char* fragP
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     layoutInfo.bindingCount = iface.bindingCount;
     layoutInfo.pBindings = bindings;
-    if (dev.table.vkCreateDescriptorSetLayout(dev.handle, &layoutInfo, nullptr, out)
+    if (dev.table.vkCreateDescriptorSetLayout(dev.handle, &layoutInfo, nullptr, &out->handle)
             != VK_SUCCESS) {
         LOG("[vk] vkCreateDescriptorSetLayout failed: %s\n", fragPath);
         return false;
     }
-    *outBindingCount = iface.bindingCount;
+    out->bindingCount = iface.bindingCount;
     return true;
 }
 
@@ -60,10 +59,8 @@ bool CreateDescriptors(const VulkanDevice& dev,
         return false;
     }
 
-    if (!CreateSetLayoutFromShader(dev, sceneFragPath,
-                                   &out->sceneLayout, &out->sceneBindingCount)) { return false; }
-    if (!CreateSetLayoutFromShader(dev, presentFragPath,
-                                   &out->presentLayout, &out->presentBindingCount)) { return false; }
+    if (!CreateSetLayoutFromShader(dev, sceneFragPath, &out->scene)) { return false; }
+    if (!CreateSetLayoutFromShader(dev, presentFragPath, &out->present)) { return false; }
 
     // Pool은 자라지 않아서 크기를 미리 정한다. 타입별 개수도 같이 말해야 한다.
     //
@@ -73,8 +70,8 @@ bool CreateDescriptors(const VulkanDevice& dev,
 
     VkDescriptorPoolSize poolSize{};
     poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSize.descriptorCount = sceneSets * out->sceneBindingCount
-                             + presentSets * out->presentBindingCount;
+    poolSize.descriptorCount = sceneSets * out->scene.bindingCount
+                             + presentSets * out->present.bindingCount;
 
     VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     poolInfo.maxSets = maxSets;
@@ -90,14 +87,12 @@ bool CreateDescriptors(const VulkanDevice& dev,
     return true;
 }
 
-// 두 Allocate의 공통부. 실제로 다른 것은 **layout과 view 개수**뿐이다.
-//
 // Contract: viewCount는 layout이 요구하는 binding 개수와 같아야 한다. 모자라면
 //           안 채운 자리를 shader가 읽다가 draw에서 잡힌다.
-//           그리고 kMaxBindingCount를 넘으면 안 된다 - 이쪽은 아무도 안 잡는다.
-static VkDescriptorSet AllocateImageSet(const Descriptors& descriptors,
-                                        VkDescriptorSetLayout layout,
-                                        const VkImageView* views, uint32_t viewCount) noexcept {
+//           그리고 kMaxBindingsPerSet을 넘으면 안 된다 - 이쪽은 아무도 안 잡는다.
+static VkDescriptorSet AllocateSet(const Descriptors& descriptors,
+                                   VkDescriptorSetLayout layout,
+                                   const VkImageView* views, uint32_t viewCount) noexcept {
     const VulkanDevice& dev = *descriptors.dev;
 
     VkDescriptorSetAllocateInfo allocInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
@@ -135,26 +130,16 @@ static VkDescriptorSet AllocateImageSet(const Descriptors& descriptors,
     return set;
 }
 
-VkDescriptorSet AllocateSceneSet(const Descriptors& descriptors,
+VkDescriptorSet AllocateImageSet(const Descriptors& descriptors,
+                                 const DescriptorLayout& layout,
                                  VkImageView view) noexcept {
     // One view, so the shader that built this layout has to want exactly one.
-    if (descriptors.sceneBindingCount != 1) {
-        LOG("[vk] scene layout wants %u bindings, this fills one\n",
-            descriptors.sceneBindingCount);
+    if (layout.bindingCount != 1) {
+        LOG("[vk] layout wants %u bindings, this fills one\n", layout.bindingCount);
         return VK_NULL_HANDLE;
     }
     const VkImageView views[1] = {view};
-    return AllocateImageSet(descriptors, descriptors.sceneLayout, views, 1);
-}
-
-VkDescriptorSet AllocatePresentSet(const Descriptors& descriptors, VkImageView view) noexcept {
-    if (descriptors.presentBindingCount != 1) {
-        LOG("[vk] present layout wants %u bindings, this fills one\n",
-            descriptors.presentBindingCount);
-        return VK_NULL_HANDLE;
-    }
-    const VkImageView views[1] = {view};
-    return AllocateImageSet(descriptors, descriptors.presentLayout, views, 1);
+    return AllocateSet(descriptors, layout.handle, views, 1);
 }
 
 Descriptors::~Descriptors() {
@@ -162,7 +147,7 @@ Descriptors::~Descriptors() {
     const VulkanDevice& d = *dev;
     // Pool을 지우면 거기서 뽑은 set도 같이 사라진다.
     d.table.vkDestroyDescriptorPool(d.handle, pool, nullptr);
-    d.table.vkDestroyDescriptorSetLayout(d.handle, presentLayout, nullptr);
-    d.table.vkDestroyDescriptorSetLayout(d.handle, sceneLayout, nullptr);
+    d.table.vkDestroyDescriptorSetLayout(d.handle, present.handle, nullptr);
+    d.table.vkDestroyDescriptorSetLayout(d.handle, scene.handle, nullptr);
     d.table.vkDestroySampler(d.handle, sampler, nullptr);
 }

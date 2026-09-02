@@ -18,17 +18,20 @@
 
 #include "Vulkan/Device.h"
 
+// A set layout and the binding count it was built from. The handle is opaque, so the
+// count cannot be asked back for.
+struct DescriptorLayout {
+    VkDescriptorSetLayout handle = VK_NULL_HANDLE;
+    uint32_t bindingCount = 0;
+};
+
 struct Descriptors {
     const VulkanDevice* dev = nullptr;   // 파괴에 필요한 non-owning 상태
 
     VkSampler sampler = VK_NULL_HANDLE;
 
-    VkDescriptorSetLayout sceneLayout = VK_NULL_HANDLE;
-    VkDescriptorSetLayout presentLayout = VK_NULL_HANDLE;
-
-    // 위 둘의 binding 개수. 만든 shader가 정한 값이라 Allocate*Set이 이걸 쓴다.
-    uint32_t sceneBindingCount = 0;
-    uint32_t presentBindingCount = 0;
+    DescriptorLayout scene;
+    DescriptorLayout present;
 
     VkDescriptorPool pool = VK_NULL_HANDLE;
 
@@ -51,12 +54,9 @@ bool CreateDescriptors(const VulkanDevice& dev,
                        const char* presentFragPath, uint32_t presentSets,
                        Descriptors* out) noexcept;
 
-// Output: sceneLayout 모양의 set (실패하면 VK_NULL_HANDLE)
+// Output: a set of that layout naming this view (VK_NULL_HANDLE on failure)
 // Contract: 개별 반납은 없다. pool이 죽을 때 같이 사라진다.
 //           binding이 하나인 layout에만 쓴다 - 아니면 실패한다.
-VkDescriptorSet AllocateSceneSet(const Descriptors& descriptors,
+VkDescriptorSet AllocateImageSet(const Descriptors& descriptors,
+                                 const DescriptorLayout& layout,
                                  VkImageView view) noexcept;
-
-// Output: presentLayout 모양의 set. 위와 같은 Contract.
-VkDescriptorSet AllocatePresentSet(const Descriptors& descriptors,
-                                   VkImageView view) noexcept;
