@@ -43,10 +43,9 @@ struct FrameSlot {
     // Where the frame using this slot draws: our image, not a swapchain one.
     RenderTargets targets;
 
-    // The two stages in order, each with what it samples. main fills them; the pool
-    // frees the sets. sceneSet names a texture, presentSet names targets.resolve.
+    // The two stages in order. presentSet is here because it names this slot's own
+    // resolve image; what the scene stage samples comes from the scene, not the slot.
     const Pipeline* scene = nullptr;
-    VkDescriptorSet sceneSet = VK_NULL_HANDLE;
     const Pipeline* present = nullptr;
     VkDescriptorSet presentSet = VK_NULL_HANDLE;
 

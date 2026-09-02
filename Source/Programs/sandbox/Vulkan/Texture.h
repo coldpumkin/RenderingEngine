@@ -18,6 +18,13 @@
 #include "Vulkan/Commands.h"
 #include "Vulkan/Image.h"
 
+// An image and the set that reads it. The set's contents are exactly this pair
+// (view + sampler), which is why it lives here and not in whoever binds it.
+struct Texture {
+    Image image;
+    VkDescriptorSet set = VK_NULL_HANDLE;   // caller fills it; the pool frees it
+};
+
 // 파일에서 읽지 않고 코드로 만든다.
 //
 // 이미지 로더(stb_image 같은)를 들이려면 Spike에서 단독 검증부터 해야 하고, 지금
@@ -25,4 +32,4 @@
 // uv가 맞는지 · 필터가 도는지 · 좌우상하가 안 뒤집혔는지가 전부 눈에 보인다.
 bool CreateCheckerTexture(const VulkanDevice& dev,
                           const Commands& commands,
-                          Image* out) noexcept;
+                          Texture* out) noexcept;

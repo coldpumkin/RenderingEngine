@@ -21,7 +21,7 @@ static bool CreateTextureFromPixels(const VulkanDevice& dev,
                                     const Commands& commands,
                                     const uint8_t (&pixels)[kTextureSize * kTextureSize * 4],
                                     const char* label,
-                                    Image* out) noexcept {
+                                    Texture* out) noexcept {
     constexpr uint32_t kSize = kTextureSize;
     constexpr VkFormat kFormat = VK_FORMAT_R8G8B8A8_SRGB;
 
@@ -45,7 +45,8 @@ static bool CreateTextureFromPixels(const VulkanDevice& dev,
     // 1_BIT다 - shader가 sampler2D로 읽는다. Multisample image는 sampler2DMS를
     // 요구하고 그건 우리 셰이더가 아니다.
     if (!CreateImage2D(dev, VkExtent2D{kSize, kSize}, kFormat, VK_SAMPLE_COUNT_1_BIT,
-                       VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, out)) {
+                       VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                       &out->image)) {
         return false;
     }
 
@@ -54,7 +55,7 @@ static bool CreateTextureFromPixels(const VulkanDevice& dev,
 
     // 복사를 받을 수 있는 layout으로. srcStage가 TOP_OF_PIPE인 이유는 앞에 기다릴
     // 것이 없어서다 - 이 image는 방금 만들어졌고 아무도 안 건드렸다.
-    RecordLayoutTransition(dev.table, cmd, out->handle, VK_IMAGE_ASPECT_COLOR_BIT,
+    RecordLayoutTransition(dev.table, cmd, out->image.handle, VK_IMAGE_ASPECT_COLOR_BIT,
                            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                            VK_PIPELINE_STAGE_2_COPY_BIT,
                            VK_ACCESS_2_TRANSFER_WRITE_BIT,
@@ -67,12 +68,12 @@ static bool CreateTextureFromPixels(const VulkanDevice& dev,
     region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     region.imageSubresource.layerCount = 1;
     region.imageExtent = VkExtent3D{kSize, kSize, 1};
-    dev.table.vkCmdCopyBufferToImage(cmd, staging.handle, out->handle,
+    dev.table.vkCmdCopyBufferToImage(cmd, staging.handle, out->image.handle,
                                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
     // shader가 읽는 layout으로. dstStage가 FRAGMENT_SHADER인 이유는 실제로 거기서만
     // 읽기 때문이다 - vertex shader도 읽게 되면 여기가 같이 넓어져야 한다.
-    RecordLayoutTransition(dev.table, cmd, out->handle, VK_IMAGE_ASPECT_COLOR_BIT,
+    RecordLayoutTransition(dev.table, cmd, out->image.handle, VK_IMAGE_ASPECT_COLOR_BIT,
                            VK_PIPELINE_STAGE_2_COPY_BIT,
                            VK_ACCESS_2_TRANSFER_WRITE_BIT,
                            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
@@ -82,15 +83,15 @@ static bool CreateTextureFromPixels(const VulkanDevice& dev,
 
     if (!EndOneShotAndWait(dev, commands, cmd, "texture upload")) { return false; }
 
-    // No set here: the slot that binds it owns it. The SHADER_READ_ONLY_OPTIMAL set
-    // above must equal the layout written into that set, or the draw fails validation.
+    // No set here: the caller allocates it, since which layout to use is the pass's
+    // call. SHADER_READ_ONLY_OPTIMAL above must equal what that set records.
     LOG("[vk] %s texture ready (%ux%u)\n", label, kSize, kSize);
     return true;
 }
 
 bool CreateCheckerTexture(const VulkanDevice& dev,
                           const Commands& commands,
-                          Image* out) noexcept {
+                          Texture* out) noexcept {
     uint8_t pixels[kTextureSize * kTextureSize * 4]{};
     for (uint32_t y = 0; y < kTextureSize; ++y) {
         for (uint32_t x = 0; x < kTextureSize; ++x) {

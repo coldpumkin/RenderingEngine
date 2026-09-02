@@ -93,7 +93,7 @@ struct DrawItem {
 
 // Scene pass
 //
-// Input:  the slot (target, pipeline, set), and what changes: mesh, camera, items
+// Input:  the slot (target, pipeline), and what the scene brings: mesh, texture, items
 // Effect: appends commands that draw into draw.color / draw.depth
 //
 // No swapchain, so this works without a window. Takes the camera because one pass
@@ -102,7 +102,8 @@ struct DrawItem {
 // One mesh for every item: the spans in items index into it. A second mesh means
 // another BindVertexBuffers, which is why the bind sits above the loop and not in it.
 static void RecordScenePass(const VolkDeviceTable& vk, const FrameSlot& slot,
-                            const Mesh& mesh, const glm::mat4& camera,
+                            const Mesh& mesh, VkDescriptorSet texture,
+                            const glm::mat4& camera,
                             const DrawItem* items, uint32_t itemCount) noexcept {
     VkCommandBuffer cmd = slot.cmd;
     const RenderTargets& draw = slot.targets;
@@ -184,7 +185,7 @@ static void RecordScenePass(const VolkDeviceTable& vk, const FrameSlot& slot,
 
     vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.handle);
     vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.layout,
-                               0, 1, &slot.sceneSet, 0, nullptr);
+                               0, 1, &texture, 0, nullptr);
 
     // binding 0 matches the pipeline's binding 0. offset changes once several meshes
     // share one buffer.
@@ -291,7 +292,8 @@ static void RecordPresentPass(const VolkDeviceTable& vk, const FrameSlot& slot,
 // Takes the slot but never touches its fence or semaphore -- a rule, not a type.
 bool RecordFrame(const VolkDeviceTable& vk,
                  const AcquiredFrame& acquired,
-                 const Mesh& mesh, const glm::mat4& camera,
+                 const Mesh& mesh, VkDescriptorSet texture,
+                 const glm::mat4& camera,
                  const DrawItem* items, uint32_t itemCount) noexcept {
     const FrameSlot& slot = *acquired.slot;
     VkCommandBuffer cmd = slot.cmd;
@@ -308,7 +310,7 @@ bool RecordFrame(const VolkDeviceTable& vk,
         return false;
     }
 
-    RecordScenePass(vk, slot, mesh, camera, items, itemCount);
+    RecordScenePass(vk, slot, mesh, texture, camera, items, itemCount);
     RecordPresentPass(vk, slot, acquired);
 
     if (vk.vkEndCommandBuffer(cmd) != VK_SUCCESS) {
@@ -333,8 +335,8 @@ int main() {
     Descriptors    descriptors;   // slots take sets from this pool
     Pipeline       pipeline;
     Pipeline       fullscreen;
-    Image          checker;
-    FrameSlot      slots[kFramesInFlight];   // points at the four above, so dies first
+    FrameSlot      slots[kFramesInFlight];   // points at the pipelines, so dies first
+    Texture        checker;
     Mesh           mesh;
 
     // Ask, then build
@@ -376,8 +378,9 @@ int main() {
     constexpr const char* kPresentVert = "Shaders/fullscreen.vert.spv";
     constexpr const char* kPresentFrag = "Shaders/fullscreen.frag.spv";
 
-    // Both sets live in a slot, so both counts are one per frame.
-    if (!CreateDescriptors(dev, kSceneFrag, kFramesInFlight,
+    // Different reasons: one scene set per texture, one present set per frame.
+    constexpr uint32_t kTextureCount = 1;
+    if (!CreateDescriptors(dev, kSceneFrag, kTextureCount,
                            kPresentFrag, kFramesInFlight, &descriptors)) { return 1; }
 
     // viewportY and cullMode are the pass's, not the shader's. A pipeline and a frame's
@@ -421,6 +424,19 @@ int main() {
     const glm::mat4 proj =
         glm::perspective(glm::radians(60.0f), aspect, 0.1f, 100.0f);
 
+    // Frames
+    // ------------------------------------------------------------------------
+    //
+    // Each slot gets the pass it will run and the set for its own resolve image.
+    for (FrameSlot& s : slots) {
+        if (!CreateFrameSlot(dev, commands, formats, kRenderExtent, &s)) { return 1; }
+        s.scene = &pipeline;
+        s.present = &fullscreen;
+        s.presentSet = AllocateImageSet(descriptors, descriptors.present,
+                                        s.targets.resolve.view);
+        if (s.presentSet == VK_NULL_HANDLE) { return 1; }
+    }
+
     // Scene
     // ------------------------------------------------------------------------
     //
@@ -449,20 +465,9 @@ int main() {
 
     if (!CreateCheckerTexture(dev, commands, &checker)) { return 1; }
 
-    // Frames
-    // ------------------------------------------------------------------------
-    //
-    // Each slot gets the pass it will run: two pipelines, and a set per stage. The
-    // sets are made here because one of them names this slot's own resolve image.
-    for (FrameSlot& s : slots) {
-        if (!CreateFrameSlot(dev, commands, formats, kRenderExtent, &s)) { return 1; }
-        s.scene = &pipeline;
-        s.present = &fullscreen;
-        s.sceneSet = AllocateImageSet(descriptors, descriptors.scene, checker.view);
-        s.presentSet = AllocateImageSet(descriptors, descriptors.present,
-                                        s.targets.resolve.view);
-        if (s.sceneSet == VK_NULL_HANDLE || s.presentSet == VK_NULL_HANDLE) { return 1; }
-    }
+    // The set is the (image, sampler) pair, so it belongs to the texture.
+    checker.set = AllocateImageSet(descriptors, descriptors.scene, checker.image.view);
+    if (checker.set == VK_NULL_HANDLE) { return 1; }
 
     // No swapchain yet: the loop's EnsureSwapchain makes it, and the first creation
     // takes the same path as a recreation.
@@ -590,7 +595,7 @@ int main() {
 
         // These break instead of continue. After the acquire, skipping the submit leaves
         // a signalled semaphore and a reset fence with nobody to wait on them.
-        if (!RecordFrame(dev.table, acquired, mesh, camera,
+        if (!RecordFrame(dev.table, acquired, mesh, checker.set, camera,
                          items, static_cast<uint32_t>(std::size(items)))) {
             break;
         }
