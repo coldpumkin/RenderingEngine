@@ -76,7 +76,8 @@
 // A span inside the index buffer.
 //
 // Holding the two numbers together lets DrawItem carry a name instead of a position.
-// The named spans live next to indices; separating them breaks the guard.
+// The spans are declared beside the array they index, in main, and a static_assert
+// there checks they cover it -- separating the two would break that check.
 struct IndexRange {
     uint32_t firstIndex = 0;
     uint32_t count = 0;
@@ -113,8 +114,8 @@ static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
     const Mesh& mesh = *scene.mesh;
     const Pipeline& pipeline = *scene.pipeline;
 
-    // This slot's frame of the pass. index picks the descriptor sets too, so the
-    // attachments and the sets that name them cannot come apart.
+    // This slot's frame of the pass. The set that names these attachments is in the
+    // same PerFrame, so the two cannot be picked apart by a wrong index.
     const ScenePass::PerFrame& targets = scene.frames[slot.index];
     const VkExtent2D extent = targets.color.desc.extent;   // render resolution, not window size
 
@@ -226,8 +227,9 @@ static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
 
 // Post-process pass
 //
-// Input:  the slot's resolve texture, and where to put it
-// Effect: appends commands that sample the resolve image into the swapchain image
+// Input:  the pass (its source and pipeline), the slot (cmd, which frame), and the
+//         swapchain image to draw into
+// Effect: appends commands that sample the scene pass's resolve into that image
 static void RecordPostProcessPass(const FrameSlot& slot, const PostProcessPass& post,
                                   const SwapchainImage& target) noexcept {
     const VolkDeviceTable& vk = slot.dev->table;
@@ -250,6 +252,9 @@ static void RecordPostProcessPass(const FrameSlot& slot, const PostProcessPass& 
                            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
+    // oldLayout UNDEFINED for the same reason as the scene pass's colour: loadOp is
+    // DONT_CARE below, so whatever the presentation engine left here is dead.
+    //
     // srcStage must overlap SubmitFrame's wait stage, or this transition can run ahead
     // of the acquire.
     RecordLayoutTransition(vk, cmd, dest.image.handle, VK_IMAGE_ASPECT_COLOR_BIT,
@@ -292,6 +297,10 @@ static void RecordPostProcessPass(const FrameSlot& slot, const PostProcessPass& 
 
     vk.vkCmdEndRendering(cmd);
 
+    // dstAccess is 0, unlike every other barrier here: present is not a queue
+    // operation and reads nothing through the memory model, so there is no access to
+    // make visible. The semaphore SubmitFrame signals is what present actually waits
+    // on -- this barrier only has to leave the image in the right layout.
     RecordLayoutTransition(vk, cmd, dest.image.handle, VK_IMAGE_ASPECT_COLOR_BIT,
                            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
@@ -304,9 +313,9 @@ static void RecordPostProcessPass(const FrameSlot& slot, const PostProcessPass& 
 // Output: false means the buffer is invalid and must not be submitted
 //
 // Takes the slot but never touches its fence or semaphore -- a rule, not a type.
-bool RecordFrame(const FrameSlot& slot, const ScenePass& scene,
-                 const PostProcessPass& post, const SwapchainImage& target,
-                 const DrawItem* items, uint32_t itemCount) noexcept {
+static bool RecordFrame(const FrameSlot& slot, const ScenePass& scene,
+                        const PostProcessPass& post, const SwapchainImage& target,
+                        const DrawItem* items, uint32_t itemCount) noexcept {
     const VolkDeviceTable& vk = slot.dev->table;
 
     // The value and its GPU copy meet here. Safe because BeginFrame waited on this
@@ -697,8 +706,11 @@ int main() {
         // RecordFrame's. The camera and light go to the pass because every draw in it
         // reads them. The item list is handed in as an argument instead -- it is this
         // frame's alone and no pass owns it.
+        //
+        // Through slot.index, not slotIndex: recording picks the pass's frame that way
+        // too, and one of the two would otherwise have to be kept in step by hand.
         FrameSlot& slot = slots[slotIndex];
-        scene.frames[slotIndex].uniformValue =
+        scene.frames[slot.index].uniformValue =
             {camera, glm::vec4{lightDir, 0.0f},
              glm::vec4{1.0f, 0.95f, 0.9f, 0.15f}, glm::vec4{eye, 48.0f}};
 
