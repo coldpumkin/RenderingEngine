@@ -47,10 +47,10 @@
 //   pipeline <-> vertex buffer   vertex layout
 //   pipeline <-> descriptor set  set layout
 //
-// A pass is vkCmdBeginRendering..vkCmdEndRendering, and the draw target is fixed
-// inside it. Two passes per frame, the second reads what the first wrote:
+// One pass, two stages: a stage is one pipeline and its own BeginRendering scope, and
+// the draw target is fixed inside it. The second stage reads what the first wrote:
 //
-//   [scene pass]    knows nothing about the window
+//   [scene stage]   knows nothing about the window
 //     barrier x3 (our color, its resolve target, depth)
 //     BeginRendering   attachment = draw.color / draw.depth, resolving into draw.resolve
 //       BindVertexBuffers, BindIndexBuffer
@@ -58,7 +58,7 @@
 //       per item: PushConstants, DrawIndexed
 //     EndRendering    <- the multisample average happens here
 //
-//   [present pass]  reads the resolve image only
+//   [present stage] reads the resolve image only. A post effect goes here
 //     barrier resolve   -> SHADER_READ_ONLY
 //     barrier swapchain -> COLOR_ATTACHMENT
 //     BeginRendering   attachment = swapchain image, in the swapchain's own format
@@ -81,10 +81,10 @@ struct IndexRange {
     constexpr uint32_t End() const noexcept { return firstIndex + count; }
 };
 
-// What differs between draws, once the pass has fixed everything else.
+// What differs between draws, once the stage has fixed everything else.
 //
-// No pipeline, texture or camera: the pass holds one of each. Each moves in here the
-// day one pass needs two of it, and the bind then moves into the loop with it.
+// No pipeline, texture or camera: the stage holds one of each. Each moves in here the
+// day one stage needs two of it, and the bind then moves into the loop with it.
 struct DrawItem {
     glm::mat4 model{1.0f};
     float alpha = 1.0f;
@@ -96,8 +96,8 @@ struct DrawItem {
 // Input:  the slot (target, pipeline), and what the scene brings: mesh, texture, items
 // Effect: appends commands that draw into draw.color / draw.depth
 //
-// No swapchain, so this works without a window. Takes the camera because one pass
-// has one viewpoint; time stays out -- item.model already carries it.
+// No swapchain, so this works without a window. Takes the camera because a stage has
+// one viewpoint; time stays out -- item.model already carries it.
 //
 // One mesh for every item: the spans in items index into it. A second mesh means
 // another BindVertexBuffers, which is why the bind sits above the loop and not in it.
@@ -223,9 +223,9 @@ static void RecordPresentPass(const VolkDeviceTable& vk, const FrameSlot& slot,
                               const AcquiredFrame& acquired) noexcept {
     VkCommandBuffer cmd = slot.cmd;
     const Texture& source = slot.targets.resolve;
-    const Pipeline& fullscreen = *slot.present;
-    const SwapchainImage& present = *acquired.image;
-    const VkExtent2D presentExtent = acquired.extent;
+    const Pipeline& pipeline = *slot.present;
+    const SwapchainImage& dest = *acquired.image;
+    const VkExtent2D destExtent = acquired.extent;
 
     // Written as an attachment, read as a texture -- that is this whole pass. The
     // layout must equal the one recorded into the descriptor set.
@@ -239,7 +239,7 @@ static void RecordPresentPass(const VolkDeviceTable& vk, const FrameSlot& slot,
 
     // srcStage must overlap SubmitFrame's wait stage, or this transition can run ahead
     // of the acquire.
-    RecordLayoutTransition(vk, cmd, present.image, VK_IMAGE_ASPECT_COLOR_BIT,
+    RecordLayoutTransition(vk, cmd, dest.image, VK_IMAGE_ASPECT_COLOR_BIT,
                            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, 0,
                            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
@@ -248,30 +248,30 @@ static void RecordPresentPass(const VolkDeviceTable& vk, const FrameSlot& slot,
 
     // Window sized, unlike the scene pass. The sampler's LINEAR filter scales.
     VkRenderingAttachmentInfo swapColor{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-    swapColor.imageView = present.view;
+    swapColor.imageView = dest.view;
     swapColor.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     swapColor.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;   // the draw covers everything
     swapColor.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 
-    VkRenderingInfo presentPass{VK_STRUCTURE_TYPE_RENDERING_INFO};
-    presentPass.renderArea.extent = presentExtent;
-    presentPass.layerCount = 1;
-    presentPass.colorAttachmentCount = 1;
-    presentPass.pColorAttachments = &swapColor;
+    VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
+    rendering.renderArea.extent = destExtent;
+    rendering.layerCount = 1;
+    rendering.colorAttachmentCount = 1;
+    rendering.pColorAttachments = &swapColor;
 
-    vk.vkCmdBeginRendering(cmd, &presentPass);
+    vk.vkCmdBeginRendering(cmd, &rendering);
 
     // Opposite sign from the scene pass: this pipeline is built ViewportY::Down.
-    const VkViewport presentViewport = MakeViewport(presentExtent, fullscreen.viewportY);
-    vk.vkCmdSetViewport(cmd, 0, 1, &presentViewport);
+    const VkViewport viewport = MakeViewport(destExtent, pipeline.viewportY);
+    vk.vkCmdSetViewport(cmd, 0, 1, &viewport);
 
-    VkRect2D presentScissor{};
-    presentScissor.extent = presentExtent;
-    vk.vkCmdSetScissor(cmd, 0, 1, &presentScissor);
+    VkRect2D scissor{};
+    scissor.extent = destExtent;
+    vk.vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-    vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, fullscreen.handle);
+    vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.handle);
 
-    vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, fullscreen.layout,
+    vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.layout,
                                0, 1, &source.set, 0, nullptr);
 
     // 3 vertices, no buffer. The shader builds them from gl_VertexIndex.
@@ -279,7 +279,7 @@ static void RecordPresentPass(const VolkDeviceTable& vk, const FrameSlot& slot,
 
     vk.vkCmdEndRendering(cmd);
 
-    RecordLayoutTransition(vk, cmd, present.image, VK_IMAGE_ASPECT_COLOR_BIT,
+    RecordLayoutTransition(vk, cmd, dest.image, VK_IMAGE_ASPECT_COLOR_BIT,
                            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                            VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0,
@@ -334,8 +334,8 @@ int main() {
     Window         window;        // holds the swapchain, so it dies before dev
     Commands       commands;
     Descriptors    descriptors;   // slots take sets from this pool
-    Pipeline       pipeline;
-    Pipeline       fullscreen;
+    Pipeline       scene;
+    Pipeline       present;
     FrameSlot      slots[kFramesInFlight];   // points at the pipelines, so dies first
     Texture        checker;
     Mesh           mesh;
@@ -369,10 +369,10 @@ int main() {
     // Passes
     // ------------------------------------------------------------------------
     //
-    // A pass is what stays fixed between BeginRendering and EndRendering; what can
-    // change inside belongs to a DrawItem.
+    // One pipeline per stage. What stays fixed inside a stage lives here; what can
+    // change between draws belongs to a DrawItem.
     //
-    // One pair per pass, here because the set layout comes from the fragment shader
+    // Here because the set layout comes from the fragment shader
     // and the pipeline from both.
     constexpr const char* kSceneVert = "Shaders/triangle.vert.spv";
     constexpr const char* kSceneFrag = "Shaders/triangle.frag.spv";
@@ -398,7 +398,7 @@ int main() {
     sceneDesc.cullMode = VK_CULL_MODE_BACK_BIT;
     sceneDesc.polygonMode = VK_POLYGON_MODE_FILL;
     sceneDesc.blending = Blending::Opaque;
-    if (!CreateGraphicsPipeline(dev, sceneDesc, &pipeline)) { return 1; }
+    if (!CreateGraphicsPipeline(dev, sceneDesc, &scene)) { return 1; }
 
     // Outlives creation: only colorFormat moves when the surface format changes.
     // No vertex input, no depth, 1 sample -- MSAA ended at the resolve.
@@ -409,7 +409,7 @@ int main() {
     presentDesc.setLayout = descriptors.present.handle;
     presentDesc.viewportY = ViewportY::Down;   // the shader makes its own uv
     presentDesc.cullMode = VK_CULL_MODE_BACK_BIT;
-    if (!CreateGraphicsPipeline(dev, presentDesc, &fullscreen)) { return 1; }
+    if (!CreateGraphicsPipeline(dev, presentDesc, &present)) { return 1; }
 
     // Render resolution
     // ------------------------------------------------------------------------
@@ -431,8 +431,8 @@ int main() {
     // Each slot gets the pass it will run and the set for its own resolve image.
     for (FrameSlot& s : slots) {
         if (!CreateFrameSlot(dev, commands, formats, kRenderExtent, &s)) { return 1; }
-        s.scene = &pipeline;
-        s.present = &fullscreen;
+        s.scene = &scene;
+        s.present = &present;
         s.targets.resolve.set = AllocateImageSet(descriptors, descriptors.present,
                                                  s.targets.resolve.image.view);
         if (s.targets.resolve.set == VK_NULL_HANDLE) { return 1; }
@@ -576,7 +576,7 @@ int main() {
 
         if (begun == FrameResult::Skip) { continue; }
 
-        // Rebuild the fullscreen pipeline if the surface format changed.
+        // Rebuild the present pipeline if the surface format changed.
         //
         // BeginFrame raises the flag, so checking at the top of the loop would be one
         // iteration late and this frame would draw with the stale pipeline. Scene
@@ -586,9 +586,9 @@ int main() {
         // on this frame's fence only, which is not enough.
         if (window.surfaceFormatChanged) {
             dev.table.vkDeviceWaitIdle(dev.handle);
-            DestroyPipeline(dev, &fullscreen);
+            DestroyPipeline(dev, &present);
             presentDesc.colorFormat = window.surfaceFormat.format;   // the only field that moved
-            if (!CreateGraphicsPipeline(dev, presentDesc, &fullscreen)) {
+            if (!CreateGraphicsPipeline(dev, presentDesc, &present)) {
                 break;
             }
             window.surfaceFormatChanged = false;   // cleared by whoever handled it
