@@ -331,11 +331,11 @@ int main() {
     Window         window;        // holds the swapchain, so it dies before dev
     Commands       commands;
     Descriptors    descriptors;   // slots take sets from this pool
-    FrameSlot      slots[kFramesInFlight];
     Pipeline       pipeline;
     Pipeline       fullscreen;
-    Texture        checker;
-    Mesh           mesh;          // dies first
+    Image          checker;
+    FrameSlot      slots[kFramesInFlight];   // points at the four above, so dies first
+    Mesh           mesh;
 
     // Ask, then build
     // ========================================================================
@@ -461,7 +461,7 @@ int main() {
         if (!CreateFrameSlot(dev, commands, formats, kRenderExtent, &s)) { return 1; }
         s.scene = &pipeline;
         s.present = &fullscreen;
-        s.sceneSet = AllocateSceneSet(descriptors, checker.image.view);
+        s.sceneSet = AllocateSceneSet(descriptors, checker.view);
         s.presentSet = AllocatePresentSet(descriptors, s.targets.resolve.view);
         if (s.sceneSet == VK_NULL_HANDLE || s.presentSet == VK_NULL_HANDLE) { return 1; }
     }
@@ -499,8 +499,8 @@ int main() {
         // What to draw
         // --------------------------------------------------------------------
         //
-        // Nothing here reads the acquire, so it runs before it. Only the DrawItem
-        // array reaches the recording layer: a matrix, a span, a pipeline, a texture.
+        // Nothing here reads the acquire, so it runs before it. Only the camera and
+        // the DrawItem array reach the recording layer; the slot holds the rest.
 
         // One clock reading, two values: t is absolute (object spin), dt is the gap
         // (camera movement). Reading twice would let them drift apart.

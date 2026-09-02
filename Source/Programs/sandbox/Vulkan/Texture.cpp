@@ -5,11 +5,6 @@
 
 #include <cstring>
 
-Texture::~Texture() {
-    if (dev == nullptr) { return; }
-    DestroyImage(*dev, &image);
-}
-
 // 8x8 칸. 한 칸이 여러 픽셀이면 확대 필터를 안 거쳐 경계가 또렷해서, uv가 맞는지
 // 보는 데는 작을수록 낫다. sampler가 LINEAR라 칸 경계가 부드럽게 번진다.
 //
@@ -26,10 +21,7 @@ static bool CreateTextureFromPixels(const VulkanDevice& dev,
                                     const Commands& commands,
                                     const uint8_t (&pixels)[kTextureSize * kTextureSize * 4],
                                     const char* label,
-                                    Texture* out) noexcept {
-    Texture& texture = *out;
-    texture.dev = &dev;
-
+                                    Image* out) noexcept {
     constexpr uint32_t kSize = kTextureSize;
     constexpr VkFormat kFormat = VK_FORMAT_R8G8B8A8_SRGB;
 
@@ -54,7 +46,7 @@ static bool CreateTextureFromPixels(const VulkanDevice& dev,
     // 요구하고 그건 우리 셰이더가 아니다.
     if (!CreateImage2D(dev, VkExtent2D{kSize, kSize}, kFormat, VK_SAMPLE_COUNT_1_BIT,
                        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                       VK_IMAGE_ASPECT_COLOR_BIT, &texture.image)) {
+                       VK_IMAGE_ASPECT_COLOR_BIT, out)) {
         return false;
     }
 
@@ -63,7 +55,7 @@ static bool CreateTextureFromPixels(const VulkanDevice& dev,
 
     // 복사를 받을 수 있는 layout으로. srcStage가 TOP_OF_PIPE인 이유는 앞에 기다릴
     // 것이 없어서다 - 이 image는 방금 만들어졌고 아무도 안 건드렸다.
-    RecordLayoutTransition(dev.table, cmd, texture.image.handle, VK_IMAGE_ASPECT_COLOR_BIT,
+    RecordLayoutTransition(dev.table, cmd, out->handle, VK_IMAGE_ASPECT_COLOR_BIT,
                            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                            VK_PIPELINE_STAGE_2_COPY_BIT,
                            VK_ACCESS_2_TRANSFER_WRITE_BIT,
@@ -76,12 +68,12 @@ static bool CreateTextureFromPixels(const VulkanDevice& dev,
     region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     region.imageSubresource.layerCount = 1;
     region.imageExtent = VkExtent3D{kSize, kSize, 1};
-    dev.table.vkCmdCopyBufferToImage(cmd, staging.handle, texture.image.handle,
+    dev.table.vkCmdCopyBufferToImage(cmd, staging.handle, out->handle,
                                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
     // shader가 읽는 layout으로. dstStage가 FRAGMENT_SHADER인 이유는 실제로 거기서만
     // 읽기 때문이다 - vertex shader도 읽게 되면 여기가 같이 넓어져야 한다.
-    RecordLayoutTransition(dev.table, cmd, texture.image.handle, VK_IMAGE_ASPECT_COLOR_BIT,
+    RecordLayoutTransition(dev.table, cmd, out->handle, VK_IMAGE_ASPECT_COLOR_BIT,
                            VK_PIPELINE_STAGE_2_COPY_BIT,
                            VK_ACCESS_2_TRANSFER_WRITE_BIT,
                            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
@@ -99,7 +91,7 @@ static bool CreateTextureFromPixels(const VulkanDevice& dev,
 
 bool CreateCheckerTexture(const VulkanDevice& dev,
                           const Commands& commands,
-                          Texture* out) noexcept {
+                          Image* out) noexcept {
     uint8_t pixels[kTextureSize * kTextureSize * 4]{};
     for (uint32_t y = 0; y < kTextureSize; ++y) {
         for (uint32_t x = 0; x < kTextureSize; ++x) {

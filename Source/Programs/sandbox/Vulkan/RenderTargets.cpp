@@ -64,7 +64,6 @@ RenderTargetFormats ChooseRenderTargetFormats(const VulkanInstance& inst,
 bool CreateRenderTargets(const VulkanDevice& dev,
                          VkExtent2D extent, RenderTargetFormats formats,
                          RenderTargets* out) noexcept {
-    out->dev = &dev;
     out->extent = extent;
 
     // Drawn into. No SAMPLED: our shaders cannot read a multisample image, and
@@ -94,11 +93,3 @@ bool CreateRenderTargets(const VulkanDevice& dev,
     return true;
 }
 
-// Survives a half-built state: vkDestroy* is a no-op on VK_NULL_HANDLE by spec,
-// which is why CreateRenderTargets has no unwind path.
-RenderTargets::~RenderTargets() {
-    if (dev == nullptr) { return; }
-    const VulkanDevice& d = *dev;
-
-    for (Image* img : {&color, &resolve, &depth}) { DestroyImage(d, img); }
-}

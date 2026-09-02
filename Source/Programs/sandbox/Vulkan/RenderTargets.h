@@ -21,19 +21,12 @@
 #include "Vulkan/Image.h"
 
 struct RenderTargets {
-    const VulkanDevice* dev = nullptr;   // non-owning, needed to destroy
-
     // color and resolve differ in exactly one thing: sample count. A multisample
     // image cannot be read through sampler2D, so the present pass needs its own.
     Image color;
     Image resolve;
     Image depth;
     VkExtent2D extent{};
-
-    RenderTargets() = default;
-    ~RenderTargets();
-    RenderTargets(const RenderTargets&) = delete;
-    RenderTargets& operator=(const RenderTargets&) = delete;
 };
 
 // The contract between the images we create and the pipeline that draws into them.

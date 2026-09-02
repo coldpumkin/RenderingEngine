@@ -7,6 +7,8 @@ bool CreateImage2D(const VulkanDevice& dev,
                    VkImageUsageFlags usage,
                    VkImageAspectFlags aspect,
                    Image* out) noexcept {
+    out->dev = &dev;   // set first: the destructor runs even if the create below fails
+
     VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     info.imageType = VK_IMAGE_TYPE_2D;
     info.format = format;
@@ -47,10 +49,11 @@ bool CreateImage2D(const VulkanDevice& dev,
     return true;
 }
 
-void DestroyImage(const VulkanDevice& dev, Image* image) noexcept {
-    dev.table.vkDestroyImageView(dev.handle, image->view, nullptr);
-    if (image->handle != VK_NULL_HANDLE) {
-        vmaDestroyImage(dev.allocator, image->handle, image->allocation);
+// vkDestroy* is a no-op on VK_NULL_HANDLE by spec, so a failed create needs no unwind.
+Image::~Image() {
+    if (dev == nullptr) { return; }
+    dev->table.vkDestroyImageView(dev->handle, view, nullptr);
+    if (handle != VK_NULL_HANDLE) {
+        vmaDestroyImage(dev->allocator, handle, allocation);
     }
-    *image = Image{};
 }

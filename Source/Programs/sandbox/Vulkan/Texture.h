@@ -14,22 +14,9 @@
 //   TRANSFER_DST -> SHADER_READ_ONLY    shader가 읽을 수 있는 상태로
 //
 // Buffer에는 이 단계가 없다. Image는 driver가 내부 배치를 바꿔가며 쓰기 때문이다.
-//
-// descriptor set은 pool에서 나오고 개별 반납이 없어서 소멸자가 안 지운다.
 
 #include "Vulkan/Commands.h"
 #include "Vulkan/Image.h"
-
-struct Texture {
-    const VulkanDevice* dev = nullptr;   // 파괴에 필요한 non-owning 상태
-
-    Image image;
-
-    Texture() = default;
-    ~Texture();
-    Texture(const Texture&) = delete;
-    Texture& operator=(const Texture&) = delete;
-};
 
 // 파일에서 읽지 않고 코드로 만든다.
 //
@@ -38,4 +25,4 @@ struct Texture {
 // uv가 맞는지 · 필터가 도는지 · 좌우상하가 안 뒤집혔는지가 전부 눈에 보인다.
 bool CreateCheckerTexture(const VulkanDevice& dev,
                           const Commands& commands,
-                          Texture* out) noexcept;
+                          Image* out) noexcept;
