@@ -4,10 +4,39 @@
 
 #include <iterator>   // std::size
 
+// Built without looking at the window, so this works while minimized - there may be
+// no swapchain yet, and nothing here depends on one.
+bool CreateScenePass(const VulkanDevice& dev, AttachmentFormats formats,
+                     VkExtent2D extent, ScenePass* out) noexcept {
+    for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+        ScenePass::PerFrame& frame = out->frames[i];
+
+        // Three descs, and every difference is written out rather than derived inside
+        // CreateTexture: color is multisample and carries no SAMPLED (sampler2D cannot
+        // read a multisample image), colorResolve is the 1-sample copy the post pass
+        // reads, and depth never leaves the frame.
+        if (!CreateTexture(dev, {extent, formats.color, formats.samples,
+                                 VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT}, &frame.color)) {
+            return false;
+        }
+        if (!CreateTexture(dev, {extent, formats.color, VK_SAMPLE_COUNT_1_BIT,
+                                 VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+                                     | VK_IMAGE_USAGE_SAMPLED_BIT},
+                           &frame.colorResolve)) {
+            return false;
+        }
+        if (!CreateTexture(dev, {extent, formats.depth, formats.samples,
+                                 VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT},
+                           &frame.depth)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool CreateFrameSlot(const VulkanDevice& dev, const Commands& commands,
                  const Descriptors& descriptors, uint32_t index,
-                 AttachmentFormats formats, VkExtent2D extent,
-                 const Mesh& mesh, const Texture& input,
+                 const Mesh& mesh, const Texture& input, const ScenePass& scene,
                  FrameSlot* out) noexcept {
     out->dev = &dev;
     out->descriptors = &descriptors;
@@ -40,28 +69,6 @@ bool CreateFrameSlot(const VulkanDevice& dev, const Commands& commands,
         return false;
     }
 
-    // Built without looking at the window, so this works while minimized - there may
-    // be no swapchain yet.
-    //
-    // Three descs, and every difference is written out rather than derived inside
-    // CreateTexture: color is multisample and carries no SAMPLED (sampler2D cannot
-    // read a multisample image), colorResolve is the 1-sample copy the present pass
-    // reads, and depth never leaves the frame.
-    if (!CreateTexture(dev, {extent, formats.color, formats.samples,
-                             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT}, &out->color)) {
-        return false;
-    }
-    if (!CreateTexture(dev, {extent, formats.color, VK_SAMPLE_COUNT_1_BIT,
-                             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
-                                 | VK_IMAGE_USAGE_SAMPLED_BIT}, &out->colorResolve)) {
-        return false;
-    }
-    if (!CreateTexture(dev, {extent, formats.depth, formats.samples,
-                             VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT},
-                       &out->depth)) {
-        return false;
-    }
-
     // HOST_VISIBLE + MAPPED: 프레임마다 memcpy 한 번이라 staging을 거칠 이유가 없다.
     if (!CreateBuffer(dev, sizeof(SceneUniform),
                       VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
@@ -84,8 +91,9 @@ bool CreateFrameSlot(const VulkanDevice& dev, const Commands& commands,
     UpdateSet(descriptors, *descriptors.scene, descriptors.sceneSets[index],
               opaque, static_cast<uint32_t>(std::size(opaque)));
 
-    // The resolve, not color: the multisample image cannot be sampled.
-    const BindingValue present[] = {{out->colorResolve.image.view}};
+    // The resolve, not color: the multisample image cannot be sampled. This slot's
+    // frame of the scene pass, picked by the same index as the sets.
+    const BindingValue present[] = {{scene.frames[index].colorResolve.image.view}};
     UpdateSet(descriptors, *descriptors.present, descriptors.presentSets[index],
               present, 1);
     return true;

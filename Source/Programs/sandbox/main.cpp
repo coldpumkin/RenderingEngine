@@ -52,8 +52,8 @@
 // the draw target is fixed inside it. The second stage reads what the first wrote:
 //
 //   [opaque stage]   knows nothing about the window
-//     barrier x3 (slot.color, slot.colorResolve, slot.depth)
-//     BeginRendering   attachment = slot.color / slot.depth, resolving into colorResolve
+//     barrier x3 (the pass's color, colorResolve, depth for this slot)
+//     BeginRendering   attachment = color / depth, resolving into colorResolve
 //       BindVertexBuffers, BindIndexBuffer
 //       BindPipeline, BindDescriptorSets
 //       per item: PushConstants, DrawIndexed
@@ -94,25 +94,30 @@ struct DrawItem {
 
 // Opaque stage
 //
-// Input:  the slot -- attachments, mesh, set, pipeline, items
-// Effect: appends commands that draw into draw.color / draw.depth
+// Input:  the pass (attachments) and the slot (command buffer, mesh, set, items)
+// Effect: appends commands that draw into this slot's color / depth
 //
 // No swapchain, so this works without a window. No camera either: it went into the
 // slot's uniform, which every draw in this stage reads.
 //
 // One mesh for every item: the spans in items index into it. A second mesh means
 // another BindVertexBuffers, which is why the bind sits above the loop and not in it.
-static void RecordOpaqueStage(const FrameSlot& slot, const Pipeline& pipeline) noexcept {
+static void RecordOpaqueStage(const FrameSlot& slot, const ScenePass& scene,
+                              const Pipeline& pipeline) noexcept {
     const VolkDeviceTable& vk = slot.dev->table;
     const DrawItem* items = slot.items;
     const uint32_t itemCount = slot.itemCount;
     VkCommandBuffer cmd = slot.cmd;
     const Mesh& mesh = *slot.mesh;
-    const VkExtent2D extent = slot.color.desc.extent;   // render resolution, not window size
+
+    // This slot's frame of the pass. index picks the descriptor sets too, so the
+    // attachments and the sets that name them cannot come apart.
+    const ScenePass::PerFrame& targets = scene.frames[slot.index];
+    const VkExtent2D extent = targets.color.desc.extent;   // render resolution, not window size
 
     // oldLayout UNDEFINED: loadOp=CLEAR overwrites, so the old contents are dead.
     // Asking to preserve them makes the driver actually copy.
-    RecordLayoutTransition(vk, cmd, slot.color.image.handle, VK_IMAGE_ASPECT_COLOR_BIT,
+    RecordLayoutTransition(vk, cmd, targets.color.image.handle, VK_IMAGE_ASPECT_COLOR_BIT,
                            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
@@ -121,7 +126,7 @@ static void RecordOpaqueStage(const FrameSlot& slot, const Pipeline& pipeline) n
 
     // The resolve target is written too, at the end of the pass, so it needs the same
     // layout and the same stage. Nothing here draws into it directly.
-    RecordLayoutTransition(vk, cmd, slot.colorResolve.image.handle, VK_IMAGE_ASPECT_COLOR_BIT,
+    RecordLayoutTransition(vk, cmd, targets.colorResolve.image.handle, VK_IMAGE_ASPECT_COLOR_BIT,
                            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
@@ -130,7 +135,7 @@ static void RecordOpaqueStage(const FrameSlot& slot, const Pipeline& pipeline) n
 
     // Depth test runs at EARLY/LATE_FRAGMENT_TESTS, ahead of COLOR_ATTACHMENT_OUTPUT.
     // Reusing the color stage here would let depth writes pass the barrier.
-    RecordLayoutTransition(vk, cmd, slot.depth.image.handle, VK_IMAGE_ASPECT_DEPTH_BIT,
+    RecordLayoutTransition(vk, cmd, targets.depth.image.handle, VK_IMAGE_ASPECT_DEPTH_BIT,
                            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                            VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT
                                | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
@@ -146,10 +151,10 @@ static void RecordOpaqueStage(const FrameSlot& slot, const Pipeline& pipeline) n
     // writing the multisample image back would be pure bandwidth. The resolve still
     // happens -- resolveMode is what drives it, not storeOp.
     VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-    color.imageView = slot.color.image.view;
+    color.imageView = targets.color.image.view;
     color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     color.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
-    color.resolveImageView = slot.colorResolve.image.view;
+    color.resolveImageView = targets.colorResolve.image.view;
     color.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     color.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -158,7 +163,7 @@ static void RecordOpaqueStage(const FrameSlot& slot, const Pipeline& pipeline) n
     // Clear 1.0 = farthest, paired with the pipeline's compareOp=LESS.
     // DONT_CARE: depth is used only within this frame.
     VkRenderingAttachmentInfo depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-    depth.imageView = slot.depth.image.view;
+    depth.imageView = targets.depth.image.view;
     depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
     depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -220,10 +225,14 @@ static void RecordOpaqueStage(const FrameSlot& slot, const Pipeline& pipeline) n
 //
 // Input:  the slot's resolve texture, and where to put it
 // Effect: appends commands that sample the resolve image into the swapchain image
-static void RecordPresentStage(const FrameSlot& slot, const Pipeline& pipeline) noexcept {
+static void RecordPresentStage(const FrameSlot& slot, const ScenePass& scene,
+                               const Pipeline& pipeline) noexcept {
     const VolkDeviceTable& vk = slot.dev->table;
     VkCommandBuffer cmd = slot.cmd;
-    const Texture& source = slot.colorResolve;
+
+    // What the scene pass left behind. The set bound below names this same image,
+    // and both are picked by slot.index.
+    const Texture& source = scene.frames[slot.index].colorResolve;
     const Texture& dest = slot.image->texture;
     const VkExtent2D destExtent = dest.desc.extent;
 
@@ -291,7 +300,7 @@ static void RecordPresentStage(const FrameSlot& slot, const Pipeline& pipeline) 
 // Output: false means the buffer is invalid and must not be submitted
 //
 // Takes the slot but never touches its fence or semaphore -- a rule, not a type.
-bool RecordFrame(const FrameSlot& slot,
+bool RecordFrame(const FrameSlot& slot, const ScenePass& scene,
                  const Pipeline& opaque, const Pipeline& present) noexcept {
     const VolkDeviceTable& vk = slot.dev->table;
 
@@ -312,8 +321,8 @@ bool RecordFrame(const FrameSlot& slot,
         return false;
     }
 
-    RecordOpaqueStage(slot, opaque);
-    RecordPresentStage(slot, present);
+    RecordOpaqueStage(slot, scene, opaque);
+    RecordPresentStage(slot, scene, present);
 
     if (vk.vkEndCommandBuffer(cmd) != VK_SUCCESS) {
         LOG("[vk] vkEndCommandBuffer failed\n");
@@ -406,6 +415,7 @@ int main() {
     Pipeline       opaque;        // each owns the set layout its shaders declare
     Pipeline       present;
     Descriptors    descriptors;   // borrows those layouts, so it dies before them
+    ScenePass      scene;         // the attachments every frame draws into
     FrameSlot      slots[kFramesInFlight];   // points at the pipelines, so dies first
     Texture        checker;
     Mesh           mesh;
@@ -528,11 +538,13 @@ int main() {
     // Frames
     // ------------------------------------------------------------------------
     //
-    // Last, because a slot points at the scene above. It owns its attachments and
-    // the set that reads the colour one.
+    // The pass owns the attachments; a slot owns the command buffer and the sets that
+    // name them. So the pass is built first, and every slot reads its own frame of it.
+    if (!CreateScenePass(dev, formats, kRenderExtent, &scene)) { return 1; }
+
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
-        if (!CreateFrameSlot(dev, commands, descriptors, i, formats, kRenderExtent,
-                             mesh, checker, &slots[i])) { return 1; }
+        if (!CreateFrameSlot(dev, commands, descriptors, i,
+                             mesh, checker, scene, &slots[i])) { return 1; }
     }
 
     // No swapchain yet: the loop's EnsureSwapchain makes it, and the first creation
@@ -693,7 +705,7 @@ int main() {
 
         // These break instead of continue. After the acquire, skipping the submit
         // leaves a signalled semaphore and a reset fence with nobody to wait on them.
-        if (!RecordFrame(slot, opaque, present)) {
+        if (!RecordFrame(slot, scene, opaque, present)) {
             break;
         }
 

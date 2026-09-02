@@ -1,14 +1,18 @@
 ﻿#pragma once
 
-// FrameSlot - one frame, and the pass it runs from end to end
+// ScenePass and FrameSlot - what a pass owns, and what a frame borrows
 // ============================================================================
 //
-// A slot, not a frame: slots[] is cycled through, and a frame borrows one. It holds
-// everything that pass runs on except the pipelines -- those are the contract it was
-// built against, not a resource, and every slot would hold the same two.
+// Two axes, and they are not the same question:
 //
-// Two pipelines in a row are one pass here: the scene draws off-screen, then present
-// samples that into the swapchain. A post effect goes in that second stage.
+//   ScenePass   what one pass draws into and reads. Its attachments are per frame
+//               in flight because every frame rewrites them
+//   FrameSlot   what one frame's execution needs, whichever pass it runs. slots[]
+//               is cycled through and a frame borrows one
+//
+// A slot, not a frame: frames keep coming, slots are reused, and the fence says when
+// one is free again. Pipelines are in neither -- they are the contract both were
+// built against, and every slot would hold the same two.
 //
 // What waits on what, in order:
 //
@@ -21,6 +25,7 @@
 //
 // Recording sits between BeginFrame and SubmitFrame and is absent here.
 
+#include "Config.h"   // kFramesInFlight sizes ScenePass::frames
 #include "Vulkan/Attachments.h"
 #include "Vulkan/Buffer.h"
 #include "Vulkan/Descriptors.h"
@@ -31,6 +36,34 @@
 
 struct Mesh;
 struct DrawItem;
+
+
+// ScenePass - the off-screen pass, and what it draws into
+// ============================================================================
+//
+// The pass is one; its attachments are one set per frame in flight. Every frame
+// draws into them again, so a frame cannot share them with one the GPU has not
+// finished -- the first barrier in recording is srcStage TOP_OF_PIPE, which waits
+// for nothing.
+//
+// Read-only inputs (the mesh, the sampled texture) are not copied and will sit
+// beside frames[] rather than inside it.
+struct ScenePass {
+    struct PerFrame {
+        Texture color;         // multisample. Drawn into, then discarded
+        Texture colorResolve;  // 1 sample. vkCmdEndRendering averages into it, and
+                               // the post pass samples it -- the one that leaves
+        Texture depth;         // multisample. Tested and written, never read outside
+    };
+    PerFrame frames[kFramesInFlight];
+};
+
+// Effect: creates the three attachment textures for every frame in flight.
+//
+// Contract: formats and extent must be what the scene pipeline was built with.
+//           main chooses once and hands the same values to both.
+bool CreateScenePass(const VulkanDevice& dev, AttachmentFormats formats,
+                     VkExtent2D extent, ScenePass* out) noexcept;
 
 
 // cmd, imageAvailable and inFlight are sized by kFramesInFlight because one signal
@@ -47,17 +80,6 @@ struct FrameSlot {
 
     VkSemaphore imageAvailable = VK_NULL_HANDLE;
     VkFence inFlight = VK_NULL_HANDLE;
-
-    // Where the frame using this slot draws: our attachments, not swapchain ones.
-    // Three separate Textures, because a Texture is one image and these are three:
-    //
-    //   color         multisample. Drawn into, then discarded
-    //   colorResolve  1 sample. vkCmdEndRendering averages into it, and the present
-    //                 pass samples it -- the only one that leaves the scene pass
-    //   depth         multisample. Tested and written, never read outside the frame
-    Texture color;
-    Texture colorResolve;
-    Texture depth;
 
     // What the scene brings. Pointers because the scene owns them and every slot
     // reads the same ones -- how many there are, and their memory, is not ours.
@@ -91,15 +113,14 @@ struct FrameSlot {
     FrameSlot& operator=(const FrameSlot&) = delete;
 };
 
-// Effect: allocates the command buffer, semaphore, fence and the three attachment
-//         textures, and points the slot at what the scene brings.
+// Effect: allocates the command buffer, semaphore and fence, points the slot at what
+//         the scene brings, and fills this slot's two descriptor sets.
 //
-// Contract: formats and extent must be what the pipelines were given. main chooses
-//           once and hands the same values to both.
+// Takes the scene pass because the present set names its colorResolve. Which frame's
+// is decided by index, the same number the sets are picked by.
 bool CreateFrameSlot(const VulkanDevice& dev, const Commands& commands,
                  const Descriptors& descriptors, uint32_t index,
-                 AttachmentFormats formats, VkExtent2D extent,
-                 const Mesh& mesh, const Texture& input,
+                 const Mesh& mesh, const Texture& input, const ScenePass& scene,
                  FrameSlot* out) noexcept;
 
 // What the caller must do next, not what happened inside. A bool would collapse
