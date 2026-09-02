@@ -8,14 +8,16 @@
 #include <vector>
 
 // ============================================================================
+// UNDEFINED means none was usable. Any SRGB format will do -- the shader writes and
+// reads (r,g,b,a) whatever the byte order is, so only the colour space matters.
 VkSurfaceFormatKHR ChooseSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& available) noexcept {
     for (const VkSurfaceFormatKHR& f : available) {
-        if (f.format == VK_FORMAT_B8G8R8A8_SRGB
-            && f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
-            return f;
-        }
+        const bool srgb = f.format == VK_FORMAT_B8G8R8A8_SRGB
+                       || f.format == VK_FORMAT_R8G8B8A8_SRGB
+                       || f.format == VK_FORMAT_A8B8G8R8_SRGB_PACK32;
+        if (srgb && f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) { return f; }
     }
-    return available.front();   // 스펙상 목록은 최소 하나가 보장된다
+    return VkSurfaceFormatKHR{};
 }
 
 // OPAQUE = 알파를 무시하고 불투명하게 합성. 창 투명도를 안 쓰므로 이게 맞다.
@@ -44,9 +46,9 @@ Swapchain::~Swapchain() {
 
     for (SwapchainImage& img : images) {
         d.table.vkDestroySemaphore(d.handle, img.renderFinished, nullptr);
-        d.table.vkDestroyImageView(d.handle, img.view, nullptr);
-        // img.image는 파괴하지 않는다 - 조회한 것이고 swapchain이 소유한다.
     }
+    // ~Image가 view를 지운다. image 자체는 allocation이 없어서 건드리지 않는다 -
+    // 조회한 것이고 vkDestroySwapchainKHR이 가져간다.
     images.clear();
 
     d.table.vkDestroySwapchainKHR(d.handle, handle, nullptr);
@@ -65,7 +67,14 @@ bool SelectSurfaceFormat(const VulkanInstance& inst,
     inst.table.vkGetPhysicalDeviceSurfaceFormatsKHR(gpu, window->surface, &count,
                                                     formats.data());
 
-    window->surfaceFormat = ChooseSurfaceFormat(formats);
+    // A non-SRGB surface would store what the shader wrote without encoding it, and
+    // nothing catches that - the picture is simply wrong. No fallback path, as with 1x.
+    const VkSurfaceFormatKHR chosen = ChooseSurfaceFormat(formats);
+    if (chosen.format == VK_FORMAT_UNDEFINED) {
+        LOG("[vk] surface offers no SRGB format\n");
+        return false;
+    }
+    window->surfaceFormat = chosen;
     return true;
 }
 
@@ -118,7 +127,7 @@ bool CreateSwapchain(const VulkanInstance& inst,
     info.imageColorSpace = surfaceFormat.colorSpace;
     info.imageExtent = caps.currentExtent;
     info.imageArrayLayers = 1;
-    // Present pass가 여기에 직접 그리므로 COLOR_ATTACHMENT만 있으면 된다.
+    // Present stage가 여기에 직접 그리므로 COLOR_ATTACHMENT만 있으면 된다.
     // 스펙이 supportedUsageFlags에 항상 넣는 유일한 용도라 확인도 필요 없다.
     info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     // 현재 정책: swapchain image는 graphics queue만 만진다. Compute가 여기 직접 써야
@@ -163,7 +172,13 @@ bool CreateSwapchain(const VulkanInstance& inst,
     // 반쯤 채워진 배열도 그대로 정리된다.
     sc.images.resize(actualCount);
     for (uint32_t i = 0; i < actualCount; ++i) {
-        sc.images[i].image = rawImages[i];
+        // 조회한 image에 우리가 만든 view를 붙인다. desc는 이 image가 무엇인지 -
+        // present stage의 pipeline이 같은 format으로 만들어져야 한다.
+        Texture& texture = sc.images[i].texture;
+        texture.desc = {sc.extent, surfaceFormat.format, VK_SAMPLE_COUNT_1_BIT,
+                        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT};
+        texture.image.dev = &dev;
+        texture.image.handle = rawImages[i];   // allocation은 비운다 = 우리 것이 아니다
         sc.images[i].index = i;
 
         VkImageViewCreateInfo viewInfo{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
@@ -175,7 +190,7 @@ bool CreateSwapchain(const VulkanInstance& inst,
         viewInfo.subresourceRange.layerCount = 1;
 
         const VkResult viewResult =
-            dev.table.vkCreateImageView(dev.handle, &viewInfo, nullptr, &sc.images[i].view);
+            dev.table.vkCreateImageView(dev.handle, &viewInfo, nullptr, &texture.image.view);
         if (viewResult != VK_SUCCESS) {
             LOG("[vk] vkCreateImageView failed on image %u (%d)\n", i, viewResult);
                 return false;
@@ -231,16 +246,9 @@ bool EnsureSwapchain(const VulkanDevice& dev, Window* window) noexcept {
     // 사건이 같은 것이다. 창이 다른 모니터로 가면 둘 다 일어난다.
     //
     // 실패는 무시한다 - 이전 format으로 계속 가는 것이 그릴 곳이 없어지는 것보다 낫다.
-    const VkSurfaceFormatKHR previous = window->surfaceFormat;
-    if (SelectSurfaceFormat(*window->inst, dev.gpu, window)
-        && (window->surfaceFormat.format != previous.format
-            || window->surfaceFormat.colorSpace != previous.colorSpace)) {
-        // 세우기만 한다. 지우는 것은 처리한 쪽(main)이다.
-        window->surfaceFormatChanged = true;
-        LOG("[vk] surface format changed: %d -> %d\n",
-            static_cast<int>(previous.format),
-            static_cast<int>(window->surfaceFormat.format));
-    }
+    // 바뀌었다고 알릴 필요는 없다: 새 swapchain image가 자기 format을 들고 가고,
+    // pipeline과 다르면 그것이 곧 신호다.
+    SelectSurfaceFormat(*window->inst, dev.gpu, window);
 
     // 이전 것을 oldSwapchain으로 넘겨 retire시키고, 새것을 만든 뒤에 놓는다.
     // 스펙: 생성이 실패해도 retire는 일어난다 - 그래서 실패해도 이전 것은 버려야 한다.

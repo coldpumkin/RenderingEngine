@@ -7,6 +7,9 @@
 //
 // It owns itself, like Buffer: a half-built one still frees, and holding several
 // costs the holder no destructor.
+//
+// allocation says what we own. A swapchain image is queried, so it has none and only
+// the view -- which is ours -- is destroyed.
 
 #include "Vulkan/Device.h"
 
@@ -21,6 +24,11 @@ struct Image {
     ~Image();
     Image(const Image&) = delete;
     Image& operator=(const Image&) = delete;
+
+    // Movable because a swapchain keeps its images in a vector. The source is left
+    // empty, so its destructor frees nothing.
+    Image(Image&& other) noexcept;
+    Image& operator=(Image&& other) noexcept;
 };
 
 // Input:  samples는 MSAA sample 수 (1_BIT면 MSAA 없음)

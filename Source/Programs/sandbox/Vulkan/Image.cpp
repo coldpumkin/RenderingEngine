@@ -1,5 +1,7 @@
 ﻿#include "Vulkan/Image.h"
 
+#include <new>   // placement new in move assignment
+
 // Stencil is never used, so a stencil format still gets a depth-only view. Adding
 // stencil here would put a second aspect on every barrier and view.
 static VkImageAspectFlags AspectOf(VkFormat format) noexcept {
@@ -64,11 +66,30 @@ bool CreateImage2D(const VulkanDevice& dev,
     return true;
 }
 
+Image::Image(Image&& other) noexcept
+    : dev(other.dev), handle(other.handle), allocation(other.allocation), view(other.view) {
+    other.dev = nullptr;
+    other.handle = VK_NULL_HANDLE;
+    other.allocation = VK_NULL_HANDLE;
+    other.view = VK_NULL_HANDLE;
+}
+
+Image& Image::operator=(Image&& other) noexcept {
+    if (this != &other) {
+        this->~Image();
+        new (this) Image(static_cast<Image&&>(other));
+    }
+    return *this;
+}
+
 // vkDestroy* is a no-op on VK_NULL_HANDLE by spec, so a failed create needs no unwind.
+//
+// The view goes either way -- we made it. The image only if we allocated it: a
+// swapchain image is queried, and destroying it would take the swapchain's.
 Image::~Image() {
     if (dev == nullptr) { return; }
     dev->table.vkDestroyImageView(dev->handle, view, nullptr);
-    if (handle != VK_NULL_HANDLE) {
+    if (allocation != VK_NULL_HANDLE) {
         vmaDestroyImage(dev->allocator, handle, allocation);
     }
 }

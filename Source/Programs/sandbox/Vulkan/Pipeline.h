@@ -1,6 +1,8 @@
 ﻿#pragma once
 
 #include "Vulkan/Attachments.h"
+#include "Vulkan/Device.h"
+#include "Vulkan/Shader.h"
 
 #include <glm/glm.hpp>   // PushConstants holds a mat4
 
@@ -39,51 +41,6 @@ enum class Blending {
     Translucent,   // blend on  - depth write off
 };
 
-// Dynamic rendering bakes the attachment formats in. Size is not baked - viewport
-// and scissor are dynamic state, so a resize rebuilds nothing.
-struct Pipeline {
-    const VulkanDevice* dev = nullptr;   // non-owning, needed to destroy
-
-    VkPipelineLayout layout = VK_NULL_HANDLE;
-    VkPipeline handle = VK_NULL_HANDLE;
-
-    // frontFace is already baked from this. Kept so the recording side hands the
-    // same value to MakeViewport.
-    ViewportY viewportY = ViewportY::Down;
-
-    Pipeline() = default;
-    ~Pipeline();
-    Pipeline(const Pipeline&) = delete;
-    Pipeline& operator=(const Pipeline&) = delete;
-};
-
-// Effect: destroys pipeline and layout, leaves the struct empty. The destructor
-//         calls this; main calls it directly to rebuild in place when the surface
-//         format changes.
-//
-// Contract: every command buffer using this pipeline must have finished, so the
-//           caller calls vkDeviceWaitIdle - one frame's fence is not enough.
-void DestroyPipeline(const VulkanDevice& dev, Pipeline* pipeline) noexcept;
-
-// Rides inside the command buffer: no pool, no set, no lifetime. At least 128 bytes
-// are guaranteed, which is why the three matrices are multiplied on the CPU - sent
-// apart they would be 192. Lighting that wants world space splits model back out.
-//
-// Contract: field order and types match the shader's push_constant block. The layer
-//           checks the size, not the order.
-// Contract: every stage that reads it must be in pushRange.stageFlags - fragment
-//           reads alpha, so VERTEX alone is not enough.
-struct PushConstants {
-    glm::mat4 mvp;   // model -> world -> view -> clip
-    float alpha;     // 1.0 is opaque. Opaque pipelines ignore it: blending is off
-};
-
-// Vertex - stride 48, all float so no padding. Offsets leave via offsetof.
-//
-//   position  12   world space
-//   normal    12   +z for a z=0 face wound CCW in y-up
-//   uv         8   (0,0) top-left, y down
-//   tangent   16   xyz, w = bitangent sign (glTF TANGENT)
 //
 // Appending never moves an earlier offset, so a new field cannot disturb a shader.
 //
@@ -103,10 +60,10 @@ struct Vertex {
 //   the shader requires   vertPath . fragPath . vertexInput
 //   the pass decides      viewportY . cullMode
 //   the caller chooses    polygonMode . blending
-//   passed through        colorFormat . depthFormat . samples . setLayout
+//   passed through        colorFormat . depthFormat . samples
 //
-// The last row decides nothing: it carries values from RenderTargets and Descriptors
-// so both sides of a baked-in contract read the same one.
+// The last row decides nothing: it carries values from Attachments so both sides of
+// a baked-in contract read the same one.
 struct GraphicsPipelineDesc {
     const char* vertPath = nullptr;
     const char* fragPath = nullptr;
@@ -119,10 +76,6 @@ struct GraphicsPipelineDesc {
     // in, so a mismatch is caught at vkCmdBeginRendering. depth UNDEFINED = no depth.
     AttachmentFormats formats;
 
-    // The push range is not here: the shaders declare it and CreateGraphicsPipeline
-    // reads it out of them.
-    VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
-
     ViewportY viewportY = ViewportY::Down;
     VkCullModeFlags cullMode = VK_CULL_MODE_NONE;
 
@@ -132,15 +85,85 @@ struct GraphicsPipelineDesc {
     Blending blending = Blending::Opaque;
 };
 
+// Dynamic rendering bakes the attachment formats in. Size is not baked - viewport
+// and scissor are dynamic state, so a resize rebuilds nothing.
+struct Pipeline {
+    const VulkanDevice* dev = nullptr;   // non-owning, needed to destroy
+
+    VkPipelineLayout layout = VK_NULL_HANDLE;
+    VkPipeline handle = VK_NULL_HANDLE;
+
+    // Read out of the shaders, like the push range. It outlives a rebuild: the sets
+    // already allocated from it stay valid only while it does.
+    DescriptorLayout setLayout;
+
+    // What it was built from. Recording reads viewportY out of it, and a rebuild
+    // needs the rest -- without this the caller would have to keep the desc alive.
+    GraphicsPipelineDesc desc;
+
+    Pipeline() = default;
+    ~Pipeline();
+    Pipeline(const Pipeline&) = delete;
+    Pipeline& operator=(const Pipeline&) = delete;
+};
+
+// Effect: destroys pipeline and layout, leaves the struct empty. setLayout is not
+//         touched -- only the destructor frees that. The destructor calls this; main
+//         calls it directly to rebuild in place when the surface format changes.
+//
+// Contract: every command buffer using this pipeline must have finished, so the
+//           caller calls vkDeviceWaitIdle - one frame's fence is not enough.
+void DestroyPipeline(const VulkanDevice& dev, Pipeline* pipeline) noexcept;
+
+// Effect: rebuilds it for new attachment formats -- waits, destroys, creates, in that
+//         order, which is DestroyPipeline's contract.
+//
+// The rest of the desc is already inside, so only what changed is passed.
+bool RebuildPipeline(const VulkanDevice& dev, AttachmentFormats formats,
+                     Pipeline* pipeline) noexcept;
+
+// Rides inside the command buffer: no pool, no set, no lifetime. At least 128 bytes
+// are guaranteed, which is why the three matrices are multiplied on the CPU - sent
+// apart they would be 192. Lighting that wants world space splits model back out.
+//
+// Contract: field order and types match the shader's push_constant block. The layer
+//           checks the size, not the order.
+// Contract: every stage that reads it must be in pushRange.stageFlags - fragment
+//           reads alpha, so VERTEX alone is not enough.
+// Contract: mesh.vert / mesh.frag의 Scene 블록과 필드가 같아야 한다. 프레임마다 한 번
+//           쓰고 모든 draw가 같은 값을 읽는다 - draw마다 다른 것은 push로 간다.
+//
+// vec3가 아니라 vec4인 이유: std140에서 vec3도 16바이트로 정렬되므로, 남는 자리를
+// 숨기는 것보다 이름을 붙이는 쪽이 낫다.
+struct SceneUniform {
+    glm::mat4 viewProj;
+    glm::vec4 lightDir;     // xyz = 표면에서 광원을 향하는 방향, w 미사용
+    glm::vec4 lightColor;   // rgb = 색, a = ambient
+    glm::vec4 viewPos;      // xyz = 카메라 위치, w = specular 지수
+};
+
+struct PushConstants {
+    glm::mat4 mvp;   // model -> world -> view -> clip
+    float alpha;     // 1.0 is opaque. Opaque pipelines ignore it: blending is off
+};
+
+// Vertex - stride 48, all float so no padding. Offsets leave via offsetof.
+//
+//   position  12   world space
+//   normal    12   +z for a z=0 face wound CCW in y-up
+//   uv         8   (0,0) top-left, y down
+//   tangent   16   xyz, w = bitangent sign (glTF TANGENT)
+
 // The vertex layout for Vertex. Callers hand this to desc.vertexInput; a shader that
 // builds its own points (fullscreen) leaves that null.
 const VkPipelineVertexInputStateCreateInfo& VertexInput() noexcept;
 
-// Effect: builds one pipeline from desc. The push range and the shader stages come
-//         out of the .spv; everything else is desc.
+// Effect: builds one pipeline from desc. The push range, the set layout and the
+//         shader stages come out of the .spv; everything else is desc. An out that
+//         already carries a set layout keeps it, which is what a rebuild needs.
 //
 // Contract: colorFormat, depthFormat and samples must be what the attachments
-//           actually are, and setLayout must be built from desc.fragPath.
+//           actually are.
 //           LINE polygonMode requires the device's fillModeNonSolid (Core.h).
 bool CreateGraphicsPipeline(const VulkanDevice& dev,
                             const GraphicsPipelineDesc& desc,

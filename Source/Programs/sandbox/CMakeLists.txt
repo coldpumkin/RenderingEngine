@@ -60,7 +60,7 @@ find_program(GLSLC_EXE glslc HINTS "$ENV{VULKAN_SDK}/Bin" REQUIRED)
 set(SHADER_BUILD_DIR "${CMAKE_CURRENT_BINARY_DIR}/Shaders")
 set(SPV_FILES "")
 
-foreach(SHADER triangle.vert triangle.frag fullscreen.vert fullscreen.frag)
+foreach(SHADER mesh.vert mesh.frag fullscreen.vert fullscreen.frag)
     set(SRC "${CMAKE_CURRENT_SOURCE_DIR}/Shaders/${SHADER}")
     set(SPV "${SHADER_BUILD_DIR}/${SHADER}.spv")
     add_custom_command(
@@ -88,12 +88,12 @@ add_custom_command(TARGET sandbox POST_BUILD
 
 # VS에서 셰이더 원본이 보이게 (빌드 대상은 아니다)
 target_sources(sandbox PRIVATE
-    Shaders/triangle.vert
-    Shaders/triangle.frag
+    Shaders/mesh.vert
+    Shaders/mesh.frag
     Shaders/fullscreen.vert
     Shaders/fullscreen.frag
 )
-set_source_files_properties(Shaders/triangle.vert Shaders/triangle.frag
+set_source_files_properties(Shaders/mesh.vert Shaders/mesh.frag
                             PROPERTIES HEADER_FILE_ONLY TRUE)
 
 set_target_properties(sandbox sandbox_shaders PROPERTIES FOLDER "Engine/Programs")

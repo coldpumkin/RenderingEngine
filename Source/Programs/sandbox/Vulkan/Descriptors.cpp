@@ -2,6 +2,8 @@
 
 #include "Vulkan/Shader.h"
 
+#include <iterator>   // std::size
+
 // Effect: builds a layout shaped exactly like the fragment shader's set 0, and
 //         reports how many bindings that turned out to be.
 //
@@ -9,37 +11,48 @@
 // becomes COMBINED_IMAGE_SAMPLER), and stageFlags is FRAGMENT because that is the
 // only stage we reflect for descriptors -- a vertex shader reading a texture would
 // need its own pass over that stage.
-static bool CreateSetLayoutFromShader(const VulkanDevice& dev, const char* fragPath,
-                                      DescriptorLayout* out) noexcept {
-    ShaderInterface iface;
-    if (!ReflectShaderFile(fragPath, &iface)) { return false; }
-
-    VkDescriptorSetLayoutBinding bindings[kMaxBindingsPerSet]{};
-    for (uint32_t i = 0; i < iface.bindingCount; ++i) {
-        bindings[i].binding = i;
-        bindings[i].descriptorType = iface.bindingTypes[i];
-        bindings[i].descriptorCount = 1;
-        bindings[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+// 한 layout이 타입별로 descriptor를 몇 개 요구하는지.
+static uint32_t CountOfType(const DescriptorLayout& layout, VkDescriptorType type) noexcept {
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < layout.bindingCount; ++i) {
+        if (layout.types[i] == type) { ++n; }
     }
+    return n;
+}
 
-    VkDescriptorSetLayoutCreateInfo layoutInfo{
-        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    layoutInfo.bindingCount = iface.bindingCount;
-    layoutInfo.pBindings = bindings;
-    if (dev.table.vkCreateDescriptorSetLayout(dev.handle, &layoutInfo, nullptr, &out->handle)
-            != VK_SUCCESS) {
-        LOG("[vk] vkCreateDescriptorSetLayout failed: %s\n", fragPath);
+// 한 layout으로 count개를 한 번에 뽑는다. pool은 자라지 않으므로 여기서 실패하면
+// 크기를 잘못 센 것이다.
+static bool AllocateSets(const Descriptors& descriptors, const DescriptorLayout& layout,
+                         uint32_t count, VkDescriptorSet* out) noexcept {
+    if (count == 0) { return true; }
+    if (count > kMaxSetsPerLayout) {
+        LOG("[vk] %u sets asked for, %u is the ceiling\n", count, kMaxSetsPerLayout);
         return false;
     }
-    out->bindingCount = iface.bindingCount;
+
+    VkDescriptorSetLayout layouts[kMaxSetsPerLayout]{};
+    for (uint32_t i = 0; i < count; ++i) { layouts[i] = layout.handle; }
+
+    VkDescriptorSetAllocateInfo allocInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    allocInfo.descriptorPool = descriptors.pool;
+    allocInfo.descriptorSetCount = count;
+    allocInfo.pSetLayouts = layouts;
+
+    const VulkanDevice& dev = *descriptors.dev;
+    if (dev.table.vkAllocateDescriptorSets(dev.handle, &allocInfo, out) != VK_SUCCESS) {
+        LOG("[vk] vkAllocateDescriptorSets failed (pool may be too small)\n");
+        return false;
+    }
     return true;
 }
 
 bool CreateDescriptors(const VulkanDevice& dev,
-                       const char* sceneFragPath, uint32_t sceneSets,
-                       const char* presentFragPath, uint32_t presentSets,
+                       const DescriptorLayout& scene, uint32_t sceneSets,
+                       const DescriptorLayout& present, uint32_t presentSets,
                        Descriptors* out) noexcept {
     out->dev = &dev;
+    out->scene = &scene;
+    out->present = &present;
 
     // Sampler는 image가 아니라 읽는 규칙이다. 그래서 image와 따로 살고 하나로
     // 여러 image를 읽는다. 두 layout이 이것 하나를 같이 쓴다.
@@ -59,24 +72,31 @@ bool CreateDescriptors(const VulkanDevice& dev,
         return false;
     }
 
-    if (!CreateSetLayoutFromShader(dev, sceneFragPath, &out->scene)) { return false; }
-    if (!CreateSetLayoutFromShader(dev, presentFragPath, &out->present)) { return false; }
-
     // Pool은 자라지 않아서 크기를 미리 정한다. 타입별 개수도 같이 말해야 한다.
     //
     // 두 값이 다른 것을 센다 - set의 개수와 descriptor의 개수다. layout마다 binding
     // 수가 달라서 뒤는 가중합이고, 앞의 배수가 아니다.
     const uint32_t maxSets = sceneSets + presentSets;
 
-    VkDescriptorPoolSize poolSize{};
-    poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSize.descriptorCount = sceneSets * out->scene.bindingCount
-                             + presentSets * out->present.bindingCount;
+    // 타입마다 따로 센다. 요구가 0인 타입은 빼야 한다 - 스펙이 descriptorCount 0을
+    // 금지한다.
+    constexpr VkDescriptorType kTypes[] = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                           VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER};
+    VkDescriptorPoolSize poolSizes[std::size(kTypes)]{};
+    uint32_t sizeCount = 0;
+    for (const VkDescriptorType type : kTypes) {
+        const uint32_t n = sceneSets * CountOfType(scene, type)
+                         + presentSets * CountOfType(present, type);
+        if (n == 0) { continue; }
+        poolSizes[sizeCount].type = type;
+        poolSizes[sizeCount].descriptorCount = n;
+        ++sizeCount;
+    }
 
     VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     poolInfo.maxSets = maxSets;
-    poolInfo.poolSizeCount = 1;   // 타입이 한 종류다. UNIFORM_BUFFER가 오면 둘이 된다
-    poolInfo.pPoolSizes = &poolSize;
+    poolInfo.poolSizeCount = sizeCount;
+    poolInfo.pPoolSizes = poolSizes;
     // FREE_DESCRIPTOR_SET을 안 주면 set을 개별 반납할 수 없다. 시작할 때 뽑아서
     // 끝까지 쓰므로 반납할 일이 없고, 안 주는 쪽이 driver에게 쉽다.
     if (dev.table.vkCreateDescriptorPool(dev.handle, &poolInfo, nullptr, &out->pool)
@@ -84,70 +104,61 @@ bool CreateDescriptors(const VulkanDevice& dev,
         LOG("[vk] vkCreateDescriptorPool failed\n");
         return false;
     }
-    return true;
+
+    // 개수를 방금 pool에 말했으니 지금 다 뽑는다. 이 뒤로는 아무도 할당하지 않는다.
+    return AllocateSets(*out, scene, sceneSets, out->sceneSets)
+        && AllocateSets(*out, present, presentSets, out->presentSets);
 }
 
-// Contract: viewCount는 layout이 요구하는 binding 개수와 같아야 한다. 모자라면
-//           안 채운 자리를 shader가 읽다가 draw에서 잡힌다.
-//           그리고 kMaxBindingsPerSet을 넘으면 안 된다 - 이쪽은 아무도 안 잡는다.
-static VkDescriptorSet AllocateSet(const Descriptors& descriptors,
-                                   VkDescriptorSetLayout layout,
-                                   const VkImageView* views, uint32_t viewCount) noexcept {
+void UpdateSet(const Descriptors& descriptors, const DescriptorLayout& layout,
+               VkDescriptorSet set,
+               const BindingValue* values, uint32_t count) noexcept {
     const VulkanDevice& dev = *descriptors.dev;
-
-    VkDescriptorSetAllocateInfo allocInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-    allocInfo.descriptorPool = descriptors.pool;
-    allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts = &layout;
-
-    VkDescriptorSet set = VK_NULL_HANDLE;
-    if (dev.table.vkAllocateDescriptorSets(dev.handle, &allocInfo, &set) != VK_SUCCESS) {
-        LOG("[vk] vkAllocateDescriptorSets failed (pool may be too small)\n");
-        return VK_NULL_HANDLE;
+    if (count != layout.bindingCount || set == VK_NULL_HANDLE) {
+        LOG("[vk] layout wants %u bindings, given %u\n", layout.bindingCount, count);
+        return;
     }
 
-    // 뽑은 set은 비어 있어서 binding마다 "이 view + 이 sampler"를 채운다.
+    // 뽑은 set은 비어 있어서 binding마다 채운다. type이 어느 info를 쓸지 정한다.
     //
     // imageLayout은 bind 시점이 아니라 읽는 시점의 layout이다. Texture 업로드와
-    // RecordPresentPass가 그 전에 SHADER_READ_ONLY_OPTIMAL로 전이시키는 것과 짝이다.
+    // RecordPresentStage가 그 전에 SHADER_READ_ONLY_OPTIMAL로 전이시키는 것과 짝이다.
     VkDescriptorImageInfo imageInfo[kMaxBindingsPerSet]{};
+    VkDescriptorBufferInfo bufferInfo[kMaxBindingsPerSet]{};
     VkWriteDescriptorSet write[kMaxBindingsPerSet]{};
-    for (uint32_t i = 0; i < viewCount; ++i) {
-        imageInfo[i].sampler = descriptors.sampler;
-        imageInfo[i].imageView = views[i];
-        imageInfo[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    uint32_t used = 0;
+    for (uint32_t i = 0; i < count; ++i) {
+        const VkDescriptorType type = layout.types[i];
+        if (type == 0) { continue; }   // 번호에 구멍이 있는 경우
 
-        write[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write[i].dstSet = set;
-        write[i].dstBinding = i;
-        write[i].descriptorCount = 1;
-        write[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        write[i].pImageInfo = &imageInfo[i];
+        write[used].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write[used].dstSet = set;
+        write[used].dstBinding = i;
+        write[used].descriptorCount = 1;
+        write[used].descriptorType = type;
+
+        if (type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) {
+            bufferInfo[used].buffer = values[i].buffer;
+            bufferInfo[used].range = values[i].size;
+            write[used].pBufferInfo = &bufferInfo[used];
+        } else {
+            imageInfo[used].sampler = descriptors.sampler;
+            imageInfo[used].imageView = values[i].view;
+            imageInfo[used].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            write[used].pImageInfo = &imageInfo[used];
+        }
+        ++used;
     }
 
     // 스펙: 이 함수는 실패하지 않는다. 잘못 채우면 validation layer가 잡는다.
-    dev.table.vkUpdateDescriptorSets(dev.handle, viewCount, write, 0, nullptr);
-    return set;
-}
-
-VkDescriptorSet AllocateImageSet(const Descriptors& descriptors,
-                                 const DescriptorLayout& layout,
-                                 VkImageView view) noexcept {
-    // One view, so the shader that built this layout has to want exactly one.
-    if (layout.bindingCount != 1) {
-        LOG("[vk] layout wants %u bindings, this fills one\n", layout.bindingCount);
-        return VK_NULL_HANDLE;
-    }
-    const VkImageView views[1] = {view};
-    return AllocateSet(descriptors, layout.handle, views, 1);
+    dev.table.vkUpdateDescriptorSets(dev.handle, used, write, 0, nullptr);
 }
 
 Descriptors::~Descriptors() {
     if (dev == nullptr) { return; }
     const VulkanDevice& d = *dev;
-    // Pool을 지우면 거기서 뽑은 set도 같이 사라진다.
+    // Destroying the pool takes the sets drawn from it with it. The layouts belong
+    // to the pipelines and are not ours to free.
     d.table.vkDestroyDescriptorPool(d.handle, pool, nullptr);
-    d.table.vkDestroyDescriptorSetLayout(d.handle, present.handle, nullptr);
-    d.table.vkDestroyDescriptorSetLayout(d.handle, scene.handle, nullptr);
     d.table.vkDestroySampler(d.handle, sampler, nullptr);
 }

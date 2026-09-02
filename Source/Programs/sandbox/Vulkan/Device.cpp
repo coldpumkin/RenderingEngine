@@ -156,6 +156,13 @@ PhysicalDeviceSelection PickPhysicalDevice(const VulkanInstance& inst,
         return selection;
     }
 
+    // 여기까지가 "이 창에 그릴 수 있나"이고, 아래는 "무엇에 그릴 수 있나"다.
+    // 못 고르면 자격 미달이라 같은 방식으로 실패한다.
+    if (!ChooseAttachmentFormats(inst, selection.gpu, &selection.formats)) {
+        selection.gpu = VK_NULL_HANDLE;
+        return selection;
+    }
+
     LOG("[vk] GPU: %s\n", chosenProps.deviceName);
     LOG("[vk] queue families: graphics=%u, compute=%s, transfer=%s\n",
         selection.families.graphics,

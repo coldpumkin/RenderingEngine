@@ -8,8 +8,26 @@
 
 bool CreateTexture(const VulkanDevice& dev, const TextureDesc& desc,
                    Texture* out) noexcept {
-    return CreateImage2D(dev, desc.extent, desc.format, desc.samples, desc.usage,
-                         &out->image);
+    out->desc = desc;
+
+    // SAMPLED moves to the resolve when there is one: the multisample image is written
+    // and averaged, and only the average is ever read.
+    const bool multisample = desc.samples != VK_SAMPLE_COUNT_1_BIT;
+    const bool read = (desc.usage & VK_IMAGE_USAGE_SAMPLED_BIT) != 0;
+    const VkImageUsageFlags imageUsage =
+        multisample ? (desc.usage & ~VK_IMAGE_USAGE_SAMPLED_BIT) : desc.usage;
+
+    if (!CreateImage2D(dev, desc.extent, desc.format, desc.samples, imageUsage,
+                       &out->image)) {
+        return false;
+    }
+    if (!multisample || !read) { return true; }
+
+    // COLOR_ATTACHMENT is for being a resolve target -- nothing draws into it.
+    return CreateImage2D(dev, desc.extent, desc.format, VK_SAMPLE_COUNT_1_BIT,
+                         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+                             | VK_IMAGE_USAGE_SAMPLED_BIT,
+                         &out->resolve);
 }
 
 bool CreateTextureFromPixels(const VulkanDevice& dev, const Commands& commands,

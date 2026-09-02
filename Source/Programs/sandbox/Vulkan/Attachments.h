@@ -7,7 +7,7 @@
 // into the pipeline, so no type has to bundle the results. extent is not here: the
 // pipeline never sees it, its viewport being dynamic.
 
-#include "Vulkan/Device.h"
+#include "Vulkan/Instance.h"
 
 // The contract between the images we create and the pipeline that draws into them.
 //

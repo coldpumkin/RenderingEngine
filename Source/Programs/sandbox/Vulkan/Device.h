@@ -1,5 +1,6 @@
 ﻿#pragma once
 
+#include "Vulkan/Attachments.h"
 #include "Vulkan/Instance.h"
 
 #include <vma/vk_mem_alloc.h>
@@ -38,6 +39,10 @@ struct QueueFamilies {
 struct PhysicalDeviceSelection {
     VkPhysicalDevice gpu = VK_NULL_HANDLE;
     QueueFamilies families;
+
+    // 이 GPU로 무엇에 그릴 수 있나. 고르는 기준의 일부라 여기서 나온다 -
+    // format이나 sample 수를 못 맞추는 GPU는 자격이 없다.
+    AttachmentFormats formats;
 };
 
 // 자격을 통과한 것 중 외장을 선호한다.
@@ -90,7 +95,7 @@ struct VulkanDevice {
     VkPhysicalDeviceMemoryProperties memoryProperties{};
 
     // Depth format은 여기 없다 - 후보 목록과 우선순위는 우리 render target의 정책이지
-    // GPU의 성질이 아니다. Attachments.h의 ChooseAttachmentFormats에 있다.
+    // GPU의 성질이 아니다. 정책이라 Attachments.h가 고르고, 그 결과만 selection에 온다.
 
     // GPU memory allocator. Device가 만들고 device와 함께 죽는다.
     VmaAllocator allocator = VK_NULL_HANDLE;

@@ -23,13 +23,14 @@
 
 #include <GLFW/glfw3.h>
 
+#include <cmath>      // cos, sin
 #include <cstring>    // memcpy
 #include <iterator>   // std::size
 
 // One header at a time. <glm/ext.hpp> was dropped when vendoring (VERSION.md).
 #include <glm/common.hpp>                  // clamp
 #include <glm/ext/matrix_clip_space.hpp>   // perspective
-#include <glm/ext/matrix_transform.hpp>    // rotate, lookAt
+#include <glm/ext/matrix_transform.hpp>    // rotate, translate, scale, lookAt
 #include <glm/geometric.hpp>               // normalize, cross
 #include <glm/trigonometric.hpp>           // radians, cos, sin
 
@@ -50,9 +51,9 @@
 // One pass, two stages: a stage is one pipeline and its own BeginRendering scope, and
 // the draw target is fixed inside it. The second stage reads what the first wrote:
 //
-//   [scene stage]   knows nothing about the window
+//   [opaque stage]   knows nothing about the window
 //     barrier x3 (our color, its resolve target, depth)
-//     BeginRendering   attachment = draw.color / draw.depth, resolving into draw.resolve
+//     BeginRendering   attachment = slot.color / slot.depth, resolving into color's resolve
 //       BindVertexBuffers, BindIndexBuffer
 //       BindPipeline, BindDescriptorSets
 //       per item: PushConstants, DrawIndexed
@@ -91,23 +92,23 @@ struct DrawItem {
     IndexRange range{};
 };
 
-// Scene pass
+// Opaque stage
 //
-// Input:  the slot (images, pipeline), and what the scene brings: mesh, texture, items
+// Input:  the slot -- attachments, mesh, set, pipeline, items
 // Effect: appends commands that draw into draw.color / draw.depth
 //
-// No swapchain, so this works without a window. Takes the camera because a stage has
-// one viewpoint; time stays out -- item.model already carries it.
+// No swapchain, so this works without a window. No camera either: it went into the
+// slot's uniform, which every draw in this stage reads.
 //
 // One mesh for every item: the spans in items index into it. A second mesh means
 // another BindVertexBuffers, which is why the bind sits above the loop and not in it.
-static void RecordScenePass(const VolkDeviceTable& vk, const FrameSlot& slot,
-                            const Mesh& mesh, VkDescriptorSet texture,
-                            const glm::mat4& camera,
-                            const DrawItem* items, uint32_t itemCount) noexcept {
+static void RecordOpaqueStage(const FrameSlot& slot, const Pipeline& pipeline) noexcept {
+    const VolkDeviceTable& vk = slot.dev->table;
+    const DrawItem* items = slot.items;
+    const uint32_t itemCount = slot.itemCount;
     VkCommandBuffer cmd = slot.cmd;
-    const Pipeline& pipeline = *slot.scene;
-    const VkExtent2D extent = slot.extent;   // render resolution, not window size
+    const Mesh& mesh = *slot.mesh;
+    const VkExtent2D extent = slot.color.desc.extent;   // render resolution, not window size
 
     // oldLayout UNDEFINED: loadOp=CLEAR overwrites, so the old contents are dead.
     // Asking to preserve them makes the driver actually copy.
@@ -120,7 +121,7 @@ static void RecordScenePass(const VolkDeviceTable& vk, const FrameSlot& slot,
 
     // The resolve target is written too, at the end of the pass, so it needs the same
     // layout and the same stage. Nothing here draws into it directly.
-    RecordLayoutTransition(vk, cmd, slot.resolve.image.handle, VK_IMAGE_ASPECT_COLOR_BIT,
+    RecordLayoutTransition(vk, cmd, slot.color.resolve.handle, VK_IMAGE_ASPECT_COLOR_BIT,
                            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
@@ -148,7 +149,7 @@ static void RecordScenePass(const VolkDeviceTable& vk, const FrameSlot& slot,
     color.imageView = slot.color.image.view;
     color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     color.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
-    color.resolveImageView = slot.resolve.image.view;
+    color.resolveImageView = slot.color.resolve.view;
     color.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     color.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -174,7 +175,7 @@ static void RecordScenePass(const VolkDeviceTable& vk, const FrameSlot& slot,
 
     // Dynamic state, so a resize does not rebuild the pipeline. The sign comes from the
     // pipeline itself, so it cannot disagree with the frontFace baked into it.
-    const VkViewport viewport = MakeViewport(extent, pipeline.viewportY);
+    const VkViewport viewport = MakeViewport(extent, pipeline.desc.viewportY);
     vk.vkCmdSetViewport(cmd, 0, 1, &viewport);
 
     // Pixels outside this rect are discarded. Whole screen for now.
@@ -184,7 +185,7 @@ static void RecordScenePass(const VolkDeviceTable& vk, const FrameSlot& slot,
 
     vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.handle);
     vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.layout,
-                               0, 1, &texture, 0, nullptr);
+                               0, 1, &slot.descriptors->sceneSets[slot.index], 0, nullptr);
 
     // binding 0 matches the pipeline's binding 0. offset changes once several meshes
     // share one buffer.
@@ -193,15 +194,16 @@ static void RecordScenePass(const VolkDeviceTable& vk, const FrameSlot& slot,
 
     // Index buffers have no slot number: a command buffer holds exactly one.
     // Contract: this type must match the element type of kIndices.
-    vk.vkCmdBindIndexBuffer(cmd, mesh.indices.handle, 0, mesh.indexType);
+    vk.vkCmdBindIndexBuffer(cmd, mesh.indices.handle, 0, mesh.desc.indexType);
 
     // Order is whatever the caller wrote into the array. This layer does not sort.
     // Nothing is bound in here, so the order only decides blending.
     for (uint32_t i = 0; i < itemCount; ++i) {
         const DrawItem& item = items[i];
 
-        // The pass's viewpoint meets the item's transform here, and nowhere earlier.
-        const PushConstants push{camera * item.model, item.alpha};
+        // viewProj is in the uniform this set already points at; only the item's own
+        // values ride the command buffer.
+        const PushConstants push{item.model, item.alpha};
         vk.vkCmdPushConstants(cmd, pipeline.layout,
                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                               0, sizeof(push), &push);
@@ -214,21 +216,20 @@ static void RecordScenePass(const VolkDeviceTable& vk, const FrameSlot& slot,
     vk.vkCmdEndRendering(cmd);
 }
 
-// Present pass
+// Present stage
 //
 // Input:  the slot's resolve texture, and where to put it
 // Effect: appends commands that sample the resolve image into the swapchain image
-static void RecordPresentPass(const VolkDeviceTable& vk, const FrameSlot& slot,
-                              const AcquiredFrame& acquired) noexcept {
+static void RecordPresentStage(const FrameSlot& slot, const Pipeline& pipeline) noexcept {
+    const VolkDeviceTable& vk = slot.dev->table;
     VkCommandBuffer cmd = slot.cmd;
-    const Texture& source = slot.resolve;
-    const Pipeline& pipeline = *slot.present;
-    const SwapchainImage& dest = *acquired.image;
-    const VkExtent2D destExtent = acquired.extent;
+    const Texture& source = slot.color;
+    const Texture& dest = slot.image->texture;
+    const VkExtent2D destExtent = dest.desc.extent;
 
     // Written as an attachment, read as a texture -- that is this whole pass. The
     // layout must equal the one recorded into the descriptor set.
-    RecordLayoutTransition(vk, cmd, source.image.handle, VK_IMAGE_ASPECT_COLOR_BIT,
+    RecordLayoutTransition(vk, cmd, source.resolve.handle, VK_IMAGE_ASPECT_COLOR_BIT,
                            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
@@ -238,16 +239,16 @@ static void RecordPresentPass(const VolkDeviceTable& vk, const FrameSlot& slot,
 
     // srcStage must overlap SubmitFrame's wait stage, or this transition can run ahead
     // of the acquire.
-    RecordLayoutTransition(vk, cmd, dest.image, VK_IMAGE_ASPECT_COLOR_BIT,
+    RecordLayoutTransition(vk, cmd, dest.image.handle, VK_IMAGE_ASPECT_COLOR_BIT,
                            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, 0,
                            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                            VK_IMAGE_LAYOUT_UNDEFINED,
                            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
-    // Window sized, unlike the scene pass. The sampler's LINEAR filter scales.
+    // Window sized, unlike the opaque stage. The sampler's LINEAR filter scales.
     VkRenderingAttachmentInfo swapColor{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-    swapColor.imageView = dest.view;
+    swapColor.imageView = dest.image.view;
     swapColor.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     swapColor.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;   // the draw covers everything
     swapColor.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -260,8 +261,8 @@ static void RecordPresentPass(const VolkDeviceTable& vk, const FrameSlot& slot,
 
     vk.vkCmdBeginRendering(cmd, &rendering);
 
-    // Opposite sign from the scene pass: this pipeline is built ViewportY::Down.
-    const VkViewport viewport = MakeViewport(destExtent, pipeline.viewportY);
+    // Opposite sign from the opaque stage: this pipeline is built ViewportY::Down.
+    const VkViewport viewport = MakeViewport(destExtent, pipeline.desc.viewportY);
     vk.vkCmdSetViewport(cmd, 0, 1, &viewport);
 
     VkRect2D scissor{};
@@ -271,14 +272,14 @@ static void RecordPresentPass(const VolkDeviceTable& vk, const FrameSlot& slot,
     vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.handle);
 
     vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.layout,
-                               0, 1, &source.set, 0, nullptr);
+                               0, 1, &slot.descriptors->presentSets[slot.index], 0, nullptr);
 
     // 3 vertices, no buffer. The shader builds them from gl_VertexIndex.
     vk.vkCmdDraw(cmd, 3, 1, 0, 0);
 
     vk.vkCmdEndRendering(cmd);
 
-    RecordLayoutTransition(vk, cmd, dest.image, VK_IMAGE_ASPECT_COLOR_BIT,
+    RecordLayoutTransition(vk, cmd, dest.image.handle, VK_IMAGE_ASPECT_COLOR_BIT,
                            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                            VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0,
@@ -286,16 +287,17 @@ static void RecordPresentPass(const VolkDeviceTable& vk, const FrameSlot& slot,
                            VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 }
 
-// Effect: resets the slot's command buffer and records both passes
+// Effect: resets the slot's command buffer and records both stages from it
 // Output: false means the buffer is invalid and must not be submitted
 //
 // Takes the slot but never touches its fence or semaphore -- a rule, not a type.
-bool RecordFrame(const VolkDeviceTable& vk,
-                 const AcquiredFrame& acquired,
-                 const Mesh& mesh, VkDescriptorSet texture,
-                 const glm::mat4& camera,
-                 const DrawItem* items, uint32_t itemCount) noexcept {
-    const FrameSlot& slot = *acquired.slot;
+bool RecordFrame(const FrameSlot& slot,
+                 const Pipeline& opaque, const Pipeline& present) noexcept {
+    const VolkDeviceTable& vk = slot.dev->table;
+
+    // The value and its GPU copy meet here. Safe because BeginFrame waited on this
+    // slot's fence, and this runs after it -- an acquired image is its precondition.
+    std::memcpy(slot.uniform.mapped, &slot.scene, sizeof(slot.scene));
     VkCommandBuffer cmd = slot.cmd;
     // The pool has RESET_COMMAND_BUFFER_BIT, so one buffer can rewind on its own.
     if (vk.vkResetCommandBuffer(cmd, 0) != VK_SUCCESS) {
@@ -310,14 +312,83 @@ bool RecordFrame(const VolkDeviceTable& vk,
         return false;
     }
 
-    RecordScenePass(vk, slot, mesh, texture, camera, items, itemCount);
-    RecordPresentPass(vk, slot, acquired);
+    RecordOpaqueStage(slot, opaque);
+    RecordPresentStage(slot, present);
 
     if (vk.vkEndCommandBuffer(cmd) != VK_SUCCESS) {
         LOG("[vk] vkEndCommandBuffer failed\n");
         return false;
     }
     return true;
+}
+
+// Scene data made in code
+// ============================================================================
+//
+// Neither is about Vulkan: both hand back plain arrays, which is what CreateMesh and
+// CreateTextureFromPixels take. A file loader fills the same arrays.
+
+// A UV sphere. On a unit sphere the position is also the normal, which is the whole
+// reason this shape shows lighting.
+//
+// Output: vertices[(stacks+1) * (slices+1)], indices[stacks * slices * 6]
+static void MakeSphere(uint32_t stacks, uint32_t slices, float radius,
+                       Vertex* vertices, uint16_t* indices) noexcept {
+    for (uint32_t stack = 0; stack <= stacks; ++stack) {
+        // phi from the +y pole down to -y; theta all the way around.
+        const float phi = 3.14159265f * static_cast<float>(stack) / stacks;
+        for (uint32_t slice = 0; slice <= slices; ++slice) {
+            const float theta = 6.28318531f * static_cast<float>(slice) / slices;
+            const float sinPhi = std::sin(phi);
+            const float nx = sinPhi * std::cos(theta);
+            const float ny = std::cos(phi);
+            const float nz = sinPhi * std::sin(theta);
+
+            Vertex& v = vertices[stack * (slices + 1) + slice];
+            v.position[0] = nx * radius;
+            v.position[1] = ny * radius;
+            v.position[2] = nz * radius;
+            v.normal[0] = nx; v.normal[1] = ny; v.normal[2] = nz;
+            v.uv[0] = static_cast<float>(slice) / slices;
+            v.uv[1] = static_cast<float>(stack) / stacks;
+
+            // Along increasing theta -- the direction u grows in, which is what a
+            // normal map will expect.
+            v.tangent[0] = -std::sin(theta);
+            v.tangent[1] = 0.0f;
+            v.tangent[2] =  std::cos(theta);
+            v.tangent[3] = 1.0f;
+        }
+    }
+
+    // Two triangles per quad. CCW seen from outside, which is what BACK culling wants.
+    uint32_t written = 0;
+    for (uint32_t stack = 0; stack < stacks; ++stack) {
+        for (uint32_t slice = 0; slice < slices; ++slice) {
+            const uint16_t top = static_cast<uint16_t>(stack * (slices + 1) + slice);
+            const uint16_t bottom = static_cast<uint16_t>(top + slices + 1);
+            indices[written++] = top;
+            indices[written++] = bottom;
+            indices[written++] = static_cast<uint16_t>(top + 1);
+            indices[written++] = static_cast<uint16_t>(top + 1);
+            indices[written++] = bottom;
+            indices[written++] = static_cast<uint16_t>(bottom + 1);
+        }
+    }
+}
+
+// Small cells on purpose: one texel per cell makes a wrong uv obvious, and the
+// LINEAR sampler softens the edges.
+//
+// Output: pixels[size * size * 4], RGBA8
+static void MakeChecker(uint32_t size, uint8_t* pixels) noexcept {
+    for (uint32_t y = 0; y < size; ++y) {
+        for (uint32_t x = 0; x < size; ++x) {
+            const uint8_t v = ((x + y) % 2 == 0) ? 255 : 70;
+            uint8_t* p = pixels + (y * size + x) * 4;
+            p[0] = v; p[1] = v; p[2] = v; p[3] = 255;
+        }
+    }
 }
 
 int main() {
@@ -332,9 +403,9 @@ int main() {
     VulkanDevice   dev;
     Window         window;        // holds the swapchain, so it dies before dev
     Commands       commands;
-    Descriptors    descriptors;   // slots take sets from this pool
-    Pipeline       scene;
+    Pipeline       opaque;        // each owns the set layout its shaders declare
     Pipeline       present;
+    Descriptors    descriptors;   // borrows those layouts, so it dies before them
     FrameSlot      slots[kFramesInFlight];   // points at the pipelines, so dies first
     Texture        checker;
     Mesh           mesh;
@@ -350,18 +421,19 @@ int main() {
     // glfwInit is first only because windowSystem is declared first and so dies last.
     if (!InitWindowSystem(&windowSystem)) { return 1; }
     if (!CreateInstance(&inst)) { return 1; }
-    if (!OpenWindow(inst, 1280, 720, "Lambda Engine", &window)) { return 1; }
+    if (!OpenWindow(inst, kWindowWidth, kWindowHeight, "Lambda Engine", &window)) {
+        return 1;
+    }
 
-    //   formats               our render targets
-    //   window.surfaceFormat  the swapchain's; the present pass matches it
+    // The only question asked of the hardware. It answers with the GPU, its queues,
+    // and what we can draw into on it -- a GPU that cannot do the last one is not a
+    // candidate. The second stage's format is the swapchain's, and that is made in
+    // the loop, so nothing asks for it here.
     const PhysicalDeviceSelection selection = PickPhysicalDevice(inst, window.surface);
     if (selection.gpu == VK_NULL_HANDLE) { return 1; }
+    const AttachmentFormats formats = selection.formats;
 
-    AttachmentFormats formats;
-    if (!ChooseAttachmentFormats(inst, selection.gpu, &formats)) { return 1; }
-    if (!SelectSurfaceFormat(inst, selection.gpu, &window)) { return 1; }
-
-    // selection is absorbed into dev here.
+    // The queue side of selection is absorbed into dev here; formats outlive it.
     if (!CreateDevice(inst, selection, &dev)) { return 1; }
     if (!CreateCommands(dev, &commands)) { return 1; }
 
@@ -371,42 +443,35 @@ int main() {
     // One pipeline per stage. What stays fixed inside a stage lives here; what can
     // change between draws belongs to a DrawItem.
     //
-    // Here because the set layout comes from the fragment shader
-    // and the pipeline from both.
-    constexpr const char* kSceneVert = "Shaders/triangle.vert.spv";
-    constexpr const char* kSceneFrag = "Shaders/triangle.frag.spv";
-    constexpr const char* kPresentVert = "Shaders/fullscreen.vert.spv";
-    constexpr const char* kPresentFrag = "Shaders/fullscreen.frag.spv";
-
-    // Different reasons: one scene set per texture, one present set per frame.
-    constexpr uint32_t kTextureCount = 1;
-    if (!CreateDescriptors(dev, kSceneFrag, kTextureCount,
-                           kPresentFrag, kFramesInFlight, &descriptors)) { return 1; }
-
     // viewportY and cullMode are the pass's, not the shader's. A pipeline and a frame's
     // targets never create each other but must agree on formats -- a pair per pass.
-    GraphicsPipelineDesc sceneDesc;
-    sceneDesc.vertPath = kSceneVert;
-    sceneDesc.fragPath = kSceneFrag;
-    sceneDesc.vertexInput = &VertexInput();
-    sceneDesc.formats = formats;
-    sceneDesc.setLayout = descriptors.scene.handle;
-    sceneDesc.viewportY = ViewportY::Up;            // our world is y-up
-    sceneDesc.cullMode = VK_CULL_MODE_BACK_BIT;
-    sceneDesc.polygonMode = VK_POLYGON_MODE_FILL;
-    sceneDesc.blending = Blending::Opaque;
-    if (!CreateGraphicsPipeline(dev, sceneDesc, &scene)) { return 1; }
+    GraphicsPipelineDesc opaqueDesc;
+    opaqueDesc.vertPath = "Shaders/mesh.vert.spv";
+    opaqueDesc.fragPath = "Shaders/mesh.frag.spv";
+    opaqueDesc.vertexInput = &VertexInput();
+    opaqueDesc.formats = formats;
+    opaqueDesc.viewportY = ViewportY::Up;            // our world is y-up
+    opaqueDesc.cullMode = VK_CULL_MODE_BACK_BIT;
+    opaqueDesc.polygonMode = VK_POLYGON_MODE_FILL;
+    opaqueDesc.blending = Blending::Opaque;
+    if (!CreateGraphicsPipeline(dev, opaqueDesc, &opaque)) { return 1; }
 
-    // Outlives creation: only colorFormat moves when the surface format changes.
+    // Built with an empty format: the swapchain decides that, and the swapchain is
+    // made in the loop, which rebuilds this the first time it sees one.
     // No vertex input, no depth, 1 sample -- MSAA ended at the resolve.
     GraphicsPipelineDesc presentDesc;
-    presentDesc.vertPath = kPresentVert;
-    presentDesc.fragPath = kPresentFrag;
-    presentDesc.formats.color = window.surfaceFormat.format;   // no depth, 1 sample
-    presentDesc.setLayout = descriptors.present.handle;
+    presentDesc.vertPath = "Shaders/fullscreen.vert.spv";
+    presentDesc.fragPath = "Shaders/fullscreen.frag.spv";
     presentDesc.viewportY = ViewportY::Down;   // the shader makes its own uv
     presentDesc.cullMode = VK_CULL_MODE_BACK_BIT;
     if (!CreateGraphicsPipeline(dev, presentDesc, &present)) { return 1; }
+
+    // After the pipelines: the layouts are theirs, read out of the same .spv the
+    // stages were compiled from. Both counts are per frame in flight -- the scene set
+    // holds that frame's uniform, so it cannot be shared any more than the uniform can.
+    if (!CreateDescriptors(dev, opaque.setLayout, kFramesInFlight,
+                           present.setLayout, kFramesInFlight,
+                           &descriptors)) { return 1; }
 
     // Render resolution
     // ------------------------------------------------------------------------
@@ -420,58 +485,36 @@ int main() {
     // No proj[1][1] *= -1: the viewport height is already negative.
     // Depth lands in [0,1] thanks to GLM_FORCE_DEPTH_ZERO_TO_ONE on the CMake target.
     const glm::mat4 proj =
-        glm::perspective(glm::radians(60.0f), aspect, 0.1f, 100.0f);
-
-    // Frames
-    // ------------------------------------------------------------------------
-    //
-    // Each slot gets the pass it will run and the set for its own resolve image.
-    for (FrameSlot& s : slots) {
-        if (!CreateFrameSlot(dev, commands, formats, kRenderExtent, &s)) { return 1; }
-        s.scene = &scene;
-        s.present = &present;
-        s.resolve.set = AllocateImageSet(descriptors, descriptors.present,
-                                         s.resolve.image.view);
-        if (s.resolve.set == VK_NULL_HANDLE) { return 1; }
-    }
+        glm::perspective(glm::radians(kFovDegrees), aspect, kNearPlane, kFarPlane);
 
     // Scene
     // ------------------------------------------------------------------------
     //
-    // World space; CCW in y-up, so reversing the winding culls the face.
-    // Flat in z=0, so all three share one normal (+z) and one tangent (+x, w=1).
-    constexpr Vertex vertices[] = {
-        {{-0.7f,  0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f}, {1.0f, 0.0f, 0.0f, 1.0f}},
-        {{-0.7f, -0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}, {1.0f, 0.0f, 0.0f, 1.0f}},
-        {{ 0.3f,  0.0f, 0.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 0.5f}, {1.0f, 0.0f, 0.0f, 1.0f}},
-    };
+    // Test data, made in code: no loader yet, and what we are checking is the path
+    // from bytes to GPU, not a file format. A loader replaces the two Make* calls.
+    constexpr uint32_t kStacks = 16;
+    constexpr uint32_t kSlices = 32;
+    constexpr float kRadius = 0.7f;
+    constexpr uint32_t kVertexCount = (kStacks + 1) * (kSlices + 1);
+    constexpr uint32_t kIndexCount = kStacks * kSlices * 6;
+    static_assert(kVertexCount <= 0xFFFF, "index type is uint16");
 
-    constexpr uint16_t kIndices[] = {
-        0, 1, 2,          // green triangle
-    };
+    Vertex vertices[kVertexCount]{};
+    uint16_t kIndices[kIndexCount]{};
+    MakeSphere(kStacks, kSlices, kRadius, vertices, kIndices);
 
-    // Which span is which object. Must stay next to kIndices -- that adjacency is
-    // half of the guard.
-    constexpr IndexRange kGreenIndices{0, 3};
-    static_assert(kGreenIndices.End() == std::size(kIndices),
+    constexpr IndexRange kSphereIndices{0, kIndexCount};
+    static_assert(kSphereIndices.End() == kIndexCount,
                   "spans do not cover the index array");
 
-    if (!CreateMesh(dev, commands, vertices, sizeof(vertices),
-                    kIndices, static_cast<uint32_t>(std::size(kIndices)), &mesh)) {
-        return 1;
-    }
+    // stride is the one thing a mesh can say about its vertices; the pipeline says
+    // which bytes are what.
+    const MeshDesc meshDesc{sizeof(Vertex), kVertexCount, kIndexCount};
+    if (!CreateMesh(dev, commands, meshDesc, vertices, kIndices, &mesh)) { return 1; }
 
-    // 8x8 checker, made in code: what we are checking is the path from pixels to
-    // sampler, not a file format. Small cells make a wrong uv obvious.
     constexpr uint32_t kCheckerSize = 8;
     uint8_t checkerPixels[kCheckerSize * kCheckerSize * 4]{};
-    for (uint32_t y = 0; y < kCheckerSize; ++y) {
-        for (uint32_t x = 0; x < kCheckerSize; ++x) {
-            const uint8_t v = ((x + y) % 2 == 0) ? 255 : 70;
-            uint8_t* p = checkerPixels + (y * kCheckerSize + x) * 4;
-            p[0] = v; p[1] = v; p[2] = v; p[3] = 255;
-        }
-    }
+    MakeChecker(kCheckerSize, checkerPixels);
 
     // SRGB: this is multiplied with the shader's output, so it must be in the same
     // space as the render target. UNORM here would brighten the result.
@@ -482,9 +525,15 @@ int main() {
     if (!CreateTextureFromPixels(dev, commands, checkerDesc, checkerPixels,
                                  sizeof(checkerPixels), &checker)) { return 1; }
 
-    // The set is the (image, sampler) pair, so it belongs to the texture.
-    checker.set = AllocateImageSet(descriptors, descriptors.scene, checker.image.view);
-    if (checker.set == VK_NULL_HANDLE) { return 1; }
+    // Frames
+    // ------------------------------------------------------------------------
+    //
+    // Last, because a slot points at the scene above. It owns its attachments and
+    // the set that reads the colour one.
+    for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+        if (!CreateFrameSlot(dev, commands, descriptors, i, formats, kRenderExtent,
+                             mesh, checker, &slots[i])) { return 1; }
+    }
 
     // No swapchain yet: the loop's EnsureSwapchain makes it, and the first creation
     // takes the same path as a recreation.
@@ -499,7 +548,7 @@ int main() {
     uint32_t slotIndex = 0;       // which slot this frame borrows
     double lastTime = glfwGetTime();
 
-    glm::vec3 eye{0.0f, 0.0f, 2.0f};
+    glm::vec3 eye{0.0f, 0.0f, 3.5f};
     float yaw = -90.0f;           // -90 looks down -z, per the forward expression below
     float pitch = 0.0f;
 
@@ -519,9 +568,11 @@ int main() {
         // What to draw
         // --------------------------------------------------------------------
         //
-        // Nothing here reads the acquire, so it runs before it. Only the camera and
-        // the DrawItem array reach the recording layer; the slot holds the rest.
+        // Nothing here touches the GPU, so it could run while minimized. What comes
+        // out is state -- camera, light, items -- and the next section sends it.
 
+        // Clock
+        //
         // One clock reading, two values: t is absolute (object spin), dt is the gap
         // (camera movement). Reading twice would let them drift apart.
         const double now = glfwGetTime();
@@ -529,15 +580,14 @@ int main() {
         const float dt = static_cast<float>(now - lastTime);
         lastTime = now;
 
-        // Input -> camera state
+        // Input -> camera
+        //
         // --------------------------------------------------------------------
         //
         // glfwGetKey polls the state glfwPollEvents cached, so this block reads the same
         // value wherever it sits. A callback suits an event; holding a key is a state.
         //
         // Speeds are multiplied by dt, or the frame rate becomes the speed.
-        constexpr float kMoveSpeed = 2.0f;    // world units per second
-        constexpr float kTurnSpeed = 90.0f;   // degrees per second
 
         const auto held = [&](int key) {
             return glfwGetKey(window.handle, key) == GLFW_PRESS;
@@ -573,55 +623,85 @@ int main() {
         const glm::mat4 view = glm::lookAt(eye, eye + forward, kWorldUp);
         const glm::mat4 camera = proj * view;
 
-        // One item, so nothing here orders anything yet. Order becomes a question at
-        // two items, and a measurable one further out.
+        // Light
+        //
+        // One directional light, circling so the brightness visibly changes -- the
+        // objects turn about z, which leaves their normals fixed.
+        const glm::vec3 lightDir = glm::normalize(
+            glm::vec3{std::cos(t) * 0.7f, 0.5f, std::sin(t) * 0.7f});
+
+        // Items
+        //
+        // Five items and nothing here sorts them. With one pipeline and one texture
+        // the order costs nothing yet; it starts to matter when either becomes two.
         const glm::vec3 kZAxis{0.0f, 0.0f, 1.0f};
+        const glm::vec3 kYAxis{0.0f, 1.0f, 0.0f};
+
+        // One mesh, five items: only the matrix differs, so the whole cost of another
+        // object is one DrawItem. The spans are identical because they all index the
+        // same sphere.
+        const glm::mat4 half = glm::scale(glm::mat4(1.0f), glm::vec3{0.5f});
         const DrawItem items[] = {
-            // green, spinning about z so its depth does not change
-            {glm::rotate(glm::mat4(1.0f), t, kZAxis), 1.0f, kGreenIndices},
+            // Centre, spinning about z: the sphere looks the same, but the checker
+            // slides over it, so the texture and the lighting are visibly separate.
+            {glm::rotate(glm::mat4(1.0f), t, kZAxis), 1.0f, kSphereIndices},
+
+            // Left and right, turning the other way and about y.
+            {glm::translate(glm::mat4(1.0f), glm::vec3{-1.5f, 0.0f, 0.0f})
+                 * glm::rotate(glm::mat4(1.0f), -t, kYAxis) * half,
+             1.0f, kSphereIndices},
+            {glm::translate(glm::mat4(1.0f), glm::vec3{1.5f, 0.0f, 0.0f})
+                 * glm::rotate(glm::mat4(1.0f), t * 1.7f, kYAxis) * half,
+             1.0f, kSphereIndices},
+
+            // Behind and in front, so depth has something to sort out.
+            {glm::translate(glm::mat4(1.0f), glm::vec3{0.0f, 1.1f, -1.2f}) * half,
+             1.0f, kSphereIndices},
+            {glm::translate(glm::mat4(1.0f), glm::vec3{0.0f, -1.0f, 0.9f}) * half,
+             1.0f, kSphereIndices},
         };
+
+        // Fill the slot
+        //
+        // Assignment only, so it belongs up here: what reaches the GPU, and when, is
+        // RecordFrame's. slot is this frame's, and these three are what changes in it.
+        FrameSlot& slot = slots[slotIndex];
+        slot.scene = {camera, glm::vec4{lightDir, 0.0f},
+                      glm::vec4{1.0f, 0.95f, 0.9f, 0.15f}, glm::vec4{eye, 48.0f}};
+        slot.items = items;
+        slot.itemCount = static_cast<uint32_t>(std::size(items));
 
         // Draw it
         // --------------------------------------------------------------------
 
-        const FrameSlot& slot = slots[slotIndex];
-
-        AcquiredFrame acquired;
-        const FrameResult begun = BeginFrame(dev, &window, slot, &acquired);
+        const FrameResult begun = BeginFrame(dev, &window, &slot);
         if (begun == FrameResult::Fatal) { break; }
 
         if (begun == FrameResult::Skip) { continue; }
 
-        // Rebuild the present pipeline if the surface format changed.
+        // Both sides say what format they are, so the mismatch is the whole test -- no
+        // flag to raise and no flag to forget to clear. True on the first frame, and
+        // again whenever the window moves to a monitor with a different surface format.
         //
-        // BeginFrame raises the flag, so checking at the top of the loop would be one
-        // iteration late and this frame would draw with the stale pipeline. Scene
-        // pipelines are untouched: their format is our render target's, not the surface's.
-        //
-        // The wait satisfies DestroyPipeline's contract (Pipeline.h). BeginFrame waited
-        // on this frame's fence only, which is not enough.
-        if (window.surfaceFormatChanged) {
-            dev.table.vkDeviceWaitIdle(dev.handle);
-            DestroyPipeline(dev, &present);
-            presentDesc.formats.color = window.surfaceFormat.format;   // the only field that moved
-            if (!CreateGraphicsPipeline(dev, presentDesc, &present)) {
-                break;
-            }
-            window.surfaceFormatChanged = false;   // cleared by whoever handled it
+        // Right after BeginFrame, not at the top: the swapchain is remade in there, and
+        // one iteration later this frame would draw with the stale pipeline.
+        const VkFormat target = slot.image->texture.desc.format;
+        if (present.desc.formats.color != target
+            && !RebuildPipeline(dev, AttachmentFormats{target}, &present)) {
+            break;
         }
 
-        // These break instead of continue. After the acquire, skipping the submit leaves
-        // a signalled semaphore and a reset fence with nobody to wait on them.
-        if (!RecordFrame(dev.table, acquired, mesh, checker.set, camera,
-                         items, static_cast<uint32_t>(std::size(items)))) {
+        // These break instead of continue. After the acquire, skipping the submit
+        // leaves a signalled semaphore and a reset fence with nobody to wait on them.
+        if (!RecordFrame(slot, opaque, present)) {
             break;
         }
 
         // Frame.h holds the reason submit and present are separate.
-        if (!SubmitFrame(dev, acquired)) {
+        if (!SubmitFrame(dev, slot)) {
             break;
         }
-        if (!PresentFrame(dev, &window, *acquired.image)) {
+        if (!PresentFrame(dev, &window, slot)) {
             break;
         }
 

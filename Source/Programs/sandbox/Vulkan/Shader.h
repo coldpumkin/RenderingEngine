@@ -24,8 +24,21 @@ struct ShaderInterface {
     VkDescriptorType bindingTypes[kMaxBindingsPerSet]{};
 };
 
-// Effect: reads path and fills out. No device involved -- Descriptors calls this
-//         before any layout exists.
+// A set layout and what the shaders asked for. The handle is opaque, so none of
+// this can be asked back for. types is indexed by binding number; a gap is left at 0.
+struct DescriptorLayout {
+    VkDescriptorSetLayout handle = VK_NULL_HANDLE;
+    uint32_t bindingCount = 0;
+    VkDescriptorType types[kMaxBindingsPerSet]{};
+};
+
+// Effect: builds the set layout the two stages declare between them. Both are read:
+//         vertex asking for a uniform and fragment for a sampler is the usual shape.
+bool BuildSetLayout(const VulkanDevice& dev,
+                    const ShaderInterface& vert, const ShaderInterface& frag,
+                    DescriptorLayout* out) noexcept;
+
+// Effect: reads path and fills out. No device involved.
 // Output: false on a missing or malformed .spv, or more than kMaxBindingsPerSet.
 bool ReflectShaderFile(const char* path, ShaderInterface* out) noexcept;
 

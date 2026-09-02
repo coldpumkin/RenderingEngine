@@ -1,5 +1,6 @@
 ﻿#pragma once
 
+#include "Vulkan/Attachments.h"
 #include "Vulkan/Instance.h"
 #include "Vulkan/Swapchain.h"
 
@@ -68,12 +69,6 @@ struct Window {
     // 바뀌었는지 구분할 수 없다.
     bool swapchainOutOfDate = false;
 
-    // surfaceFormat이 실제로 달라졌다. 지우는 것은 세운 쪽이 아니라 **처리한 쪽**이다.
-    //
-    // EnsureSwapchain이 세우고 main이 지운다. 여기서 pipeline을 다시 만들 수 없어서다 -
-    // Swapchain은 Pipeline을 모르고, 알면 "그릴 곳"이 "무엇으로 그리나"에 묶인다.
-    // 그래서 알리기만 하고 무엇을 할지는 호출자가 정한다.
-    bool surfaceFormatChanged = false;
 
     // Surface 파괴가 instance level이라 instance가 필요하다.
     const VulkanInstance* inst = nullptr;
@@ -106,6 +101,12 @@ bool WindowHasDrawableSize(const Window& window) noexcept;
 // Logical device가 아니라 physical device를 받는다 - GPU에게 묻는 조회라
 // vkCreateDevice 전에도 부를 수 있다. 한때 VulkanDevice 전체를 받으면서 .gpu만 썼는데,
 // 그러면 "device가 있어야 한다"고 시그니처가 거짓말을 한다.
+// Output: what the present stage draws into. The swapchain decides it, unlike our own
+//         attachments; colorSpace stays behind because only swapchain creation reads it.
+inline AttachmentFormats WindowAttachment(const Window& window) noexcept {
+    return AttachmentFormats{window.surfaceFormat.format};
+}
+
 bool SelectSurfaceFormat(const VulkanInstance& inst,
                          VkPhysicalDevice gpu,
                          Window* window) noexcept;

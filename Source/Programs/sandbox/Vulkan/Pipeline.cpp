@@ -78,8 +78,7 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
                                    Pipeline* out) noexcept {
     Pipeline& pipeline = *out;
     pipeline.dev = &dev;
-    // The recording side reads this to build its viewport.
-    pipeline.viewportY = desc.viewportY;
+    pipeline.desc = desc;   // what it was built from, for recording and for a rebuild
 
     // --- Shaders: desc.vertPath, desc.fragPath ------------------------------
 
@@ -94,6 +93,15 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     }
 
     if (!CheckVertexInterface(desc, vsIface)) {
+        dev.table.vkDestroyShaderModule(dev.handle, vs, nullptr);
+        dev.table.vkDestroyShaderModule(dev.handle, fs, nullptr);
+        return false;
+    }
+
+    // A rebuild reaches here with the layout already made. Remaking it would strand
+    // every set allocated from the old one.
+    if (pipeline.setLayout.handle == VK_NULL_HANDLE
+            && !BuildSetLayout(dev, vsIface, fsIface, &pipeline.setLayout)) {
         dev.table.vkDestroyShaderModule(dev.handle, vs, nullptr);
         dev.table.vkDestroyShaderModule(dev.handle, fs, nullptr);
         return false;
@@ -201,9 +209,9 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
         layoutInfo.pushConstantRangeCount = 1;
         layoutInfo.pPushConstantRanges = &pushRange;
     }
-    if (desc.setLayout != VK_NULL_HANDLE) {
+    if (pipeline.setLayout.handle != VK_NULL_HANDLE) {
         layoutInfo.setLayoutCount = 1;
-        layoutInfo.pSetLayouts = &desc.setLayout;
+        layoutInfo.pSetLayouts = &pipeline.setLayout.handle;
     }
     // A layout is required even when both are empty.
     if (dev.table.vkCreatePipelineLayout(dev.handle, &layoutInfo, nullptr, &pipeline.layout)
@@ -256,6 +264,20 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     return true;
 }
 
+// Only formats change in practice: the surface hands the swapchain a new one when the
+// window moves between monitors, and dynamic rendering baked the old one in.
+bool RebuildPipeline(const VulkanDevice& dev, AttachmentFormats formats,
+                     Pipeline* pipeline) noexcept {
+    GraphicsPipelineDesc desc = pipeline->desc;
+    desc.formats = formats;
+
+    // Spec: destroying a pipeline in use is forbidden, and a frame's own fence is not
+    // enough -- other frames may still be reading it.
+    dev.table.vkDeviceWaitIdle(dev.handle);
+    DestroyPipeline(dev, pipeline);
+    return CreateGraphicsPipeline(dev, desc, pipeline);
+}
+
 void DestroyPipeline(const VulkanDevice& dev, Pipeline* pipeline) noexcept {
     if (pipeline->handle != VK_NULL_HANDLE) {
         dev.table.vkDestroyPipeline(dev.handle, pipeline->handle, nullptr);
@@ -272,4 +294,5 @@ void DestroyPipeline(const VulkanDevice& dev, Pipeline* pipeline) noexcept {
 Pipeline::~Pipeline() {
     if (dev == nullptr) { return; }
     DestroyPipeline(*dev, this);
+    dev->table.vkDestroyDescriptorSetLayout(dev->handle, setLayout.handle, nullptr);
 }

@@ -4,7 +4,7 @@
 
 #include <initializer_list>   // the candidate loops below
 
-// Independent of the swapchain format - the present pass sits between the two.
+// Independent of the swapchain format - the present stage sits between the two.
 // HDR is the change that would make this R16G16B16A16_SFLOAT.
 //
 // Kept out of the header so nothing can read it directly and bypass

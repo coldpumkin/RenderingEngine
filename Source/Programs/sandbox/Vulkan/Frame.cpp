@@ -1,9 +1,19 @@
 ﻿#include "Vulkan/Frame.h"
 
+#include "Vulkan/Pipeline.h"
+
+#include <iterator>   // std::size
+
 bool CreateFrameSlot(const VulkanDevice& dev, const Commands& commands,
+                 const Descriptors& descriptors, uint32_t index,
                  AttachmentFormats formats, VkExtent2D extent,
+                 const Mesh& mesh, const Texture& input,
                  FrameSlot* out) noexcept {
     out->dev = &dev;
+    out->descriptors = &descriptors;
+    out->index = index;
+    out->mesh = &mesh;
+    out->input = &input;
 
     // PRIMARY submits to a queue directly; SECONDARY only runs inside another.
     VkCommandBufferAllocateInfo allocInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
@@ -31,25 +41,46 @@ bool CreateFrameSlot(const VulkanDevice& dev, const Commands& commands,
     }
 
     // Built without looking at the window, so this works while minimized - there may
-    // be no swapchain yet. The three differ only in sample count and usage, and those
-    // two lines are where each one's job is written down.
-    out->extent = extent;
-
-    // Three specs from one: usage is what differs, plus resolve's single sample -- and
-    // those two say the same thing, since sampler2D cannot read a multisample image.
+    // be no swapchain yet.
+    //
+    // Two specs, and the difference is SAMPLED: color is read by the next stage, so it
+    // gets a resolve and a set; depth is not, so it gets neither.
     if (!CreateTexture(dev, {extent, formats.color, formats.samples,
-                             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT}, &out->color)) {
-        return false;
-    }
-    if (!CreateTexture(dev, {extent, formats.color, VK_SAMPLE_COUNT_1_BIT,
                              VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
-                                 | VK_IMAGE_USAGE_SAMPLED_BIT}, &out->resolve)) {
+                                 | VK_IMAGE_USAGE_SAMPLED_BIT}, &out->color)) {
         return false;
     }
     if (!CreateTexture(dev, {extent, formats.depth, formats.samples,
-                             VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT}, &out->depth)) {
+                             VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT},
+                       &out->depth)) {
         return false;
     }
+
+    // HOST_VISIBLE + MAPPED: 프레임마다 memcpy 한 번이라 staging을 거칠 이유가 없다.
+    if (!CreateBuffer(dev, sizeof(SceneUniform),
+                      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                      VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+                      VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+                          | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                      &out->uniform)) {
+        return false;
+    }
+    if (out->uniform.mapped == nullptr) {
+        LOG("[vk] uniform buffer is not mapped\n");
+        return false;
+    }
+
+    // 이 slot 몫의 set 둘을 채운다. 뽑는 것은 pool이 이미 했다.
+    const BindingValue opaque[] = {
+        {ReadView(input)},                                             // 0: texture
+        {VK_NULL_HANDLE, out->uniform.handle, sizeof(SceneUniform)},   // 1: scene
+    };
+    UpdateSet(descriptors, *descriptors.scene, descriptors.sceneSets[index],
+              opaque, static_cast<uint32_t>(std::size(opaque)));
+
+    const BindingValue present[] = {{ReadView(out->color)}};
+    UpdateSet(descriptors, *descriptors.present, descriptors.presentSets[index],
+              present, 1);
     return true;
 }
 
@@ -68,9 +99,9 @@ FrameSlot::~FrameSlot() {
 
 FrameResult BeginFrame(const VulkanDevice& dev,
                        Window* window,
-                       const FrameSlot& slot,
-                       AcquiredFrame* out) noexcept {
-    *out = AcquiredFrame{};
+                       FrameSlot* out) noexcept {
+    FrameSlot& slot = *out;
+    slot.image = nullptr;
 
     // Skip, not Fatal: the window can stop being drawable between the loop's check
     // and here, mid resize-drag. The cost is a spin if creation keeps failing.
@@ -109,16 +140,13 @@ FrameResult BeginFrame(const VulkanDevice& dev,
     }
 
     // The fence is not reset here - reset pairs with submit (see SubmitFrame).
-    out->slot = &slot;
-    out->image = &swapchain.images[imageIndex];
-    out->extent = swapchain.extent;
+    slot.image = &swapchain.images[imageIndex];
     return FrameResult::Ready;
 }
 
-bool SubmitFrame(const VulkanDevice& dev, const AcquiredFrame& acquired) noexcept {
-    const FrameSlot& slot = *acquired.slot;
-    // Wait where the swapchain image is first touched -- the present pass draws
-    // into it. The scene pass may run before the acquire completes.
+bool SubmitFrame(const VulkanDevice& dev, const FrameSlot& slot) noexcept {
+    // Wait where the swapchain image is first touched -- the present stage draws
+    // into it. The opaque stage may run before the acquire completes.
     //
     // Must overlap RecordPresentPass's barrier srcStageMask, not match it. Checked
     // with sync validation: no overlap gave 20 reports, partial overlap gave 0.
@@ -127,7 +155,7 @@ bool SubmitFrame(const VulkanDevice& dev, const AcquiredFrame& acquired) noexcep
     wait.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
 
     VkSemaphoreSubmitInfo signal{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
-    signal.semaphore = acquired.image->renderFinished;
+    signal.semaphore = slot.image->renderFinished;
     signal.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
 
     VkCommandBufferSubmitInfo cmdInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
@@ -161,7 +189,8 @@ bool SubmitFrame(const VulkanDevice& dev, const AcquiredFrame& acquired) noexcep
 
 bool PresentFrame(const VulkanDevice& dev,
                   Window* window,
-                  const SwapchainImage& image) noexcept {
+                  const FrameSlot& slot) noexcept {
+    const SwapchainImage& image = *slot.image;
     const VkSwapchainKHR swapchainHandle = window->swapchain->handle;
 
     VkPresentInfoKHR present{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};

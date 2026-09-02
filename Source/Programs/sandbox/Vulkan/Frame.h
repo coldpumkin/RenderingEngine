@@ -4,7 +4,8 @@
 // ============================================================================
 //
 // A slot, not a frame: slots[] is cycled through, and a frame borrows one. It holds
-// what that pass runs on, so recording takes no resources as arguments.
+// everything that pass runs on except the pipelines -- those are the contract it was
+// built against, not a resource, and every slot would hold the same two.
 //
 // Two pipelines in a row are one pass here: the scene draws off-screen, then present
 // samples that into the swapchain. A post effect goes in that second stage.
@@ -20,12 +21,17 @@
 //
 // Recording sits between BeginFrame and SubmitFrame and is absent here.
 
-#include "Vulkan/Commands.h"
 #include "Vulkan/Attachments.h"
+#include "Vulkan/Buffer.h"
+#include "Vulkan/Descriptors.h"
+#include "Vulkan/Pipeline.h"
+#include "Vulkan/Commands.h"
 #include "Vulkan/Texture.h"
 #include "Vulkan/Window.h"
 
-struct Pipeline;
+struct Mesh;
+struct DrawItem;
+
 
 // cmd, imageAvailable and inFlight are sized by kFramesInFlight because one signal
 // -- the fence -- says when all three may be reused.
@@ -42,17 +48,37 @@ struct FrameSlot {
     VkSemaphore imageAvailable = VK_NULL_HANDLE;
     VkFence inFlight = VK_NULL_HANDLE;
 
-    // Where the frame using this slot draws: our images, not swapchain ones. A set
-    // means the next stage reads it, so resolve has one and the other two do not.
-    VkExtent2D extent{};        // render resolution, not the window's
-    Texture color;              // MSAA. Averaged into resolve and dropped
-    Texture resolve;            // 1-sample. The present stage samples it
-    Texture depth;              // MSAA. Never leaves the frame
+    // Where the frame using this slot draws: our attachments, not swapchain ones.
+    // color carries its own resolve and the set that reads it; depth has neither,
+    // and that difference is in their descs, not in code here.
+    Texture color;
+    Texture depth;
 
-    // The two stages in order. What the second one samples is resolve, which carries
-    // its own set; what the first one samples comes from the scene.
-    const Pipeline* scene = nullptr;
-    const Pipeline* present = nullptr;
+    // What the scene brings. Pointers because the scene owns them and every slot
+    // reads the same ones -- how many there are, and their memory, is not ours.
+    //
+    // They leave when there is more than one of either: the array becomes the
+    // scene's and a DrawItem picks by index.
+    const Mesh* mesh = nullptr;
+    const Texture* input = nullptr;
+
+    // scene은 값이고 uniform은 그 GPU 사본이다 - Texture의 desc와 image처럼 짝이다.
+    // 프레임마다 CPU가 쓰므로 slot마다 하나다: GPU가 이전 프레임의 것을 읽는 동안
+    // 다음 프레임이 자기 것에 쓴다.
+    SceneUniform scene{};
+    Buffer uniform;
+
+    // set은 pool이 미리 다 뽑아뒀고, 이 slot 몫은 자기 번호로 정해진다. 그래서 set을
+    // 들고 다니지도, 넘겨받지도 않는다.
+    const Descriptors* descriptors = nullptr;
+    uint32_t index = 0;
+
+    // This frame's contents. BeginFrame fills the image, the loop fills the rest, and
+    // all of it holds until Present -- recording reads the slot and nothing else.
+    const SwapchainImage* image = nullptr;   // 크기는 image->texture.desc.extent다
+    const DrawItem* items = nullptr;
+    uint32_t itemCount = 0;
+
 
     FrameSlot() = default;
     ~FrameSlot();
@@ -60,22 +86,16 @@ struct FrameSlot {
     FrameSlot& operator=(const FrameSlot&) = delete;
 };
 
-// Effect: allocates the command buffer, semaphore, fence and the three images. The
-//         two stages are not filled here - main does that.
+// Effect: allocates the command buffer, semaphore, fence and the two attachments,
+//         and points the slot at what the scene brings.
 //
 // Contract: formats and extent must be what the pipelines were given. main chooses
 //           once and hands the same values to both.
 bool CreateFrameSlot(const VulkanDevice& dev, const Commands& commands,
+                 const Descriptors& descriptors, uint32_t index,
                  AttachmentFormats formats, VkExtent2D extent,
+                 const Mesh& mesh, const Texture& input,
                  FrameSlot* out) noexcept;
-
-// The slot a frame borrowed and the image acquire gave it. Recording sits between
-// acquire and present, so the pair has to be carried, not held in a local.
-struct AcquiredFrame {
-    const FrameSlot* slot = nullptr;
-    const SwapchainImage* image = nullptr;
-    VkExtent2D extent{};          // window size, unlike slot->extent
-};
 
 // What the caller must do next, not what happened inside. A bool would collapse
 // three orders into one and spin forever on the one that never recovers.
@@ -86,14 +106,13 @@ enum class FrameResult {
 };
 
 // Input:  dev, window, slot
-// Output: out (valid only on Ready)
 // Effect: rebuilds the swapchain if needed, waits for this slot, acquires an image
+//         into it. slot->image is valid only on Ready.
 //
 // Minimization is not handled here: the loop filters it with WindowHasDrawableSize.
 FrameResult BeginFrame(const VulkanDevice& dev,
                        Window* window,
-                       const FrameSlot& slot,
-                       AcquiredFrame* out) noexcept;
+                       FrameSlot* slot) noexcept;
 
 // Submit and present stay two calls: they share no arguments and grow on different
 // axes -- present per window, submit per queue. The start does not split because
@@ -102,11 +121,11 @@ FrameResult BeginFrame(const VulkanDevice& dev,
 // Effect: resets the fence and submits the slot's command buffer
 //
 // Takes the pair so the slot and the image it signals cannot be mismatched.
-bool SubmitFrame(const VulkanDevice& dev, const AcquiredFrame& acquired) noexcept;
+bool SubmitFrame(const VulkanDevice& dev, const FrameSlot& slot) noexcept;
 
 // Effect: presents the swapchain image, flagging the window if it went stale
 //
-// Takes the image itself, not an index: the index rides inside it.
+// The index rides inside slot.image, so there is nothing else to pass.
 bool PresentFrame(const VulkanDevice& dev,
                   Window* window,
-                  const SwapchainImage& image) noexcept;
+                  const FrameSlot& slot) noexcept;

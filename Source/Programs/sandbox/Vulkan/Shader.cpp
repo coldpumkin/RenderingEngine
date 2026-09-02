@@ -118,3 +118,39 @@ VkShaderModule LoadShader(const VulkanDevice& dev, const char* path,
     }
     return module;
 }
+
+bool BuildSetLayout(const VulkanDevice& dev,
+                    const ShaderInterface& vert, const ShaderInterface& frag,
+                    DescriptorLayout* out) noexcept {
+    const uint32_t count = vert.bindingCount > frag.bindingCount ? vert.bindingCount
+                                                                 : frag.bindingCount;
+    VkDescriptorSetLayoutBinding bindings[kMaxBindingsPerSet]{};
+    uint32_t used = 0;
+    for (uint32_t i = 0; i < count; ++i) {
+        // 0 reads as "this stage does not use it". A lone SAMPLER is also 0, and we
+        // never declare one, so the two need not be told apart.
+        const VkDescriptorType inVert = vert.bindingTypes[i];
+        const VkDescriptorType inFrag = frag.bindingTypes[i];
+        if (inVert == 0 && inFrag == 0) { continue; }   // a hole in the numbering
+
+        bindings[used].binding = i;
+        bindings[used].descriptorType = inFrag != 0 ? inFrag : inVert;
+        bindings[used].descriptorCount = 1;
+        bindings[used].stageFlags = (inVert != 0 ? VK_SHADER_STAGE_VERTEX_BIT : 0)
+                                  | (inFrag != 0 ? VK_SHADER_STAGE_FRAGMENT_BIT : 0);
+        out->types[i] = bindings[used].descriptorType;
+        ++used;
+    }
+
+    VkDescriptorSetLayoutCreateInfo layoutInfo{
+        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    layoutInfo.bindingCount = used;
+    layoutInfo.pBindings = bindings;
+    if (dev.table.vkCreateDescriptorSetLayout(dev.handle, &layoutInfo, nullptr, &out->handle)
+            != VK_SUCCESS) {
+        LOG("[vk] vkCreateDescriptorSetLayout failed\n");
+        return false;
+    }
+    out->bindingCount = count;
+    return true;
+}
