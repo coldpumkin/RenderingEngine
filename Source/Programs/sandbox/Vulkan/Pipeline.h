@@ -1,6 +1,5 @@
 ﻿#pragma once
 
-#include "Vulkan/Descriptors.h"
 #include "Vulkan/RenderTargets.h"
 
 #include <glm/glm.hpp>   // PushConstants holds a mat4

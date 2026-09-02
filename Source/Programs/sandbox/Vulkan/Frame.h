@@ -21,9 +21,10 @@
 // Recording sits between BeginFrame and SubmitFrame and is absent here.
 
 #include "Vulkan/Commands.h"
-#include "Vulkan/Pipeline.h"
 #include "Vulkan/RenderTargets.h"
 #include "Vulkan/Window.h"
+
+struct Pipeline;
 
 // cmd, imageAvailable and inFlight are sized by kFramesInFlight because one signal
 // -- the fence -- says when all three may be reused.
