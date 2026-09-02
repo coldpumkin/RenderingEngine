@@ -423,11 +423,11 @@ int main() {
     Pipeline       opaque;        // each owns the set layout its shaders declare
     Pipeline       present;
     Descriptors    descriptors;   // the pool, so it outlives the sets drawn from it
+    Texture        checker;       // before scene: the pass points at both of these,
+    Mesh           mesh;          // so they must not die first
     ScenePass      scene;         // attachments, and the sets naming them
     PostProcessPass post;         // reads scene, writes the swapchain
     FrameSlot      slots[kFramesInFlight];   // command buffer and its two signals
-    Texture        checker;
-    Mesh           mesh;
 
     // Ask, then build
     // ========================================================================
