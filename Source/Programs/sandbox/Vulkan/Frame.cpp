@@ -6,8 +6,9 @@
 
 // Built without looking at the window, so this works while minimized - there may be
 // no swapchain yet, and nothing here depends on one.
-bool CreateScenePass(const VulkanDevice& dev, AttachmentFormats formats,
-                     VkExtent2D extent, const Mesh& mesh, const Texture& input,
+bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
+                     AttachmentFormats formats, VkExtent2D extent,
+                     const Mesh& mesh, const Texture& input,
                      const Pipeline& pipeline, ScenePass* out) noexcept {
     out->mesh = &mesh;
     out->input = &input;
@@ -51,6 +52,44 @@ bool CreateScenePass(const VulkanDevice& dev, AttachmentFormats formats,
             return false;
         }
     }
+
+    // Drawn in one call, then handed out: vkAllocateDescriptorSets writes a flat
+    // array and PerFrame is not one.
+    VkDescriptorSet sets[kFramesInFlight]{};
+    if (!AllocateSets(descriptors, pipeline.setLayout, kFramesInFlight, sets)) {
+        return false;
+    }
+
+    for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+        ScenePass::PerFrame& frame = out->frames[i];
+        frame.set = sets[i];
+
+        // Filled here because this is where its two halves are known: the texture the
+        // pass samples, and this frame's uniform.
+        const BindingValue values[] = {
+            {input.image.view},                                            // 0: texture
+            {VK_NULL_HANDLE, frame.uniform.handle, sizeof(SceneUniform)},  // 1: scene
+        };
+        UpdateSet(descriptors, pipeline.setLayout, frame.set,
+                  values, static_cast<uint32_t>(std::size(values)));
+    }
+    return true;
+}
+
+bool CreatePostProcessPass(const Descriptors& descriptors, const ScenePass& source,
+                           Pipeline& pipeline, PostProcessPass* out) noexcept {
+    out->source = &source;
+    out->pipeline = &pipeline;
+
+    if (!AllocateSets(descriptors, pipeline.setLayout, kFramesInFlight, out->sets)) {
+        return false;
+    }
+
+    for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+        // The resolve, not color: a multisample image cannot be sampled.
+        const BindingValue values[] = {{source.frames[i].colorResolve.image.view}};
+        UpdateSet(descriptors, pipeline.setLayout, out->sets[i], values, 1);
+    }
     return true;
 }
 
@@ -64,10 +103,8 @@ bool EnsurePostProcessPipeline(const VulkanDevice& dev, const PostProcessPass& p
 }
 
 bool CreateFrameSlot(const VulkanDevice& dev, const Commands& commands,
-                 const Descriptors& descriptors, uint32_t index,
-                 const ScenePass& scene, FrameSlot* out) noexcept {
+                     uint32_t index, FrameSlot* out) noexcept {
     out->dev = &dev;
-    out->descriptors = &descriptors;
     out->index = index;
 
     // PRIMARY submits to a queue directly; SECONDARY only runs inside another.
@@ -95,21 +132,6 @@ bool CreateFrameSlot(const VulkanDevice& dev, const Commands& commands,
         return false;
     }
 
-    // Fill this slot's two sets. The pool already handed them out; both name things
-    // the pass owns, and index picks which frame's.
-    const ScenePass::PerFrame& frame = scene.frames[index];
-
-    const BindingValue opaque[] = {
-        {scene.input->image.view},                                     // 0: texture
-        {VK_NULL_HANDLE, frame.uniform.handle, sizeof(SceneUniform)},  // 1: scene
-    };
-    UpdateSet(descriptors, *descriptors.scene, descriptors.sceneSets[index],
-              opaque, static_cast<uint32_t>(std::size(opaque)));
-
-    // The resolve, not color: the multisample image cannot be sampled.
-    const BindingValue present[] = {{frame.colorResolve.image.view}};
-    UpdateSet(descriptors, *descriptors.present, descriptors.presentSets[index],
-              present, 1);
     return true;
 }
 

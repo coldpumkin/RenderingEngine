@@ -193,7 +193,7 @@ static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
 
     vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.handle);
     vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.layout,
-                               0, 1, &slot.descriptors->sceneSets[slot.index], 0, nullptr);
+                               0, 1, &targets.set, 0, nullptr);
 
     // binding 0 matches the pipeline's binding 0. offset changes once several meshes
     // share one buffer.
@@ -285,7 +285,7 @@ static void RecordPostProcessPass(const FrameSlot& slot, const PostProcessPass& 
     vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.handle);
 
     vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.layout,
-                               0, 1, &slot.descriptors->presentSets[slot.index], 0, nullptr);
+                               0, 1, &post.sets[slot.index], 0, nullptr);
 
     // 3 vertices, no buffer. The shader builds them from gl_VertexIndex.
     vk.vkCmdDraw(cmd, 3, 1, 0, 0);
@@ -422,10 +422,10 @@ int main() {
     Commands       commands;
     Pipeline       opaque;        // each owns the set layout its shaders declare
     Pipeline       present;
-    Descriptors    descriptors;   // borrows those layouts, so it dies before them
-    ScenePass      scene;         // the attachments every frame draws into
-    PostProcessPass post{&scene, &present};   // reads scene, writes the swapchain
-    FrameSlot      slots[kFramesInFlight];   // points at the pipelines, so dies first
+    Descriptors    descriptors;   // the pool, so it outlives the sets drawn from it
+    ScenePass      scene;         // attachments, and the sets naming them
+    PostProcessPass post;         // reads scene, writes the swapchain
+    FrameSlot      slots[kFramesInFlight];   // command buffer and its two signals
     Texture        checker;
     Mesh           mesh;
 
@@ -486,10 +486,17 @@ int main() {
     if (!CreateGraphicsPipeline(dev, presentDesc, &present)) { return 1; }
 
     // After the pipelines: the layouts are theirs, read out of the same .spv the
-    // stages were compiled from. Both counts are per frame in flight -- the scene set
-    // holds that frame's uniform, so it cannot be shared any more than the uniform can.
-    if (!CreateDescriptors(dev, opaque.setLayout, kFramesInFlight,
-                           present.setLayout, kFramesInFlight,
+    // passes were compiled from. Both counts are per frame in flight -- a set names
+    // one frame's resources, so it cannot be shared any more than those can.
+    //
+    // Only the sizing happens here. Each pass draws its own sets later, once the
+    // resources they name exist.
+    const SetRequest setRequests[] = {
+        {&opaque.setLayout, kFramesInFlight},
+        {&present.setLayout, kFramesInFlight},
+    };
+    if (!CreateDescriptors(dev, setRequests,
+                           static_cast<uint32_t>(std::size(setRequests)),
                            &descriptors)) { return 1; }
 
     // Render resolution
@@ -547,14 +554,14 @@ int main() {
     // Frames
     // ------------------------------------------------------------------------
     //
-    // The pass owns the attachments; a slot owns the command buffer and the sets that
-    // name them. So the pass is built first, and every slot reads its own frame of it.
-    if (!CreateScenePass(dev, formats, kRenderExtent, mesh, checker, opaque, &scene)) {
-        return 1;
-    }
+    // Passes first, in dependency order: the post pass's sets name what the scene
+    // pass made. A slot owns none of that -- it only knows which frame it is.
+    if (!CreateScenePass(dev, descriptors, formats, kRenderExtent,
+                         mesh, checker, opaque, &scene)) { return 1; }
+    if (!CreatePostProcessPass(descriptors, scene, present, &post)) { return 1; }
 
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
-        if (!CreateFrameSlot(dev, commands, descriptors, i, scene, &slots[i])) { return 1; }
+        if (!CreateFrameSlot(dev, commands, i, &slots[i])) { return 1; }
     }
 
     // No swapchain yet: the loop's EnsureSwapchain makes it, and the first creation

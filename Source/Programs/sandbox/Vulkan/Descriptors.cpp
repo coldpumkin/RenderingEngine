@@ -20,17 +20,17 @@ static uint32_t CountOfType(const DescriptorLayout& layout, VkDescriptorType typ
     return n;
 }
 
-// 한 layout으로 count개를 한 번에 뽑는다. pool은 자라지 않으므로 여기서 실패하면
-// 크기를 잘못 센 것이다.
-static bool AllocateSets(const Descriptors& descriptors, const DescriptorLayout& layout,
-                         uint32_t count, VkDescriptorSet* out) noexcept {
+// One layout, count sets in one call. The ceiling is kFramesInFlight because that is
+// what "a set per frame" means -- not a second number to keep in step with the first.
+bool AllocateSets(const Descriptors& descriptors, const DescriptorLayout& layout,
+                  uint32_t count, VkDescriptorSet* out) noexcept {
     if (count == 0) { return true; }
-    if (count > kMaxSetsPerLayout) {
-        LOG("[vk] %u sets asked for, %u is the ceiling\n", count, kMaxSetsPerLayout);
+    if (count > kFramesInFlight) {
+        LOG("[vk] %u sets asked for, %u is the ceiling\n", count, kFramesInFlight);
         return false;
     }
 
-    VkDescriptorSetLayout layouts[kMaxSetsPerLayout]{};
+    VkDescriptorSetLayout layouts[kFramesInFlight]{};
     for (uint32_t i = 0; i < count; ++i) { layouts[i] = layout.handle; }
 
     VkDescriptorSetAllocateInfo allocInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
@@ -47,12 +47,9 @@ static bool AllocateSets(const Descriptors& descriptors, const DescriptorLayout&
 }
 
 bool CreateDescriptors(const VulkanDevice& dev,
-                       const DescriptorLayout& scene, uint32_t sceneSets,
-                       const DescriptorLayout& present, uint32_t presentSets,
+                       const SetRequest* requests, uint32_t requestCount,
                        Descriptors* out) noexcept {
     out->dev = &dev;
-    out->scene = &scene;
-    out->present = &present;
 
     // Sampler는 image가 아니라 읽는 규칙이다. 그래서 image와 따로 살고 하나로
     // 여러 image를 읽는다. 두 layout이 이것 하나를 같이 쓴다.
@@ -76,7 +73,8 @@ bool CreateDescriptors(const VulkanDevice& dev,
     //
     // 두 값이 다른 것을 센다 - set의 개수와 descriptor의 개수다. layout마다 binding
     // 수가 달라서 뒤는 가중합이고, 앞의 배수가 아니다.
-    const uint32_t maxSets = sceneSets + presentSets;
+    uint32_t maxSets = 0;
+    for (uint32_t r = 0; r < requestCount; ++r) { maxSets += requests[r].count; }
 
     // 타입마다 따로 센다. 요구가 0인 타입은 빼야 한다 - 스펙이 descriptorCount 0을
     // 금지한다.
@@ -85,8 +83,10 @@ bool CreateDescriptors(const VulkanDevice& dev,
     VkDescriptorPoolSize poolSizes[std::size(kTypes)]{};
     uint32_t sizeCount = 0;
     for (const VkDescriptorType type : kTypes) {
-        const uint32_t n = sceneSets * CountOfType(scene, type)
-                         + presentSets * CountOfType(present, type);
+        uint32_t n = 0;
+        for (uint32_t r = 0; r < requestCount; ++r) {
+            n += requests[r].count * CountOfType(*requests[r].layout, type);
+        }
         if (n == 0) { continue; }
         poolSizes[sizeCount].type = type;
         poolSizes[sizeCount].descriptorCount = n;
@@ -105,9 +105,9 @@ bool CreateDescriptors(const VulkanDevice& dev,
         return false;
     }
 
-    // 개수를 방금 pool에 말했으니 지금 다 뽑는다. 이 뒤로는 아무도 할당하지 않는다.
-    return AllocateSets(*out, scene, sceneSets, out->sceneSets)
-        && AllocateSets(*out, present, presentSets, out->presentSets);
+    // The sets are not drawn here. Each pass draws its own, because filling one needs
+    // that pass's resources and those do not exist yet.
+    return true;
 }
 
 void UpdateSet(const Descriptors& descriptors, const DescriptorLayout& layout,

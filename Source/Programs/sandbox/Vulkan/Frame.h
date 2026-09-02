@@ -78,6 +78,10 @@ struct ScenePass {
         // the command buffer as a push constant instead.
         SceneUniform uniformValue{};
         Buffer uniform;
+
+        // Drawn from the pool by this pass and filled by it: the set names this
+        // frame's input and uniform, so no one else knows what belongs in it.
+        VkDescriptorSet set = VK_NULL_HANDLE;
     };
     PerFrame frames[kFramesInFlight];
 };
@@ -87,8 +91,9 @@ struct ScenePass {
 //
 // Contract: formats must be what pipeline was built with. Both are arguments here so
 //           the mismatch is at least in one call, but nothing checks it.
-bool CreateScenePass(const VulkanDevice& dev, AttachmentFormats formats,
-                     VkExtent2D extent, const Mesh& mesh, const Texture& input,
+bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
+                     AttachmentFormats formats, VkExtent2D extent,
+                     const Mesh& mesh, const Texture& input,
                      const Pipeline& pipeline, ScenePass* out) noexcept;
 
 
@@ -108,7 +113,17 @@ bool CreateScenePass(const VulkanDevice& dev, AttachmentFormats formats,
 struct PostProcessPass {
     const ScenePass* source = nullptr;
     Pipeline* pipeline = nullptr;      // non-owning
+
+    // One per frame in flight, because each names that frame's colorResolve. Flat
+    // rather than a PerFrame like the scene pass, since a set is all there is.
+    VkDescriptorSet sets[kFramesInFlight]{};
 };
+
+// Effect: draws this pass's sets and points each at the matching frame of source
+//
+// Contract: source must already be created -- the sets name its colorResolve images.
+bool CreatePostProcessPass(const Descriptors& descriptors, const ScenePass& source,
+                           Pipeline& pipeline, PostProcessPass* out) noexcept;
 
 // Effect: rebuilds post.pipeline when target's format is not the one it was built for
 // Output: false is fatal -- the old pipeline is already destroyed
@@ -135,9 +150,8 @@ struct FrameSlot {
     VkSemaphore imageAvailable = VK_NULL_HANDLE;
     VkFence inFlight = VK_NULL_HANDLE;
 
-    // The pool handed out every set up front, and this slot's are picked by its own
-    // number. So a set is neither held here nor passed in.
-    const Descriptors* descriptors = nullptr;
+    // Which frame of every pass this slot is. Sets and attachments both live in the
+    // passes now, so this number is all the slot needs to find its share of them.
     uint32_t index = 0;
 
 
@@ -147,15 +161,12 @@ struct FrameSlot {
     FrameSlot& operator=(const FrameSlot&) = delete;
 };
 
-// Effect: allocates the command buffer, semaphore and fence, and fills this slot's
-//         two descriptor sets.
+// Effect: allocates the command buffer, semaphore and fence for one slot
 //
-// Takes the scene pass because both sets name things it owns -- input for the scene
-// set, colorResolve for the present one. Which frame's is decided by index, the same
-// number the sets are picked by.
+// No pass reaches in here any more: the sets moved to the passes that fill them, and
+// index is all that ties a slot to its share of one.
 bool CreateFrameSlot(const VulkanDevice& dev, const Commands& commands,
-                 const Descriptors& descriptors, uint32_t index,
-                 const ScenePass& scene, FrameSlot* out) noexcept;
+                     uint32_t index, FrameSlot* out) noexcept;
 
 // What the caller must do next, not what happened inside. A bool would collapse
 // three orders into one and spin forever on the one that never recovers.
