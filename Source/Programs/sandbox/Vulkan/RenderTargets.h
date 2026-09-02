@@ -12,7 +12,7 @@
 //   resolve   filled by vkCmdEndRendering, 1-sample. The present pass samples it
 //   depth     tested and written, MSAA. Never leaves the frame
 //
-// Frame owns one set of these because the count comes from kFramesInFlight -
+// A FrameSlot owns one set of these because the count comes from kFramesInFlight -
 // how many frames are drawn at once, not how many swapchain images exist.
 //
 // Separate from Frame.h because the two change for different reasons: semaphores

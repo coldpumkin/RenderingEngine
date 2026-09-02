@@ -18,17 +18,12 @@
 // descriptor set은 pool에서 나오고 개별 반납이 없어서 소멸자가 안 지운다.
 
 #include "Vulkan/Commands.h"
-#include "Vulkan/Descriptors.h"
 #include "Vulkan/Image.h"
 
 struct Texture {
     const VulkanDevice* dev = nullptr;   // 파괴에 필요한 non-owning 상태
 
     Image image;
-
-    // 이 texture가 binding 0에 걸린 set. 호출자가 AllocateSceneSet으로 채운다.
-    // pool이 죽을 때 같이 사라진다.
-    VkDescriptorSet set = VK_NULL_HANDLE;
 
     Texture() = default;
     ~Texture();

@@ -54,15 +54,15 @@
 //     barrier x3 (our color, its resolve target, depth)
 //     BeginRendering   attachment = draw.color / draw.depth, resolving into draw.resolve
 //       BindVertexBuffers, BindIndexBuffer
-//       per item: BindPipeline and BindDescriptorSets only when they change,
-//                 PushConstants, DrawIndexed
+//       BindPipeline, BindDescriptorSets
+//       per item: PushConstants, DrawIndexed
 //     EndRendering    <- the multisample average happens here
 //
-//   [present pass]  reads draw.resolve only
-//     barrier draw.resolve -> SHADER_READ_ONLY
-//     barrier swapchain  -> COLOR_ATTACHMENT
+//   [present pass]  reads the resolve image only
+//     barrier resolve   -> SHADER_READ_ONLY
+//     barrier swapchain -> COLOR_ATTACHMENT
 //     BeginRendering   attachment = swapchain image, in the swapchain's own format
-//       BindPipeline, BindDescriptorSets (draw.resolveSet), Draw 3 vertices
+//       BindPipeline, BindDescriptorSets, Draw 3 vertices
 //     EndRendering
 //     barrier swapchain -> PRESENT_SRC
 //
@@ -81,35 +81,32 @@ struct IndexRange {
     constexpr uint32_t End() const noexcept { return firstIndex + count; }
 };
 
-// Everything one draw needs.
+// What differs between draws, once the pass has fixed everything else.
 //
-// Not an object: no transform, no mesh, no material. Only what actually differs
-// between draws.
-//
-// pipeline and texture are handles because several items can share one and the loop
-// binds only on change. With one item each is bound exactly once.
+// No pipeline, texture or camera: the pass holds one of each. Each moves in here the
+// day one pass needs two of it, and the bind then moves into the loop with it.
 struct DrawItem {
-    const Pipeline* pipeline = nullptr;
-    VkDescriptorSet texture = VK_NULL_HANDLE;
-    PushConstants push{};        // mvp + alpha, both per object
+    glm::mat4 model{1.0f};
+    float alpha = 1.0f;
     IndexRange range{};
 };
 
 // Scene pass
 //
-// Input:  cmd, draw, mesh, items
+// Input:  the slot (target, pipeline, set), and what changes: mesh, camera, items
 // Effect: appends commands that draw into draw.color / draw.depth
 //
-// No swapchain, so this works without a window. No camera and no time either: those
-// are scene state, not recording. All this knows is "draw this index span with this
-// pipeline and this texture, using this matrix".
+// No swapchain, so this works without a window. Takes the camera because one pass
+// has one viewpoint; time stays out -- item.model already carries it.
 //
 // One mesh for every item: the spans in items index into it. A second mesh means
 // another BindVertexBuffers, which is why the bind sits above the loop and not in it.
-static void RecordScenePass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
-                            const RenderTargets& draw,
-                            const Mesh& mesh,
+static void RecordScenePass(const VolkDeviceTable& vk, const FrameSlot& slot,
+                            const Mesh& mesh, const glm::mat4& camera,
                             const DrawItem* items, uint32_t itemCount) noexcept {
+    VkCommandBuffer cmd = slot.cmd;
+    const RenderTargets& draw = slot.targets;
+    const Pipeline& pipeline = *slot.scene;
     const VkExtent2D extent = draw.extent;   // render resolution, not window size
 
     // oldLayout UNDEFINED: loadOp=CLEAR overwrites, so the old contents are dead.
@@ -175,24 +172,19 @@ static void RecordScenePass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
 
     vk.vkCmdBeginRendering(cmd, &rendering);
 
-    // Nothing to draw: clear and leave. The viewport below reads items[0].
-    if (itemCount == 0) {
-        vk.vkCmdEndRendering(cmd);
-        return;
-    }
-
-    // Dynamic state, so a resize does not rebuild the pipeline.
-    //
-    // The sign comes from the pipeline itself, so it cannot disagree with the frontFace
-    // baked into it (Pipeline.h). Reading items[0] assumes every scene pipeline shares
-    // one y convention; mixing conventions moves these two lines into the loop.
-    const VkViewport viewport = MakeViewport(extent, items[0].pipeline->viewportY);
+    // Dynamic state, so a resize does not rebuild the pipeline. The sign comes from the
+    // pipeline itself, so it cannot disagree with the frontFace baked into it.
+    const VkViewport viewport = MakeViewport(extent, pipeline.viewportY);
     vk.vkCmdSetViewport(cmd, 0, 1, &viewport);
 
     // Pixels outside this rect are discarded. Whole screen for now.
     VkRect2D scissor{};
     scissor.extent = extent;
     vk.vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+    vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.handle);
+    vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.layout,
+                               0, 1, &slot.sceneSet, 0, nullptr);
 
     // binding 0 matches the pipeline's binding 0. offset changes once several meshes
     // share one buffer.
@@ -204,34 +196,15 @@ static void RecordScenePass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
     vk.vkCmdBindIndexBuffer(cmd, mesh.indices.handle, 0, mesh.indexType);
 
     // Order is whatever the caller wrote into the array. This layer does not sort.
-    //
-    // Two bind conditions stand side by side: they are separate because pipeline and
-    // texture need not change at the same item.
-    const Pipeline* boundPipeline = nullptr;
-    VkDescriptorSet boundTexture = VK_NULL_HANDLE;
+    // Nothing is bound in here, so the order only decides blending.
     for (uint32_t i = 0; i < itemCount; ++i) {
         const DrawItem& item = items[i];
 
-        if (item.pipeline != boundPipeline) {
-            vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                 item.pipeline->handle);
-            boundPipeline = item.pipeline;
-        }
-
-        // A pipeline change does not unbind the set: the scene pipelines share one
-        // layout definition (same push range, same set layout), so they are compatible.
-        // That is what lets this condition stand apart from the one above. Mixing in a
-        // pipeline with a different layout breaks it.
-        if (item.texture != boundTexture) {
-            vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                       item.pipeline->layout, 0, 1, &item.texture,
-                                       0, nullptr);
-            boundTexture = item.texture;
-        }
-
-        vk.vkCmdPushConstants(cmd, item.pipeline->layout,
+        // The pass's viewpoint meets the item's transform here, and nowhere earlier.
+        const PushConstants push{camera * item.model, item.alpha};
+        vk.vkCmdPushConstants(cmd, pipeline.layout,
                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                              0, sizeof(item.push), &item.push);
+                              0, sizeof(push), &push);
 
         // firstIndex is a position in the index buffer. vertexOffset (0) is added to
         // every index, which matters once meshes number their vertices from zero.
@@ -243,25 +216,18 @@ static void RecordScenePass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
 
 // Present pass
 //
-// Input:  cmd, draw (read only), present, presentExtent, fullscreen
-// Effect: appends commands that sample draw.resolve into the swapchain image
-//
-// Taking draw is what "reads the previous pass" means: resolveSet comes from the same
-// draw, so the pair cannot disagree.
-//
-// draw.color is never touched here. It is the multisample image, which our shader
-// cannot sample; the scene pass already averaged it into draw.resolve.
-static void RecordPresentPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
-                              const RenderTargets& draw, VkDescriptorSet drawResolveSet,
-                              const SwapchainImage& present,
-                              VkExtent2D presentExtent,
-                              const Pipeline& fullscreen) noexcept {
-    // Writing must finish (COLOR_ATTACHMENT_OUTPUT) before sampling (FRAGMENT_SHADER).
-    // The layout must equal the one recorded into the descriptor set.
-    //
-    // The write being waited on is the resolve, which counts as a colour attachment
-    // write in the same stage, so the barrier did not change when MSAA arrived.
-    RecordLayoutTransition(vk, cmd, draw.resolve.handle, VK_IMAGE_ASPECT_COLOR_BIT,
+// Input:  the slot (what the scene pass wrote, and the set naming it), and where to put it
+// Effect: appends commands that sample the resolve image into the swapchain image
+static void RecordPresentPass(const VolkDeviceTable& vk, const FrameSlot& slot,
+                              const AcquiredFrame& acquired) noexcept {
+    VkCommandBuffer cmd = slot.cmd;
+    const Image& source = slot.targets.resolve;
+    const Pipeline& fullscreen = *slot.present;
+    const SwapchainImage& present = *acquired.image;
+    const VkExtent2D presentExtent = acquired.extent;
+    // Written as an attachment, read as a texture -- that is this whole pass. The
+    // layout must equal the one recorded into the descriptor set.
+    RecordLayoutTransition(vk, cmd, source.handle, VK_IMAGE_ASPECT_COLOR_BIT,
                            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
@@ -278,8 +244,7 @@ static void RecordPresentPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
                            VK_IMAGE_LAYOUT_UNDEFINED,
                            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
-    // Differs from the scene pass: swapchain attachment, no depth, no vertex buffer,
-    // window sized. The sampler's LINEAR filter scales between the two sizes.
+    // Window sized, unlike the scene pass. The sampler's LINEAR filter scales.
     VkRenderingAttachmentInfo swapColor{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
     swapColor.imageView = present.view;
     swapColor.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
@@ -294,8 +259,7 @@ static void RecordPresentPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
 
     vk.vkCmdBeginRendering(cmd, &presentPass);
 
-    // Opposite sign from the scene pass, because the fullscreen pipeline is built with
-    // ViewportY::Down. The reason lives there.
+    // Opposite sign from the scene pass: this pipeline is built ViewportY::Down.
     const VkViewport presentViewport = MakeViewport(presentExtent, fullscreen.viewportY);
     vk.vkCmdSetViewport(cmd, 0, 1, &presentViewport);
 
@@ -305,10 +269,8 @@ static void RecordPresentPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
 
     vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, fullscreen.handle);
 
-    // An image cannot ride in the command stream the way a push constant does, so the
-    // command only says "attach this set at slot 0".
     vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, fullscreen.layout,
-                               0, 1, &drawResolveSet, 0, nullptr);
+                               0, 1, &slot.presentSet, 0, nullptr);
 
     // 3 vertices, no buffer. The shader builds them from gl_VertexIndex.
     vk.vkCmdDraw(cmd, 3, 1, 0, 0);
@@ -323,15 +285,16 @@ static void RecordPresentPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
                            VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 }
 
-// Input:  cmd, target, mesh, items, fullscreen
-// Effect: resets cmd and records both passes
-// Output: false means cmd is invalid and must not be submitted
+// Effect: resets the slot's command buffer and records both passes
+// Output: false means the buffer is invalid and must not be submitted
+//
+// Takes the slot but never touches its fence or semaphore -- a rule, not a type.
 bool RecordFrame(const VolkDeviceTable& vk,
-                 VkCommandBuffer cmd,
-                 const FrameTarget& target,
-                 const Mesh& mesh,
-                 const DrawItem* items, uint32_t itemCount,
-                 const Pipeline& fullscreen) noexcept {
+                 const AcquiredFrame& acquired,
+                 const Mesh& mesh, const glm::mat4& camera,
+                 const DrawItem* items, uint32_t itemCount) noexcept {
+    const FrameSlot& slot = *acquired.slot;
+    VkCommandBuffer cmd = slot.cmd;
     // The pool has RESET_COMMAND_BUFFER_BIT, so one buffer can rewind on its own.
     if (vk.vkResetCommandBuffer(cmd, 0) != VK_SUCCESS) {
         LOG("[vk] vkResetCommandBuffer failed\n");
@@ -345,10 +308,8 @@ bool RecordFrame(const VolkDeviceTable& vk,
         return false;
     }
 
-    RecordScenePass(vk, cmd, *target.draw, mesh,
-                    items, itemCount);
-    RecordPresentPass(vk, cmd, *target.draw, target.drawResolveSet, *target.present,
-                      target.presentExtent, fullscreen);
+    RecordScenePass(vk, slot, mesh, camera, items, itemCount);
+    RecordPresentPass(vk, slot, acquired);
 
     if (vk.vkEndCommandBuffer(cmd) != VK_SUCCESS) {
         LOG("[vk] vkEndCommandBuffer failed\n");
@@ -369,16 +330,12 @@ int main() {
     VulkanDevice   dev;
     Window         window;        // holds the swapchain, so it dies before dev
     Commands       commands;
-    Descriptors    descriptors;   // frames take sets from this pool
-    Frame          frames[kFramesInFlight];
+    Descriptors    descriptors;   // slots take sets from this pool
+    FrameSlot      slots[kFramesInFlight];
     Pipeline       pipeline;
     Pipeline       fullscreen;
     Texture        checker;
     Mesh           mesh;          // dies first
-
-    // Counted from the Texture declarations above. Deriving it wants them in an
-    // array, which turns a name into an index -- worth it once they are chosen by id.
-    constexpr uint32_t kTextureCount = 1;
 
     // Ask, then build
     // ========================================================================
@@ -409,6 +366,12 @@ int main() {
     if (!CreateDevice(inst, selection, &dev)) { return 1; }
     if (!CreateCommands(dev, &commands)) { return 1; }
 
+    // Passes
+    // ------------------------------------------------------------------------
+    //
+    // A pass is what stays fixed between BeginRendering and EndRendering; what can
+    // change inside belongs to a DrawItem.
+    //
     // One pair per pass, here because the set layout comes from the fragment shader
     // and the pipeline from both.
     constexpr const char* kSceneVert = "Shaders/triangle.vert.spv";
@@ -416,8 +379,8 @@ int main() {
     constexpr const char* kPresentVert = "Shaders/fullscreen.vert.spv";
     constexpr const char* kPresentFrag = "Shaders/fullscreen.frag.spv";
 
-    // Both counts are how many images the sets will name: one per texture, one per frame.
-    if (!CreateDescriptors(dev, kSceneFrag, kTextureCount,
+    // Both sets live in a slot, so both counts are one per frame.
+    if (!CreateDescriptors(dev, kSceneFrag, kFramesInFlight,
                            kPresentFrag, kFramesInFlight, &descriptors)) { return 1; }
 
     // viewportY and cullMode are the pass's, not the shader's. A pipeline and a frame's
@@ -447,17 +410,23 @@ int main() {
     presentDesc.cullMode = VK_CULL_MODE_BACK_BIT;
     if (!CreateGraphicsPipeline(dev, presentDesc, &fullscreen)) { return 1; }
 
+    // Render resolution
+    // ------------------------------------------------------------------------
+    //
     // The other half of what a render target looks like; formats is the first.
+    // Constant, so aspect cannot change while the targets live.
     constexpr VkExtent2D kRenderExtent{kRenderWidth, kRenderHeight};
+    const float aspect = static_cast<float>(kRenderExtent.width)
+                       / static_cast<float>(kRenderExtent.height);
 
-    // One present set per frame, allocated here so RenderTargets stays clear of the
-    // present pass. If the pool ever resets per frame, that field moves down here.
-    for (Frame& f : frames) {
-        if (!CreateFrame(dev, commands, formats, kRenderExtent, &f)) { return 1; }
-        f.resolveSet = AllocatePresentSet(descriptors, f.targets.resolve.view);
-        if (f.resolveSet == VK_NULL_HANDLE) { return 1; }
-    }
+    // No proj[1][1] *= -1: the viewport height is already negative.
+    // Depth lands in [0,1] thanks to GLM_FORCE_DEPTH_ZERO_TO_ONE on the CMake target.
+    const glm::mat4 proj =
+        glm::perspective(glm::radians(60.0f), aspect, 0.1f, 100.0f);
 
+    // Scene
+    // ------------------------------------------------------------------------
+    //
     // World space; CCW in y-up, so reversing the winding culls the face.
     // Flat in z=0, so all three share one normal (+z) and one tangent (+x, w=1).
     constexpr Vertex vertices[] = {
@@ -470,9 +439,8 @@ int main() {
         0, 1, 2,          // green triangle
     };
 
-    // Which span belongs to which object. Declared in the same order as kIndices, each
-    // one starting where the previous ended, so inserting in the middle shifts the rest.
-    // These must stay next to kIndices: that adjacency is half of the guard.
+    // Which span is which object. Must stay next to kIndices -- that adjacency is
+    // half of the guard.
     constexpr IndexRange kGreenIndices{0, 3};
     static_assert(kGreenIndices.End() == std::size(kIndices),
                   "spans do not cover the index array");
@@ -484,36 +452,31 @@ int main() {
 
     if (!CreateCheckerTexture(dev, commands, &checker)) { return 1; }
 
-    // The set is allocated here rather than inside CreateCheckerTexture: what a set
-    // names is the pass's business, not the image's.
-    checker.set = AllocateSceneSet(descriptors, checker.image.view);
-    if (checker.set == VK_NULL_HANDLE) { return 1; }
+    // Frames
+    // ------------------------------------------------------------------------
+    //
+    // Each slot gets the pass it will run: two pipelines, and a set per stage. The
+    // sets are made here because one of them names this slot's own resolve image.
+    for (FrameSlot& s : slots) {
+        if (!CreateFrameSlot(dev, commands, formats, kRenderExtent, &s)) { return 1; }
+        s.scene = &pipeline;
+        s.present = &fullscreen;
+        s.sceneSet = AllocateSceneSet(descriptors, checker.image.view);
+        s.presentSet = AllocatePresentSet(descriptors, s.targets.resolve.view);
+        if (s.sceneSet == VK_NULL_HANDLE || s.presentSet == VK_NULL_HANDLE) { return 1; }
+    }
 
-    // No swapchain here. The loop's EnsureSwapchain creates it, and the first creation
-    // takes the same path as a recreation: "nothing to draw into" is a normal state.
+    // No swapchain yet: the loop's EnsureSwapchain makes it, and the first creation
+    // takes the same path as a recreation.
     LOG("close the window to exit.\n");
 
-    // Projection: its period is the render target's lifetime, not the frame.
-    // ========================================================================
+    // Frame state
+    // ------------------------------------------------------------------------
     //
-    // kRenderExtent is a compile-time constant, so aspect cannot change while the
-    // targets live -- a window resize does not touch it. It changes only once the
-    // render resolution becomes a runtime value, which brings a rebuild path with it.
-    const float aspect = static_cast<float>(kRenderExtent.width)
-                       / static_cast<float>(kRenderExtent.height);
-
-    // No proj[1][1] *= -1: the viewport height is already negative.
-    // Depth lands in [0,1] thanks to GLM_FORCE_DEPTH_ZERO_TO_ONE on the CMake target.
-    const glm::mat4 proj =
-        glm::perspective(glm::radians(60.0f), aspect, 0.1f, 100.0f);
-
-    // State that crosses frames. This is all of it.
-    // ========================================================================
-    //
-    // Not a struct: the values sit together and only lookAt reads them, so grouping
-    // would enforce nothing. Split it when a second consumer appears -- frustum
-    // culling, a light's viewpoint, a shadow pass.
-    uint32_t frameIndex = 0;      // which frame's resources are up
+    // Everything the loop carries across frames. Not a struct: only lookAt reads the
+    // camera values, so grouping would enforce nothing. Split them once something
+    // else reads them -- frustum culling, a light's viewpoint, a shadow pass.
+    uint32_t slotIndex = 0;       // which slot this frame borrows
     double lastTime = glfwGetTime();
 
     glm::vec3 eye{0.0f, 0.0f, 2.0f};
@@ -525,49 +488,19 @@ int main() {
 
         // Sleep until an event arrives while minimized.
         //
-        // Reset the clock after waking: the sleep is not a frame, and counting it would
-        // make the next dt jump and teleport the camera. The Skip below is the opposite.
+        // Reset the clock after waking: the sleep is not a frame, and counting it
+        // would make the next dt jump and teleport the camera.
         if (!WindowHasDrawableSize(window)) {
             glfwWaitEvents();
             lastTime = glfwGetTime();
             continue;
         }
 
-        const Frame& frame = frames[frameIndex];
-
-        FrameTarget target;
-        const FrameResult begun = BeginFrame(dev, &window, frame, &target);
-        if (begun == FrameResult::Fatal) { break; }
-
-        // The clock is untouched here. A Skip is short and that time really passed;
-        // dropping it would stall the camera during a resize drag.
-        if (begun == FrameResult::Skip) { continue; }
-
-        // Rebuild the fullscreen pipeline if the surface format changed.
-        //
-        // BeginFrame raises the flag, so checking at the top of the loop would be one
-        // iteration late and this frame would draw with the stale pipeline. Scene
-        // pipelines are untouched: their format is our render target's, not the surface's.
-        //
-        // The wait satisfies DestroyPipeline's contract (Pipeline.h). BeginFrame waited
-        // on this frame's fence only, which is not enough.
-        if (window.surfaceFormatChanged) {
-            dev.table.vkDeviceWaitIdle(dev.handle);
-            DestroyPipeline(dev, &fullscreen);
-            presentDesc.colorFormat = window.surfaceFormat.format;   // the only field that moved
-            if (!CreateGraphicsPipeline(dev, presentDesc, &fullscreen)) {
-                break;
-            }
-            window.surfaceFormatChanged = false;   // cleared by whoever handled it
-        }
-
-        // Build what this frame draws.
+        // What to draw
         // --------------------------------------------------------------------
         //
-        // Only the DrawItem array goes down to the recording layer: a matrix, an index
-        // span, a pipeline, a texture. No transform and no geometry survive that far.
-        //
-        // What stays here is what changes per frame. aspect and proj do not.
+        // Nothing here reads the acquire, so it runs before it. Only the DrawItem
+        // array reaches the recording layer: a matrix, a span, a pipeline, a texture.
 
         // One clock reading, two values: t is absolute (object spin), dt is the gap
         // (camera movement). Reading twice would let them drift apart.
@@ -625,26 +558,54 @@ int main() {
         const glm::vec3 kZAxis{0.0f, 0.0f, 1.0f};
         const DrawItem items[] = {
             // green, spinning about z so its depth does not change
-            {&pipeline, checker.set,
-             {camera * glm::rotate(glm::mat4(1.0f), t, kZAxis), 1.0f}, kGreenIndices},
+            {glm::rotate(glm::mat4(1.0f), t, kZAxis), 1.0f, kGreenIndices},
         };
+
+        // Draw it
+        // --------------------------------------------------------------------
+
+        const FrameSlot& slot = slots[slotIndex];
+
+        AcquiredFrame acquired;
+        const FrameResult begun = BeginFrame(dev, &window, slot, &acquired);
+        if (begun == FrameResult::Fatal) { break; }
+
+        if (begun == FrameResult::Skip) { continue; }
+
+        // Rebuild the fullscreen pipeline if the surface format changed.
+        //
+        // BeginFrame raises the flag, so checking at the top of the loop would be one
+        // iteration late and this frame would draw with the stale pipeline. Scene
+        // pipelines are untouched: their format is our render target's, not the surface's.
+        //
+        // The wait satisfies DestroyPipeline's contract (Pipeline.h). BeginFrame waited
+        // on this frame's fence only, which is not enough.
+        if (window.surfaceFormatChanged) {
+            dev.table.vkDeviceWaitIdle(dev.handle);
+            DestroyPipeline(dev, &fullscreen);
+            presentDesc.colorFormat = window.surfaceFormat.format;   // the only field that moved
+            if (!CreateGraphicsPipeline(dev, presentDesc, &fullscreen)) {
+                break;
+            }
+            window.surfaceFormatChanged = false;   // cleared by whoever handled it
+        }
 
         // These break instead of continue. After the acquire, skipping the submit leaves
         // a signalled semaphore and a reset fence with nobody to wait on them.
-        if (!RecordFrame(dev.table, frame.cmd, target, mesh,
-                         items, static_cast<uint32_t>(std::size(items)), fullscreen)) {
+        if (!RecordFrame(dev.table, acquired, mesh, camera,
+                         items, static_cast<uint32_t>(std::size(items)))) {
             break;
         }
 
         // Frame.h holds the reason submit and present are separate.
-        if (!SubmitFrame(dev, frame, target.present->renderFinished)) {
+        if (!SubmitFrame(dev, acquired)) {
             break;
         }
-        if (!PresentFrame(dev, &window, *target.present)) {
+        if (!PresentFrame(dev, &window, *acquired.image)) {
             break;
         }
 
-        frameIndex = (frameIndex + 1) % kFramesInFlight;
+        slotIndex = (slotIndex + 1) % kFramesInFlight;
     }
 
     // Destructors run in reverse declaration order. This wait stays because
