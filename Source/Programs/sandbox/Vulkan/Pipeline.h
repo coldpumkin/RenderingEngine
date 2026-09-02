@@ -79,7 +79,9 @@ struct GraphicsPipelineDesc {
     ViewportY viewportY = ViewportY::Down;
     VkCullModeFlags cullMode = VK_CULL_MODE_NONE;
 
-    // LINE needs the device's fillModeNonSolid (Core.h).
+    // FILL is the only value anything passes right now. LINE needs the device's
+    // fillModeNonSolid, which we stopped requesting -- switching to it means adding
+    // that back in Core.h and Device.cpp's candidate check.
     VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL;
 
     Blending blending = Blending::Opaque;
@@ -164,7 +166,7 @@ const VkPipelineVertexInputStateCreateInfo& VertexInput() noexcept;
 //
 // Contract: colorFormat, depthFormat and samples must be what the attachments
 //           actually are.
-//           LINE polygonMode requires the device's fillModeNonSolid (Core.h).
+//           LINE polygonMode needs fillModeNonSolid, which is no longer requested.
 bool CreateGraphicsPipeline(const VulkanDevice& dev,
                             const GraphicsPipelineDesc& desc,
                             Pipeline* out) noexcept;

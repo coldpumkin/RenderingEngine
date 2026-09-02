@@ -50,14 +50,9 @@ inline VkPhysicalDeviceVulkan13Features RequiredFeatures13() noexcept {
     return features;
 }
 
-// core 1.0 feature. 위와 층이 다르다 - 1.3 것은 pNext 체인으로, 이건
-// VkDeviceCreateInfo::pEnabledFeatures로 들어간다.
+// core 1.0 feature는 지금 하나도 요구하지 않는다. 요구하던 fillModeNonSolid는
+// POLYGON_MODE_LINE 때문이었는데 그 값을 쓰는 pipeline이 없어졌고, 안 쓰는 기능
+// 때문에 GPU를 탈락시키고 있었다.
 //
-// Contract: 위와 같다. 확인할 때와 켤 때 같은 값을 봐야 한다.
-inline VkPhysicalDeviceFeatures RequiredFeaturesCore() noexcept {
-    VkPhysicalDeviceFeatures features{};
-    // POLYGON_MODE_LINE. 없으면 pipeline 생성이 실패한다 - "그려봤더니 이상하다"가
-    // 아니라 만드는 순간 걸린다.
-    features.fillModeNonSolid = VK_TRUE;
-    return features;
-}
+// 다시 필요해지면 여기와 Device.cpp의 후보 검사 **양쪽**에 넣는다 - 확인할 때와
+// 켤 때 같은 값을 봐야 하고, 어긋나면 device는 만들어지고 draw에서 죽는다.

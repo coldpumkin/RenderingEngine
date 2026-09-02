@@ -101,8 +101,8 @@ PhysicalDeviceSelection PickPhysicalDevice(const VulkanInstance& inst,
         if (features13.dynamicRendering != VK_TRUE || features13.synchronization2 != VK_TRUE) {
             continue;
         }
-        // core feature는 features2 안에 같이 실려 왔다 - 조회를 더 하지 않는다.
-        if (features2.features.fillModeNonSolid != VK_TRUE) { continue; }
+        // core 1.0 feature는 지금 요구하는 것이 없어서 features2.features를 안 본다.
+        // 요구가 생기면 여기와 Core.h 양쪽에 넣는다.
 
         // (c) 스왑체인 확장
         uint32_t extCount = 0;
@@ -201,12 +201,11 @@ bool CreateDevice(const VulkanInstance& inst,
 
     // 지원 여부를 확인만 하는 게 아니라 **켜달라고 요청**해야 쓸 수 있다.
     VkPhysicalDeviceVulkan13Features enable13 = RequiredFeatures13();
-    const VkPhysicalDeviceFeatures enableCore = RequiredFeaturesCore();
 
     VkDeviceCreateInfo info{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     info.pNext = &enable13;
-    // pNext에 VkPhysicalDeviceFeatures2를 넣으면 이 필드를 못 쓴다 - 둘 중 하나다.
-    info.pEnabledFeatures = &enableCore;
+    // pEnabledFeatures는 비운다: core 1.0에서 켤 것이 없다. 넣게 되면 pNext에
+    // VkPhysicalDeviceFeatures2를 쓸 수 없다 - 둘 중 하나다.
     info.queueCreateInfoCount = queueInfoCount;
     info.pQueueCreateInfos = queueInfos;
     info.enabledExtensionCount = static_cast<uint32_t>(std::size(kRequiredDeviceExtensions));
