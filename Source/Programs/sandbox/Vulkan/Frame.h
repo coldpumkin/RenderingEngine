@@ -61,12 +61,21 @@ struct ScenePass {
         Texture colorResolve;  // 1 sample. vkCmdEndRendering averages into it, and
                                // the post pass samples it -- the one that leaves
         Texture depth;         // multisample. Tested and written, never read outside
+
+        // The value and its GPU copy, paired the way Texture pairs desc and image.
+        // Per frame for the other reason the attachments are: the CPU writes this one
+        // while the GPU still reads the previous frame's.
+        //
+        // Every draw in the pass reads the same values -- what differs per draw rides
+        // the command buffer as a push constant instead.
+        SceneUniform uniformValue{};
+        Buffer uniform;
     };
     PerFrame frames[kFramesInFlight];
 };
 
-// Effect: creates the three attachment textures for every frame in flight, and points
-//         the pass at what the scene brings.
+// Effect: creates each frame's attachments and uniform buffer, and points the pass at
+//         what the scene brings.
 //
 // Contract: formats and extent must be what the scene pipeline was built with.
 //           main chooses once and hands the same values to both.
@@ -89,12 +98,6 @@ struct FrameSlot {
 
     VkSemaphore imageAvailable = VK_NULL_HANDLE;
     VkFence inFlight = VK_NULL_HANDLE;
-
-    // scene은 값이고 uniform은 그 GPU 사본이다 - Texture의 desc와 image처럼 짝이다.
-    // 프레임마다 CPU가 쓰므로 slot마다 하나다: GPU가 이전 프레임의 것을 읽는 동안
-    // 다음 프레임이 자기 것에 쓴다.
-    SceneUniform scene{};
-    Buffer uniform;
 
     // set은 pool이 미리 다 뽑아뒀고, 이 slot 몫은 자기 번호로 정해진다. 그래서 set을
     // 들고 다니지도, 넘겨받지도 않는다.

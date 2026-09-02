@@ -306,7 +306,8 @@ bool RecordFrame(const FrameSlot& slot, const ScenePass& scene,
 
     // The value and its GPU copy meet here. Safe because BeginFrame waited on this
     // slot's fence, and this runs after it -- an acquired image is its precondition.
-    std::memcpy(slot.uniform.mapped, &slot.scene, sizeof(slot.scene));
+    const ScenePass::PerFrame& frame = scene.frames[slot.index];
+    std::memcpy(frame.uniform.mapped, &frame.uniformValue, sizeof(frame.uniformValue));
     VkCommandBuffer cmd = slot.cmd;
     // The pool has RESET_COMMAND_BUFFER_BIT, so one buffer can rewind on its own.
     if (vk.vkResetCommandBuffer(cmd, 0) != VK_SUCCESS) {
@@ -672,13 +673,15 @@ int main() {
              1.0f, kSphereIndices},
         };
 
-        // Fill the slot
+        // Fill this frame's share
         //
         // Assignment only, so it belongs up here: what reaches the GPU, and when, is
-        // RecordFrame's. slot is this frame's, and these three are what changes in it.
+        // RecordFrame's. The camera and light go to the pass because every draw in it
+        // reads them; the item list goes to the slot because it is this frame's.
         FrameSlot& slot = slots[slotIndex];
-        slot.scene = {camera, glm::vec4{lightDir, 0.0f},
-                      glm::vec4{1.0f, 0.95f, 0.9f, 0.15f}, glm::vec4{eye, 48.0f}};
+        scene.frames[slotIndex].uniformValue =
+            {camera, glm::vec4{lightDir, 0.0f},
+             glm::vec4{1.0f, 0.95f, 0.9f, 0.15f}, glm::vec4{eye, 48.0f}};
         slot.items = items;
         slot.itemCount = static_cast<uint32_t>(std::size(items));
 

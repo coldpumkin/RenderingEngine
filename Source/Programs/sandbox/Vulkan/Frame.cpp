@@ -34,6 +34,21 @@ bool CreateScenePass(const VulkanDevice& dev, AttachmentFormats formats,
                            &frame.depth)) {
             return false;
         }
+
+        // HOST_VISIBLE + MAPPED: one memcpy per frame, so there is no reason to go
+        // through a staging buffer and a copy command.
+        if (!CreateBuffer(dev, sizeof(SceneUniform),
+                          VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                          VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+                          VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+                              | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                          &frame.uniform)) {
+            return false;
+        }
+        if (frame.uniform.mapped == nullptr) {
+            LOG("[vk] uniform buffer is not mapped\n");
+            return false;
+        }
     }
     return true;
 }
@@ -70,31 +85,19 @@ bool CreateFrameSlot(const VulkanDevice& dev, const Commands& commands,
         return false;
     }
 
-    // HOST_VISIBLE + MAPPED: 프레임마다 memcpy 한 번이라 staging을 거칠 이유가 없다.
-    if (!CreateBuffer(dev, sizeof(SceneUniform),
-                      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                      VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
-                      VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
-                          | VMA_ALLOCATION_CREATE_MAPPED_BIT,
-                      &out->uniform)) {
-        return false;
-    }
-    if (out->uniform.mapped == nullptr) {
-        LOG("[vk] uniform buffer is not mapped\n");
-        return false;
-    }
+    // Fill this slot's two sets. The pool already handed them out; both name things
+    // the pass owns, and index picks which frame's.
+    const ScenePass::PerFrame& frame = scene.frames[index];
 
-    // 이 slot 몫의 set 둘을 채운다. 뽑는 것은 pool이 이미 했다.
     const BindingValue opaque[] = {
         {scene.input->image.view},                                     // 0: texture
-        {VK_NULL_HANDLE, out->uniform.handle, sizeof(SceneUniform)},   // 1: scene
+        {VK_NULL_HANDLE, frame.uniform.handle, sizeof(SceneUniform)},  // 1: scene
     };
     UpdateSet(descriptors, *descriptors.scene, descriptors.sceneSets[index],
               opaque, static_cast<uint32_t>(std::size(opaque)));
 
-    // The resolve, not color: the multisample image cannot be sampled. This slot's
-    // frame of the scene pass, picked by the same index as the sets.
-    const BindingValue present[] = {{scene.frames[index].colorResolve.image.view}};
+    // The resolve, not color: the multisample image cannot be sampled.
+    const BindingValue present[] = {{frame.colorResolve.image.view}};
     UpdateSet(descriptors, *descriptors.present, descriptors.presentSets[index],
               present, 1);
     return true;
