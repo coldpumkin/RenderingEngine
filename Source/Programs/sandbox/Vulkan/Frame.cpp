@@ -35,22 +35,19 @@ bool CreateFrameSlot(const VulkanDevice& dev, const Commands& commands,
     // two lines are where each one's job is written down.
     out->extent = extent;
 
-    // No SAMPLED: our shaders cannot read a multisample image.
-    if (!CreateImage2D(dev, extent, formats.color, formats.samples,
-                       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, &out->color.image)) {
+    // Three specs from one: usage is what differs, plus resolve's single sample -- and
+    // those two say the same thing, since sampler2D cannot read a multisample image.
+    if (!CreateTexture(dev, {extent, formats.color, formats.samples,
+                             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT}, &out->color)) {
         return false;
     }
-
-    // COLOR_ATTACHMENT is for being a resolve target - we never draw into it.
-    if (!CreateImage2D(dev, extent, formats.color, VK_SAMPLE_COUNT_1_BIT,
-                       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                       &out->resolve.image)) {
+    if (!CreateTexture(dev, {extent, formats.color, VK_SAMPLE_COUNT_1_BIT,
+                             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+                                 | VK_IMAGE_USAGE_SAMPLED_BIT}, &out->resolve)) {
         return false;
     }
-
-    // The sample count follows color: one rasterizationSamples covers the whole stage.
-    if (!CreateImage2D(dev, extent, formats.depth, formats.samples,
-                       VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, &out->depth.image)) {
+    if (!CreateTexture(dev, {extent, formats.depth, formats.samples,
+                             VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT}, &out->depth)) {
         return false;
     }
     return true;

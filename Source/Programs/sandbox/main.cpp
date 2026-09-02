@@ -461,7 +461,26 @@ int main() {
         return 1;
     }
 
-    if (!CreateCheckerTexture(dev, commands, &checker)) { return 1; }
+    // 8x8 checker, made in code: what we are checking is the path from pixels to
+    // sampler, not a file format. Small cells make a wrong uv obvious.
+    constexpr uint32_t kCheckerSize = 8;
+    uint8_t checkerPixels[kCheckerSize * kCheckerSize * 4]{};
+    for (uint32_t y = 0; y < kCheckerSize; ++y) {
+        for (uint32_t x = 0; x < kCheckerSize; ++x) {
+            const uint8_t v = ((x + y) % 2 == 0) ? 255 : 70;
+            uint8_t* p = checkerPixels + (y * kCheckerSize + x) * 4;
+            p[0] = v; p[1] = v; p[2] = v; p[3] = 255;
+        }
+    }
+
+    // SRGB: this is multiplied with the shader's output, so it must be in the same
+    // space as the render target. UNORM here would brighten the result.
+    const TextureDesc checkerDesc{{kCheckerSize, kCheckerSize},
+                                  VK_FORMAT_R8G8B8A8_SRGB, VK_SAMPLE_COUNT_1_BIT,
+                                  VK_IMAGE_USAGE_TRANSFER_DST_BIT
+                                      | VK_IMAGE_USAGE_SAMPLED_BIT};
+    if (!CreateTextureFromPixels(dev, commands, checkerDesc, checkerPixels,
+                                 sizeof(checkerPixels), &checker)) { return 1; }
 
     // The set is the (image, sampler) pair, so it belongs to the texture.
     checker.set = AllocateImageSet(descriptors, descriptors.scene, checker.image.view);

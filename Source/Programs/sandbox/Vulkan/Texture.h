@@ -1,36 +1,41 @@
 ﻿#pragma once
 
-// Texture - shader가 읽는 image
+// Texture - an image and the set that reads it
 // ============================================================================
 //
-// Render target과 같은 image인데 방향이 반대다. 그쪽은 우리가 **그려 넣고**, 이쪽은
-// shader가 **읽는다**. 그래서 usage와 layout이 다르고, CPU에서 올린 데이터가 있다.
+// A set records (view, sampler), which is this pair, so it lives here. Having one
+// means the next stage reads this texture; color and depth targets have none.
 //
-// 만드는 절차가 vertex buffer와 거의 같다 - staging buffer에 넣고 GPU에게 복사를
-// 시킨다. 다른 것은 **layout 전이가 앞뒤로 붙는다**는 점이다:
-//
-//   UNDEFINED -> TRANSFER_DST_OPTIMAL   복사를 받을 수 있는 상태로
-//   (vkCmdCopyBufferToImage)
-//   TRANSFER_DST -> SHADER_READ_ONLY    shader가 읽을 수 있는 상태로
-//
-// Buffer에는 이 단계가 없다. Image는 driver가 내부 배치를 바꿔가며 쓰기 때문이다.
+// Two ways to fill one: draw into it (a stage does that) or upload pixels.
 
 #include "Vulkan/Image.h"
 
 struct Commands;
 
-// An image and the set that reads it. The set's contents are exactly this pair
-// (view + sampler), which is why it lives here and not in whoever binds it.
 struct Texture {
     Image image;
-    VkDescriptorSet set = VK_NULL_HANDLE;   // caller fills it; the pool frees it
+    VkDescriptorSet set = VK_NULL_HANDLE;   // filled by whoever reads it; the pool frees it
 };
 
-// 파일에서 읽지 않고 코드로 만든다.
+// What one texture is. usage is the only field a caller really chooses -- the rest
+// comes from AttachmentFormats or from the file the pixels came out of.
+struct TextureDesc {
+    VkExtent2D extent{};
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
+    VkImageUsageFlags usage = 0;
+};
+
+// Output: an empty texture. Something has to draw into it before it is worth reading.
+bool CreateTexture(const VulkanDevice& dev, const TextureDesc& desc,
+                   Texture* out) noexcept;
+
+// Effect: uploads pixels through a staging buffer and leaves the image
+//         SHADER_READ_ONLY_OPTIMAL, which is what a set records.
 //
-// 이미지 로더(stb_image 같은)를 들이려면 Spike에서 단독 검증부터 해야 하고, 지금
-// 보려는 것은 "shader가 image를 읽는 경로"지 파일 포맷이 아니다. checkerboard면
-// uv가 맞는지 · 필터가 도는지 · 좌우상하가 안 뒤집혔는지가 전부 눈에 보인다.
-bool CreateCheckerTexture(const VulkanDevice& dev,
-                          const Commands& commands,
-                          Texture* out) noexcept;
+// Contract: usage must include TRANSFER_DST and SAMPLED, and size must match
+//           extent x format. Neither is checked here.
+bool CreateTextureFromPixels(const VulkanDevice& dev, const Commands& commands,
+                             const TextureDesc& desc,
+                             const void* pixels, VkDeviceSize size,
+                             Texture* out) noexcept;
