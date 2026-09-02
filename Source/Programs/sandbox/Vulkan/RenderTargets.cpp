@@ -88,7 +88,7 @@ bool CreateRenderTargets(const VulkanDevice& dev,
     // COLOR_ATTACHMENT is for being a resolve target - we never draw into it.
     if (!CreateImage2D(dev, extent, formats.color, VK_SAMPLE_COUNT_1_BIT,
                        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                       &out->resolve)) {
+                       &out->resolve.image)) {
         return false;
     }
 

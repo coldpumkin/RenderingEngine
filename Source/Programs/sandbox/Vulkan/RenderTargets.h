@@ -9,7 +9,8 @@
 // Three images, and what happens to each is most of this file:
 //
 //   color     drawn into, MSAA. Discarded once it has been resolved
-//   resolve   filled by vkCmdEndRendering, 1-sample. The present pass samples it
+//   resolve   filled by vkCmdEndRendering, 1-sample. Read by the next pass, so it
+//             carries the set that reads it -- the only one of the three that leaves
 //   depth     tested and written, MSAA. Never leaves the frame
 //
 // A FrameSlot owns one set of these because the count comes from kFramesInFlight -
@@ -18,13 +19,13 @@
 // Separate from Frame.h because the two change for different reasons: semaphores
 // and fences there, the shape of what we draw into here.
 
-#include "Vulkan/Image.h"
+#include "Vulkan/Texture.h"
 
 struct RenderTargets {
     // color and resolve differ in exactly one thing: sample count. A multisample
     // image cannot be read through sampler2D, so the present pass needs its own.
     Image color;
-    Image resolve;
+    Texture resolve;
     Image depth;
     VkExtent2D extent{};
 };

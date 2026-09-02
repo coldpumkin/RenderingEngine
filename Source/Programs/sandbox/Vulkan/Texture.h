@@ -15,8 +15,9 @@
 //
 // Buffer에는 이 단계가 없다. Image는 driver가 내부 배치를 바꿔가며 쓰기 때문이다.
 
-#include "Vulkan/Commands.h"
 #include "Vulkan/Image.h"
+
+struct Commands;
 
 // An image and the set that reads it. The set's contents are exactly this pair
 // (view + sampler), which is why it lives here and not in whoever binds it.

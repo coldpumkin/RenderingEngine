@@ -121,7 +121,7 @@ static void RecordScenePass(const VolkDeviceTable& vk, const FrameSlot& slot,
 
     // The resolve target is written too, at the end of the pass, so it needs the same
     // layout and the same stage. Nothing here draws into it directly.
-    RecordLayoutTransition(vk, cmd, draw.resolve.handle, VK_IMAGE_ASPECT_COLOR_BIT,
+    RecordLayoutTransition(vk, cmd, draw.resolve.image.handle, VK_IMAGE_ASPECT_COLOR_BIT,
                            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
@@ -149,7 +149,7 @@ static void RecordScenePass(const VolkDeviceTable& vk, const FrameSlot& slot,
     color.imageView = draw.color.view;
     color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     color.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
-    color.resolveImageView = draw.resolve.view;
+    color.resolveImageView = draw.resolve.image.view;
     color.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     color.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -217,18 +217,19 @@ static void RecordScenePass(const VolkDeviceTable& vk, const FrameSlot& slot,
 
 // Present pass
 //
-// Input:  the slot (what the scene pass wrote, and the set naming it), and where to put it
+// Input:  the slot's resolve texture, and where to put it
 // Effect: appends commands that sample the resolve image into the swapchain image
 static void RecordPresentPass(const VolkDeviceTable& vk, const FrameSlot& slot,
                               const AcquiredFrame& acquired) noexcept {
     VkCommandBuffer cmd = slot.cmd;
-    const Image& source = slot.targets.resolve;
+    const Texture& source = slot.targets.resolve;
     const Pipeline& fullscreen = *slot.present;
     const SwapchainImage& present = *acquired.image;
     const VkExtent2D presentExtent = acquired.extent;
+
     // Written as an attachment, read as a texture -- that is this whole pass. The
     // layout must equal the one recorded into the descriptor set.
-    RecordLayoutTransition(vk, cmd, source.handle, VK_IMAGE_ASPECT_COLOR_BIT,
+    RecordLayoutTransition(vk, cmd, source.image.handle, VK_IMAGE_ASPECT_COLOR_BIT,
                            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
@@ -271,7 +272,7 @@ static void RecordPresentPass(const VolkDeviceTable& vk, const FrameSlot& slot,
     vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, fullscreen.handle);
 
     vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, fullscreen.layout,
-                               0, 1, &slot.presentSet, 0, nullptr);
+                               0, 1, &source.set, 0, nullptr);
 
     // 3 vertices, no buffer. The shader builds them from gl_VertexIndex.
     vk.vkCmdDraw(cmd, 3, 1, 0, 0);
@@ -432,9 +433,9 @@ int main() {
         if (!CreateFrameSlot(dev, commands, formats, kRenderExtent, &s)) { return 1; }
         s.scene = &pipeline;
         s.present = &fullscreen;
-        s.presentSet = AllocateImageSet(descriptors, descriptors.present,
-                                        s.targets.resolve.view);
-        if (s.presentSet == VK_NULL_HANDLE) { return 1; }
+        s.targets.resolve.set = AllocateImageSet(descriptors, descriptors.present,
+                                                 s.targets.resolve.image.view);
+        if (s.targets.resolve.set == VK_NULL_HANDLE) { return 1; }
     }
 
     // Scene
