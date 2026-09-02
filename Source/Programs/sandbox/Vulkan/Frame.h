@@ -46,9 +46,16 @@ struct DrawItem;
 // finished -- the first barrier in recording is srcStage TOP_OF_PIPE, which waits
 // for nothing.
 //
-// Read-only inputs (the mesh, the sampled texture) are not copied and will sit
-// beside frames[] rather than inside it.
+// What the pass reads sits beside frames[], not inside it: nothing writes a mesh or
+// a sampled texture after creation, so every frame reads the same one. Pointers
+// because the scene owns them -- how many there are is not this pass's business.
+//
+// They become arrays the day one pass needs two of either, and a DrawItem then picks
+// by index. The bind moves into the draw loop with them.
 struct ScenePass {
+    const Mesh* mesh = nullptr;
+    const Texture* input = nullptr;
+
     struct PerFrame {
         Texture color;         // multisample. Drawn into, then discarded
         Texture colorResolve;  // 1 sample. vkCmdEndRendering averages into it, and
@@ -58,12 +65,14 @@ struct ScenePass {
     PerFrame frames[kFramesInFlight];
 };
 
-// Effect: creates the three attachment textures for every frame in flight.
+// Effect: creates the three attachment textures for every frame in flight, and points
+//         the pass at what the scene brings.
 //
 // Contract: formats and extent must be what the scene pipeline was built with.
 //           main chooses once and hands the same values to both.
 bool CreateScenePass(const VulkanDevice& dev, AttachmentFormats formats,
-                     VkExtent2D extent, ScenePass* out) noexcept;
+                     VkExtent2D extent, const Mesh& mesh, const Texture& input,
+                     ScenePass* out) noexcept;
 
 
 // cmd, imageAvailable and inFlight are sized by kFramesInFlight because one signal
@@ -80,14 +89,6 @@ struct FrameSlot {
 
     VkSemaphore imageAvailable = VK_NULL_HANDLE;
     VkFence inFlight = VK_NULL_HANDLE;
-
-    // What the scene brings. Pointers because the scene owns them and every slot
-    // reads the same ones -- how many there are, and their memory, is not ours.
-    //
-    // They leave when there is more than one of either: the array becomes the
-    // scene's and a DrawItem picks by index.
-    const Mesh* mesh = nullptr;
-    const Texture* input = nullptr;
 
     // scene은 값이고 uniform은 그 GPU 사본이다 - Texture의 desc와 image처럼 짝이다.
     // 프레임마다 CPU가 쓰므로 slot마다 하나다: GPU가 이전 프레임의 것을 읽는 동안
@@ -113,15 +114,15 @@ struct FrameSlot {
     FrameSlot& operator=(const FrameSlot&) = delete;
 };
 
-// Effect: allocates the command buffer, semaphore and fence, points the slot at what
-//         the scene brings, and fills this slot's two descriptor sets.
+// Effect: allocates the command buffer, semaphore and fence, and fills this slot's
+//         two descriptor sets.
 //
-// Takes the scene pass because the present set names its colorResolve. Which frame's
-// is decided by index, the same number the sets are picked by.
+// Takes the scene pass because both sets name things it owns -- input for the scene
+// set, colorResolve for the present one. Which frame's is decided by index, the same
+// number the sets are picked by.
 bool CreateFrameSlot(const VulkanDevice& dev, const Commands& commands,
                  const Descriptors& descriptors, uint32_t index,
-                 const Mesh& mesh, const Texture& input, const ScenePass& scene,
-                 FrameSlot* out) noexcept;
+                 const ScenePass& scene, FrameSlot* out) noexcept;
 
 // What the caller must do next, not what happened inside. A bool would collapse
 // three orders into one and spin forever on the one that never recovers.

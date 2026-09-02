@@ -7,7 +7,11 @@
 // Built without looking at the window, so this works while minimized - there may be
 // no swapchain yet, and nothing here depends on one.
 bool CreateScenePass(const VulkanDevice& dev, AttachmentFormats formats,
-                     VkExtent2D extent, ScenePass* out) noexcept {
+                     VkExtent2D extent, const Mesh& mesh, const Texture& input,
+                     ScenePass* out) noexcept {
+    out->mesh = &mesh;
+    out->input = &input;
+
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
         ScenePass::PerFrame& frame = out->frames[i];
 
@@ -36,13 +40,10 @@ bool CreateScenePass(const VulkanDevice& dev, AttachmentFormats formats,
 
 bool CreateFrameSlot(const VulkanDevice& dev, const Commands& commands,
                  const Descriptors& descriptors, uint32_t index,
-                 const Mesh& mesh, const Texture& input, const ScenePass& scene,
-                 FrameSlot* out) noexcept {
+                 const ScenePass& scene, FrameSlot* out) noexcept {
     out->dev = &dev;
     out->descriptors = &descriptors;
     out->index = index;
-    out->mesh = &mesh;
-    out->input = &input;
 
     // PRIMARY submits to a queue directly; SECONDARY only runs inside another.
     VkCommandBufferAllocateInfo allocInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
@@ -85,7 +86,7 @@ bool CreateFrameSlot(const VulkanDevice& dev, const Commands& commands,
 
     // 이 slot 몫의 set 둘을 채운다. 뽑는 것은 pool이 이미 했다.
     const BindingValue opaque[] = {
-        {input.image.view},                                            // 0: texture
+        {scene.input->image.view},                                     // 0: texture
         {VK_NULL_HANDLE, out->uniform.handle, sizeof(SceneUniform)},   // 1: scene
     };
     UpdateSet(descriptors, *descriptors.scene, descriptors.sceneSets[index],

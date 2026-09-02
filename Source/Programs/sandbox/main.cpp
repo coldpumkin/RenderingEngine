@@ -94,7 +94,7 @@ struct DrawItem {
 
 // Opaque stage
 //
-// Input:  the pass (attachments) and the slot (command buffer, mesh, set, items)
+// Input:  the pass (attachments, mesh, texture) and the slot (command buffer, items)
 // Effect: appends commands that draw into this slot's color / depth
 //
 // No swapchain, so this works without a window. No camera either: it went into the
@@ -108,7 +108,7 @@ static void RecordOpaqueStage(const FrameSlot& slot, const ScenePass& scene,
     const DrawItem* items = slot.items;
     const uint32_t itemCount = slot.itemCount;
     VkCommandBuffer cmd = slot.cmd;
-    const Mesh& mesh = *slot.mesh;
+    const Mesh& mesh = *scene.mesh;
 
     // This slot's frame of the pass. index picks the descriptor sets too, so the
     // attachments and the sets that name them cannot come apart.
@@ -540,11 +540,10 @@ int main() {
     //
     // The pass owns the attachments; a slot owns the command buffer and the sets that
     // name them. So the pass is built first, and every slot reads its own frame of it.
-    if (!CreateScenePass(dev, formats, kRenderExtent, &scene)) { return 1; }
+    if (!CreateScenePass(dev, formats, kRenderExtent, mesh, checker, &scene)) { return 1; }
 
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
-        if (!CreateFrameSlot(dev, commands, descriptors, i,
-                             mesh, checker, scene, &slots[i])) { return 1; }
+        if (!CreateFrameSlot(dev, commands, descriptors, i, scene, &slots[i])) { return 1; }
     }
 
     // No swapchain yet: the loop's EnsureSwapchain makes it, and the first creation
