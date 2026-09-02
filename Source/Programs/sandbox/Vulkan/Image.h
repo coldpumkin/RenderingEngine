@@ -25,8 +25,9 @@ struct Image {
 
 // Input:  samples는 MSAA sample 수 (1_BIT면 MSAA 없음)
 //         usage는 무엇에 쓸 image인가 (attachment / sampled / 복사 대상)
-//         aspect는 view가 어느 면을 보나 (COLOR / DEPTH)
 // Output: image + allocation + view가 채워진 Image
+//
+// The view's aspect comes from format, so a depth image cannot get a color view.
 //
 // Contract: samples가 이 image를 attachment로 쓰는 pipeline의 rasterizationSamples와
 //           같아야 한다. 검증 레이어가 잡아준다 - vkCmdBeginRendering에서 말한다.
@@ -38,5 +39,4 @@ bool CreateImage2D(const VulkanDevice& dev,
                    VkFormat format,
                    VkSampleCountFlagBits samples,
                    VkImageUsageFlags usage,
-                   VkImageAspectFlags aspect,
                    Image* out) noexcept;

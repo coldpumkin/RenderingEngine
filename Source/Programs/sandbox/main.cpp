@@ -355,11 +355,8 @@ int main() {
     const PhysicalDeviceSelection selection = PickPhysicalDevice(inst, window.surface);
     if (selection.gpu == VK_NULL_HANDLE) { return 1; }
 
-    const RenderTargetFormats formats = ChooseRenderTargetFormats(inst, selection.gpu);
-    if (formats.depth == VK_FORMAT_UNDEFINED) {
-        LOG("[vk] no usable depth format\n");
-        return 1;
-    }
+    RenderTargetFormats formats;
+    if (!ChooseRenderTargetFormats(inst, selection.gpu, &formats)) { return 1; }
     if (!SelectSurfaceFormat(inst, selection.gpu, &window)) { return 1; }
 
     // selection is absorbed into dev here.
@@ -392,7 +389,7 @@ int main() {
     sceneDesc.colorFormat = formats.color;
     sceneDesc.depthFormat = formats.depth;
     sceneDesc.samples = formats.samples;
-    sceneDesc.setLayout = descriptors.sceneLayout;
+    sceneDesc.setLayout = descriptors.scene.handle;
     sceneDesc.viewportY = ViewportY::Up;            // our world is y-up
     sceneDesc.cullMode = VK_CULL_MODE_BACK_BIT;
     sceneDesc.polygonMode = VK_POLYGON_MODE_FILL;
@@ -405,7 +402,7 @@ int main() {
     presentDesc.vertPath = kPresentVert;
     presentDesc.fragPath = kPresentFrag;
     presentDesc.colorFormat = window.surfaceFormat.format;
-    presentDesc.setLayout = descriptors.presentLayout;
+    presentDesc.setLayout = descriptors.present.handle;
     presentDesc.viewportY = ViewportY::Down;   // the shader makes its own uv
     presentDesc.cullMode = VK_CULL_MODE_BACK_BIT;
     if (!CreateGraphicsPipeline(dev, presentDesc, &fullscreen)) { return 1; }
@@ -461,8 +458,9 @@ int main() {
         if (!CreateFrameSlot(dev, commands, formats, kRenderExtent, &s)) { return 1; }
         s.scene = &pipeline;
         s.present = &fullscreen;
-        s.sceneSet = AllocateSceneSet(descriptors, checker.view);
-        s.presentSet = AllocatePresentSet(descriptors, s.targets.resolve.view);
+        s.sceneSet = AllocateImageSet(descriptors, descriptors.scene, checker.view);
+        s.presentSet = AllocateImageSet(descriptors, descriptors.present,
+                                        s.targets.resolve.view);
         if (s.sceneSet == VK_NULL_HANDLE || s.presentSet == VK_NULL_HANDLE) { return 1; }
     }
 

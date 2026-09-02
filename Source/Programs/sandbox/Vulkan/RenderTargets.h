@@ -46,12 +46,12 @@ struct RenderTargetFormats {
 };
 
 // Input:  inst, gpu
-// Output: the formats and sample count to use on this GPU
-//         (depth is VK_FORMAT_UNDEFINED if none worked)
+// Output: false means this GPU cannot run our render targets - no depth format, or
+//         no multisampling, which the resolve path requires.
 //
 // Takes inst because these queries are instance level. No logical device needed.
-RenderTargetFormats ChooseRenderTargetFormats(const VulkanInstance& inst,
-                                              VkPhysicalDevice gpu) noexcept;
+bool ChooseRenderTargetFormats(const VulkanInstance& inst, VkPhysicalDevice gpu,
+                               RenderTargetFormats* out) noexcept;
 
 // Effect: creates the three images and the set the present pass reads.
 bool CreateRenderTargets(const VulkanDevice& dev,

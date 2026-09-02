@@ -2,7 +2,7 @@
 
 #include "Config.h"
 
-#include <initializer_list>   // the destructor's for (Image* : {...})
+#include <initializer_list>   // the candidate loops below
 
 // Independent of the swapchain format - the present pass sits between the two.
 // HDR is the change that would make this R16G16B16A16_SFLOAT.
@@ -11,9 +11,9 @@
 // RenderTargetFormats.
 static constexpr VkFormat kRenderColorFormat = VK_FORMAT_R8G8B8A8_SRGB;
 
-RenderTargetFormats ChooseRenderTargetFormats(const VulkanInstance& inst,
-                                              VkPhysicalDevice gpu) noexcept {
-    RenderTargetFormats formats;
+bool ChooseRenderTargetFormats(const VulkanInstance& inst, VkPhysicalDevice gpu,
+                               RenderTargetFormats* out) noexcept {
+    RenderTargetFormats& formats = *out;
     formats.color = kRenderColorFormat;
 
     // Most precise first, and stencil-free ahead of stencil since we never use
@@ -56,7 +56,18 @@ RenderTargetFormats ChooseRenderTargetFormats(const VulkanInstance& inst,
 
     LOG("MSAA: requested %ux, supported mask 0x%x, using %ux\n",
         kDesiredSampleCount, supported, static_cast<uint32_t>(formats.samples));
-    return formats;
+
+    // Both failures live here, not at the call site: the caller would have to know
+    // that UNDEFINED and 1_BIT are the sentinels.
+    if (formats.depth == VK_FORMAT_UNDEFINED) {
+        LOG("[vk] no usable depth format\n");
+        return false;
+    }
+    if (formats.samples == VK_SAMPLE_COUNT_1_BIT) {
+        LOG("[vk] no multisampling: the resolve path has no 1x fallback\n");
+        return false;
+    }
+    return true;
 }
 
 // The three images differ only in sample count and usage, and those two lines
@@ -69,8 +80,7 @@ bool CreateRenderTargets(const VulkanDevice& dev,
     // Drawn into. No SAMPLED: our shaders cannot read a multisample image, and
     // asking them to would run out of usage right here.
     if (!CreateImage2D(dev, extent, formats.color, formats.samples,
-                       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-                       VK_IMAGE_ASPECT_COLOR_BIT, &out->color)) {
+                       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, &out->color)) {
         return false;
     }
 
@@ -78,15 +88,14 @@ bool CreateRenderTargets(const VulkanDevice& dev,
     // COLOR_ATTACHMENT is for being a resolve target - we never draw into it.
     if (!CreateImage2D(dev, extent, formats.color, VK_SAMPLE_COUNT_1_BIT,
                        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                       VK_IMAGE_ASPECT_COLOR_BIT, &out->resolve)) {
+                       &out->resolve)) {
         return false;
     }
 
     // Goes nowhere: used within the frame and dropped. The sample count still
     // follows color, because one rasterizationSamples covers the whole pass.
     if (!CreateImage2D(dev, extent, formats.depth, formats.samples,
-                       VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-                       VK_IMAGE_ASPECT_DEPTH_BIT, &out->depth)) {
+                       VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, &out->depth)) {
         return false;
     }
 

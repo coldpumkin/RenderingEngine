@@ -1,11 +1,26 @@
 ﻿#include "Vulkan/Image.h"
 
+// Stencil is never used, so a stencil format still gets a depth-only view. Adding
+// stencil here would put a second aspect on every barrier and view.
+static VkImageAspectFlags AspectOf(VkFormat format) noexcept {
+    switch (format) {
+        case VK_FORMAT_D16_UNORM:
+        case VK_FORMAT_X8_D24_UNORM_PACK32:
+        case VK_FORMAT_D32_SFLOAT:
+        case VK_FORMAT_D16_UNORM_S8_UINT:
+        case VK_FORMAT_D24_UNORM_S8_UINT:
+        case VK_FORMAT_D32_SFLOAT_S8_UINT:
+            return VK_IMAGE_ASPECT_DEPTH_BIT;
+        default:
+            return VK_IMAGE_ASPECT_COLOR_BIT;
+    }
+}
+
 bool CreateImage2D(const VulkanDevice& dev,
                    VkExtent2D extent,
                    VkFormat format,
                    VkSampleCountFlagBits samples,
                    VkImageUsageFlags usage,
-                   VkImageAspectFlags aspect,
                    Image* out) noexcept {
     out->dev = &dev;   // set first: the destructor runs even if the create below fails
 
@@ -36,7 +51,7 @@ bool CreateImage2D(const VulkanDevice& dev,
     viewInfo.image = out->handle;
     viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
     viewInfo.format = format;
-    viewInfo.subresourceRange.aspectMask = aspect;
+    viewInfo.subresourceRange.aspectMask = AspectOf(format);
     viewInfo.subresourceRange.levelCount = 1;
     viewInfo.subresourceRange.layerCount = 1;
 
