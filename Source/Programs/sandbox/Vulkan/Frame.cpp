@@ -128,9 +128,9 @@ FrameSlot::~FrameSlot() {
 
 FrameResult BeginFrame(const VulkanDevice& dev,
                        Window* window,
-                       FrameSlot* out) noexcept {
-    FrameSlot& slot = *out;
-    slot.image = nullptr;
+                       const FrameSlot& slot,
+                       const SwapchainImage** image) noexcept {
+    *image = nullptr;
 
     // Skip, not Fatal: the window can stop being drawable between the loop's check
     // and here, mid resize-drag. The cost is a spin if creation keeps failing.
@@ -169,11 +169,12 @@ FrameResult BeginFrame(const VulkanDevice& dev,
     }
 
     // The fence is not reset here - reset pairs with submit (see SubmitFrame).
-    slot.image = &swapchain.images[imageIndex];
+    *image = &swapchain.images[imageIndex];
     return FrameResult::Ready;
 }
 
-bool SubmitFrame(const VulkanDevice& dev, const FrameSlot& slot) noexcept {
+bool SubmitFrame(const VulkanDevice& dev, const FrameSlot& slot,
+                 const SwapchainImage& image) noexcept {
     // Wait where the swapchain image is first touched -- the present stage draws
     // into it. The opaque stage may run before the acquire completes.
     //
@@ -184,7 +185,7 @@ bool SubmitFrame(const VulkanDevice& dev, const FrameSlot& slot) noexcept {
     wait.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
 
     VkSemaphoreSubmitInfo signal{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
-    signal.semaphore = slot.image->renderFinished;
+    signal.semaphore = image.renderFinished;
     signal.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
 
     VkCommandBufferSubmitInfo cmdInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
@@ -218,8 +219,7 @@ bool SubmitFrame(const VulkanDevice& dev, const FrameSlot& slot) noexcept {
 
 bool PresentFrame(const VulkanDevice& dev,
                   Window* window,
-                  const FrameSlot& slot) noexcept {
-    const SwapchainImage& image = *slot.image;
+                  const SwapchainImage& image) noexcept {
     const VkSwapchainKHR swapchainHandle = window->swapchain->handle;
 
     VkPresentInfoKHR present{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};

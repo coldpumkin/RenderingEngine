@@ -97,7 +97,8 @@ struct DrawItem {
 
 // Scene pass
 //
-// Input:  the pass (attachments, mesh, texture, pipeline) and the slot (cmd, items)
+// Input:  the pass (attachments, mesh, texture, pipeline), the slot (cmd), and this
+//         frame's draw list
 // Effect: appends commands that draw into this slot's color / depth
 //
 // No swapchain, so this works without a window. No camera either: it went into the
@@ -105,10 +106,9 @@ struct DrawItem {
 //
 // One mesh for every item: the spans in items index into it. A second mesh means
 // another BindVertexBuffers, which is why the bind sits above the loop and not in it.
-static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene) noexcept {
+static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
+                            const DrawItem* items, uint32_t itemCount) noexcept {
     const VolkDeviceTable& vk = slot.dev->table;
-    const DrawItem* items = slot.items;
-    const uint32_t itemCount = slot.itemCount;
     VkCommandBuffer cmd = slot.cmd;
     const Mesh& mesh = *scene.mesh;
     const Pipeline& pipeline = *scene.pipeline;
@@ -228,8 +228,8 @@ static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene) noexc
 //
 // Input:  the slot's resolve texture, and where to put it
 // Effect: appends commands that sample the resolve image into the swapchain image
-static void RecordPostProcessPass(const FrameSlot& slot,
-                                  const PostProcessPass& post) noexcept {
+static void RecordPostProcessPass(const FrameSlot& slot, const PostProcessPass& post,
+                                  const SwapchainImage& target) noexcept {
     const VolkDeviceTable& vk = slot.dev->table;
     VkCommandBuffer cmd = slot.cmd;
     const Pipeline& pipeline = *post.pipeline;
@@ -237,7 +237,7 @@ static void RecordPostProcessPass(const FrameSlot& slot,
     // What the scene pass left behind. The set bound below names this same image,
     // and both are picked by slot.index.
     const Texture& source = post.source->frames[slot.index].colorResolve;
-    const Texture& dest = slot.image->texture;
+    const Texture& dest = target.texture;
     const VkExtent2D destExtent = dest.desc.extent;
 
     // Written as an attachment, read as a texture -- that is this whole pass. The
@@ -305,7 +305,8 @@ static void RecordPostProcessPass(const FrameSlot& slot,
 //
 // Takes the slot but never touches its fence or semaphore -- a rule, not a type.
 bool RecordFrame(const FrameSlot& slot, const ScenePass& scene,
-                 const PostProcessPass& post) noexcept {
+                 const PostProcessPass& post, const SwapchainImage& target,
+                 const DrawItem* items, uint32_t itemCount) noexcept {
     const VolkDeviceTable& vk = slot.dev->table;
 
     // The value and its GPU copy meet here. Safe because BeginFrame waited on this
@@ -328,8 +329,8 @@ bool RecordFrame(const FrameSlot& slot, const ScenePass& scene,
 
     // The order is here, in these two lines, and nowhere else. post.source points at
     // scene, but that is a dependency -- it would not stop these from being swapped.
-    RecordScenePass(slot, scene);
-    RecordPostProcessPass(slot, post);
+    RecordScenePass(slot, scene, items, itemCount);
+    RecordPostProcessPass(slot, post, target);
 
     if (vk.vkEndCommandBuffer(cmd) != VK_SUCCESS) {
         LOG("[vk] vkEndCommandBuffer failed\n");
@@ -691,32 +692,33 @@ int main() {
         scene.frames[slotIndex].uniformValue =
             {camera, glm::vec4{lightDir, 0.0f},
              glm::vec4{1.0f, 0.95f, 0.9f, 0.15f}, glm::vec4{eye, 48.0f}};
-        slot.items = items;
-        slot.itemCount = static_cast<uint32_t>(std::size(items));
 
         // Draw it
         // --------------------------------------------------------------------
 
-        const FrameResult begun = BeginFrame(dev, &window, &slot);
+        // Lives until present, and no further: it is the swapchain's, not the slot's.
+        const SwapchainImage* target = nullptr;
+        const FrameResult begun = BeginFrame(dev, &window, slot, &target);
         if (begun == FrameResult::Fatal) { break; }
 
         if (begun == FrameResult::Skip) { continue; }
 
         // Right after BeginFrame, not at the top: the swapchain is remade in there,
         // and one iteration later this frame would draw with the stale pipeline.
-        if (!EnsurePostProcessPipeline(dev, post, slot.image->texture)) { break; }
+        if (!EnsurePostProcessPipeline(dev, post, target->texture)) { break; }
 
         // These break instead of continue. After the acquire, skipping the submit
         // leaves a signalled semaphore and a reset fence with nobody to wait on them.
-        if (!RecordFrame(slot, scene, post)) {
+        if (!RecordFrame(slot, scene, post, *target,
+                         items, static_cast<uint32_t>(std::size(items)))) {
             break;
         }
 
         // Frame.h holds the reason submit and present are separate.
-        if (!SubmitFrame(dev, slot)) {
+        if (!SubmitFrame(dev, slot, *target)) {
             break;
         }
-        if (!PresentFrame(dev, &window, slot)) {
+        if (!PresentFrame(dev, &window, *target)) {
             break;
         }
 

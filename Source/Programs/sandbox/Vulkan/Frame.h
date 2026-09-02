@@ -135,16 +135,10 @@ struct FrameSlot {
     VkSemaphore imageAvailable = VK_NULL_HANDLE;
     VkFence inFlight = VK_NULL_HANDLE;
 
-    // set은 pool이 미리 다 뽑아뒀고, 이 slot 몫은 자기 번호로 정해진다. 그래서 set을
-    // 들고 다니지도, 넘겨받지도 않는다.
+    // The pool handed out every set up front, and this slot's are picked by its own
+    // number. So a set is neither held here nor passed in.
     const Descriptors* descriptors = nullptr;
     uint32_t index = 0;
-
-    // This frame's contents. BeginFrame fills the image, the loop fills the rest, and
-    // all of it holds until Present -- recording reads the slot and nothing else.
-    const SwapchainImage* image = nullptr;   // 크기는 image->texture.desc.extent다
-    const DrawItem* items = nullptr;
-    uint32_t itemCount = 0;
 
 
     FrameSlot() = default;
@@ -172,13 +166,19 @@ enum class FrameResult {
 };
 
 // Input:  dev, window, slot
+// Output: image, set only on Ready and untouched otherwise
 // Effect: rebuilds the swapchain if needed, waits for this slot, acquires an image
-//         into it. slot->image is valid only on Ready.
+//
+// The image is returned rather than stored: it belongs to the swapchain, which the
+// slot outlives, and the frame needs it only from here until present. slot is const
+// because nothing in it changes -- the wait and the acquire only read the fence and
+// the semaphore.
 //
 // Minimization is not handled here: the loop filters it with WindowHasDrawableSize.
 FrameResult BeginFrame(const VulkanDevice& dev,
                        Window* window,
-                       FrameSlot* slot) noexcept;
+                       const FrameSlot& slot,
+                       const SwapchainImage** image) noexcept;
 
 // Submit and present stay two calls: they share no arguments and grow on different
 // axes -- present per window, submit per queue. The start does not split because
@@ -186,12 +186,15 @@ FrameResult BeginFrame(const VulkanDevice& dev,
 
 // Effect: resets the fence and submits the slot's command buffer
 //
-// Takes the pair so the slot and the image it signals cannot be mismatched.
-bool SubmitFrame(const VulkanDevice& dev, const FrameSlot& slot) noexcept;
+// Takes both so the slot and the image it signals cannot be mismatched -- they come
+// from different axes and only the caller knows they belong to the same frame.
+bool SubmitFrame(const VulkanDevice& dev, const FrameSlot& slot,
+                 const SwapchainImage& image) noexcept;
 
 // Effect: presents the swapchain image, flagging the window if it went stale
 //
-// The index rides inside slot.image, so there is nothing else to pass.
+// No slot: the index and the semaphore both ride inside the image, and present waits
+// on the queue rather than on anything this frame owns.
 bool PresentFrame(const VulkanDevice& dev,
                   Window* window,
-                  const FrameSlot& slot) noexcept;
+                  const SwapchainImage& image) noexcept;
