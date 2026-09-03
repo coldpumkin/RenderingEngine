@@ -104,12 +104,10 @@ static void MakeSphere(uint32_t stacks, uint32_t slices, float radius,
     }
 }
 
-// What one material names, as file paths. A pair rather than two lists so the two
-// cannot drift apart, and so the dedup key is one comparison.
-//
-// Empty means the material named none, and the caller substitutes: a checker for the
-// base colour, a flat normal for the other.
 // What the loader found for one material, and the key two of them are compared on.
+//
+// An empty path means the material named no image there, and the caller substitutes:
+// a checker for the base colour, a flat normal for the other.
 //
 // Every field that makes two materials different has to be in here. Cull is in it for
 // that reason and not because a name is an image: two glTF materials naming the same
@@ -202,7 +200,10 @@ static bool WriteBmp(const char* path, uint32_t width, uint32_t height,
 //         which of those each item wants (UINT32_MAX means the primitive named
 //         neither), and whether each item is double sided -- which the caller turns
 //         into a pipeline.
-//         false means nothing was appended -- the caller falls back to MakeSphere
+//         false means the file could not be turned into a scene. What was appended
+//         before that point is undefined, and the caller exits rather than drawing
+//         it: a file that exists and does not load is not the same as no file, and
+//         only the second one has something else worth drawing.
 //
 // The DrawItem cannot carry the material itself: a set does not exist until the pool
 // does, and the pool cannot be sized until this has counted the materials. So the
@@ -560,17 +561,28 @@ int main() {
     std::vector<uint16_t> indices;
     std::vector<DrawItem> items;
 
-    // The asset is gitignored, so a machine without it is normal. The generated sphere
-    // is the fallback, and it is also what says whether a blank screen is the loader's
+    // Two ways there is no scene here, and they are not the same failure.
+    //
+    // No file is normal: the asset is gitignored, so a machine without it is expected,
+    // and the generated sphere is what says whether a blank screen is the loader's
     // fault or the renderer's.
+    //
+    // A file that will not load is not that. Drawing the sphere there would put a
+    // picture on screen for a run that failed, which is the one outcome that cannot be
+    // told from success by looking. So it exits -- and that is also why nothing below
+    // has to undo what a half-finished load appended.
     const char* const kScenePath = LAMBDA_ASSET_ROOT "/Sponza/Sponza.gltf";
     std::vector<uint32_t> itemMaterial;      // one per item, indexing materialSources
     std::vector<MaterialSource> materialSources;
     bool loaded = false;
     if (std::FILE* probe = std::fopen(kScenePath, "rb")) {
         std::fclose(probe);
-        loaded = LoadGltf(kScenePath, &vertices, &indices, &items,
-                          &itemMaterial, &materialSources);
+        if (!LoadGltf(kScenePath, &vertices, &indices, &items,
+                      &itemMaterial, &materialSources)) {
+            LOG("[scene] %s exists but did not load\n", kScenePath);
+            return 1;
+        }
+        loaded = true;
     } else {
         LOG("[scene] no %s -- drawing the generated sphere instead\n", kScenePath);
     }
