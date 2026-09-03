@@ -660,7 +660,7 @@ int main() {
     // finished picture, in the pass after the post-process one.
     if (!CreateGui(inst, dev, window, window.surfaceFormat.format, &gui)) { return 1; }
 
-    LOG("close the window to exit.  1 normal map / 2 base colour / 3 specular / 4 alpha mask\n");
+    LOG("close the window to exit. The panel switches features off.\n");
 
     // Frame state
     // ------------------------------------------------------------------------
@@ -686,20 +686,15 @@ int main() {
     const bool fixedTime = std::getenv("LAMBDA_FIXED_TIME") != nullptr;
     constexpr float kFixedTime = 1.0f;   // any constant. 1.0 puts the light off-axis
 
-    // What to leave out, toggled with 1..4 while it runs.
+    // What to leave out. Edited by the panel's checkboxes, read by the uniform.
     //
     // Comparing a feature against its own absence used to mean checking out the
-    // commit before it. This makes it one keystroke, with the same camera and the
-    // same light on the same screen -- which is the only way the difference is honest.
+    // commit before it. Now it is one click, with the same camera and the same light
+    // on the same screen -- which is the only way the difference is honest.
     //
     // Not in Config.h: a constant would have to be edited and rebuilt, and the point
     // is to see both within a second of each other.
     ViewOptions viewOptions;   // 'view' is the matrix below
-
-    // glfwGetKey reports a state, not an event, so acting on it directly would flip
-    // the toggle every frame it is held. This remembers the last frame's state so
-    // only the down edge counts.
-    bool wasDown[4]{};
 
     glm::vec3 eye{0.0f, 0.0f, 3.5f};
     float yaw = -90.0f;           // -90 looks down -z, per the forward expression below
@@ -770,24 +765,6 @@ int main() {
         if (held(GLFW_KEY_A)) { eye -= right   * kMoveSpeed * dt; }
         if (held(GLFW_KEY_E)) { eye += kWorldUp * kMoveSpeed * dt; }
         if (held(GLFW_KEY_Q)) { eye -= kWorldUp * kMoveSpeed * dt; }
-
-        // Toggles
-        //
-        // The log line is on an edge, not a condition, so it cannot flood -- it says
-        // what the picture is showing now, which a screenshot alone does not.
-        const int kToggleKeys[4]{GLFW_KEY_1, GLFW_KEY_2, GLFW_KEY_3, GLFW_KEY_4};
-        bool* const kToggles[4]{&viewOptions.normalMap, &viewOptions.baseColor,
-                                &viewOptions.specular, &viewOptions.alphaMask};
-        const char* const kToggleNames[4]{"normal map", "base colour", "specular",
-                                          "alpha mask"};
-        for (int i = 0; i < 4; ++i) {
-            const bool down = held(kToggleKeys[i]);
-            if (down && !wasDown[i]) {
-                *kToggles[i] = !*kToggles[i];
-                LOG("[view] %s %s\n", kToggleNames[i], *kToggles[i] ? "on" : "off");
-            }
-            wasDown[i] = down;
-        }
 
         // center is eye + forward. An absolute target would pin the gaze to one point
         // and rotation would stop working.

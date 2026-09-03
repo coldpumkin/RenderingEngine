@@ -76,6 +76,16 @@ bool CreateGui(const VulkanInstance& inst, const VulkanDevice& dev,
     ImGui::CreateContext();
     ImGui::StyleColorsDark();
 
+    // The default font is 13px, which is a third of the height of the text in the
+    // console beside it. Scaling the built-in atlas is blurry at large factors but
+    // costs no font file; a real one goes in when the panel needs to be read rather
+    // than glanced at.
+    //
+    // ScaleAllSizes too, or the boxes and padding stay 13px-sized around 20px text.
+    constexpr float kUiScale = 1.6f;
+    ImGui::GetIO().FontGlobalScale = kUiScale;
+    ImGui::GetStyle().ScaleAllSizes(kUiScale);
+
     // No .ini file. It would remember window positions across runs, which makes two
     // runs of the same build differ -- the opposite of what the capture tool needs.
     ImGui::GetIO().IniFilename = nullptr;
@@ -141,19 +151,19 @@ void BuildGui(ViewOptions* options, float frameSeconds,
     ImGui::NewFrame();
 
     ImGui::SetNextWindowPos(ImVec2(12.0f, 12.0f), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(260.0f, 0.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(340.0f, 0.0f), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("View")) {
-        // The same four the number keys toggle. Both write the one ViewOptions, so
-        // they cannot disagree about what is on.
-        ImGui::Checkbox("normal map  (1)", &options->normalMap);
-        ImGui::Checkbox("base colour (2)", &options->baseColor);
-        ImGui::Checkbox("specular    (3)", &options->specular);
-        ImGui::Checkbox("alpha mask  (4)", &options->alphaMask);
+        ImGui::Checkbox("normal map", &options->normalMap);
+        ImGui::Checkbox("base colour", &options->baseColor);
+        ImGui::Checkbox("specular", &options->specular);
+        ImGui::Checkbox("alpha mask", &options->alphaMask);
 
         ImGui::Separator();
-        // Milliseconds, not a rate: the frame is vsync bound, so the number that
-        // means anything is how far it is from 16.7, not how many fit in a second.
-        ImGui::Text("frame  %.2f ms", frameSeconds * 1000.0f);
+        // Both numbers, because they answer different questions: the rate is what a
+        // person reads, the milliseconds are what a change moves. A guard on the
+        // first frame, where the gap is zero.
+        const float fps = frameSeconds > 0.0f ? 1.0f / frameSeconds : 0.0f;
+        ImGui::Text("fps    %.0f  (%.2f ms)", fps, frameSeconds * 1000.0f);
         ImGui::Text("draws  %u", drawCount);
         ImGui::Text("mats   %u", materialCount);
     }
