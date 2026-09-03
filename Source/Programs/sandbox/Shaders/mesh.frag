@@ -25,6 +25,10 @@ layout(set = 0, binding = 0) uniform Scene {
     vec4 lightDir;
     vec4 lightColor;
     vec4 viewPos;
+    float useNormalMap;
+    float useBaseColor;
+    float useSpecular;
+    float useAlphaMask;
 } scene;
 
 layout(location = 0) out vec4 outColor;
@@ -42,7 +46,7 @@ void main() {
     // The alpha is the base colour texture's, not the push constant's -- one says
     // which texels exist, the other how see-through the whole surface is.
     const vec4 sampled = texture(baseColor, fragUV);
-    if (sampled.a < pc.alphaCutoff) { discard; }
+    if (scene.useAlphaMask > 0.5 && sampled.a < pc.alphaCutoff) { discard; }
 
     // Normalized here because interpolation across the triangle shortens it.
     const vec3 geometric = normalize(fragNormal);
@@ -56,7 +60,8 @@ void main() {
     // Stored 0..1, used -1..1. A flat texel is (0.5, 0.5, 1.0), which comes back as
     // +z -- the geometric normal, unchanged.
     const vec3 tangentNormal = texture(normalMap, fragUV).xyz * 2.0 - 1.0;
-    const vec3 normal = normalize(tbn * tangentNormal);
+    const vec3 normal = scene.useNormalMap > 0.5 ? normalize(tbn * tangentNormal)
+                                                 : geometric;
     const vec3 toLight = normalize(scene.lightDir.xyz);
     const float lambert = max(dot(normal, toLight), 0.0);
 
@@ -67,11 +72,12 @@ void main() {
     const float highlight = pow(max(dot(normal, halfway), 0.0), scene.viewPos.w);
 
     // Gated on lambert: a surface facing away from the light cannot shine.
-    const float specular = highlight * step(0.0001, lambert);
+    const float specular = highlight * step(0.0001, lambert) * scene.useSpecular;
 
     // Diffuse takes the surface colour, specular does not -- a highlight is the light
     // itself reflected, not the paint.
-    const vec3 albedo = sampled.rgb;
+    // A flat grey when it is off, so the shape and the lighting stay readable.
+    const vec3 albedo = scene.useBaseColor > 0.5 ? sampled.rgb : vec3(0.8);
     const vec3 lit = (scene.lightColor.rgb * lambert + scene.lightColor.a) * albedo
                    + scene.lightColor.rgb * specular;
 

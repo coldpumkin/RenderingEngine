@@ -654,7 +654,7 @@ int main() {
         if (!CreateFrameSlot(dev, commands, i, &slots[i])) { return 1; }
     }
 
-    LOG("close the window to exit.\n");
+    LOG("close the window to exit.  1 normal map / 2 base colour / 3 specular / 4 alpha mask\n");
 
     // Frame state
     // ------------------------------------------------------------------------
@@ -679,6 +679,24 @@ int main() {
     // dt still comes from the real clock, or the camera would stop answering keys.
     const bool fixedTime = std::getenv("LAMBDA_FIXED_TIME") != nullptr;
     constexpr float kFixedTime = 1.0f;   // any constant. 1.0 puts the light off-axis
+
+    // What to leave out, toggled with 1..4 while it runs.
+    //
+    // Comparing a feature against its own absence used to mean checking out the
+    // commit before it. This makes it one keystroke, with the same camera and the
+    // same light on the same screen -- which is the only way the difference is honest.
+    //
+    // Not in Config.h: a constant would have to be edited and rebuilt, and the point
+    // is to see both within a second of each other.
+    bool useNormalMap = true;
+    bool useBaseColor = true;
+    bool useSpecular = true;
+    bool useAlphaMask = true;
+
+    // glfwGetKey reports a state, not an event, so acting on it directly would flip
+    // the toggle every frame it is held. This remembers the last frame's state so
+    // only the down edge counts.
+    bool wasDown[4]{};
 
     glm::vec3 eye{0.0f, 0.0f, 3.5f};
     float yaw = -90.0f;           // -90 looks down -z, per the forward expression below
@@ -750,6 +768,24 @@ int main() {
         if (held(GLFW_KEY_E)) { eye += kWorldUp * kMoveSpeed * dt; }
         if (held(GLFW_KEY_Q)) { eye -= kWorldUp * kMoveSpeed * dt; }
 
+        // Toggles
+        //
+        // The log line is on an edge, not a condition, so it cannot flood -- it says
+        // what the picture is showing now, which a screenshot alone does not.
+        const int kToggleKeys[4]{GLFW_KEY_1, GLFW_KEY_2, GLFW_KEY_3, GLFW_KEY_4};
+        bool* const kToggles[4]{&useNormalMap, &useBaseColor, &useSpecular,
+                                &useAlphaMask};
+        const char* const kToggleNames[4]{"normal map", "base colour", "specular",
+                                          "alpha mask"};
+        for (int i = 0; i < 4; ++i) {
+            const bool down = held(kToggleKeys[i]);
+            if (down && !wasDown[i]) {
+                *kToggles[i] = !*kToggles[i];
+                LOG("[view] %s %s\n", kToggleNames[i], *kToggles[i] ? "on" : "off");
+            }
+            wasDown[i] = down;
+        }
+
         // center is eye + forward. An absolute target would pin the gaze to one point
         // and rotation would stop working.
         const glm::mat4 view = glm::lookAt(eye, eye + forward, kWorldUp);
@@ -774,7 +810,9 @@ int main() {
         FrameSlot& slot = slots[slotIndex];
         scene.frames[slot.index].uniformValue =
             {camera, glm::vec4{lightDir, 0.0f},
-             glm::vec4{1.0f, 0.95f, 0.9f, 0.15f}, glm::vec4{eye, 48.0f}};
+             glm::vec4{1.0f, 0.95f, 0.9f, 0.15f}, glm::vec4{eye, 48.0f},
+             useNormalMap ? 1.0f : 0.0f, useBaseColor ? 1.0f : 0.0f,
+             useSpecular ? 1.0f : 0.0f, useAlphaMask ? 1.0f : 0.0f};
 
         // Draw it
         // --------------------------------------------------------------------

@@ -14,6 +14,10 @@ layout(set = 0, binding = 0) uniform Scene {
     vec4 lightDir;
     vec4 lightColor;
     vec4 viewPos;
+    float useNormalMap;
+    float useBaseColor;
+    float useSpecular;
+    float useAlphaMask;
 } scene;
 
 // Contract: same block in the fragment stage, field for field.

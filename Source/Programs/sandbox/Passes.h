@@ -79,6 +79,17 @@ struct SceneUniform {
     glm::vec4 lightDir;     // xyz = surface toward the light, w unused
     glm::vec4 lightColor;   // rgb = colour, a = ambient
     glm::vec4 viewPos;      // xyz = camera position, w = specular exponent
+
+    // What to leave out, so a feature can be compared against its own absence
+    // without rebuilding. Four floats rather than a bitfield: std140 packs them into
+    // one vec4 either way, and this way each has a name on both sides of the
+    // boundary instead of a bit position nobody can read.
+    //
+    // 0 or 1. The shader compares against 0.5 so a half value is not a third state.
+    float useNormalMap;
+    float useBaseColor;
+    float useSpecular;
+    float useAlphaMask;
 };
 
 // Rides inside the command buffer: no pool, no set, no lifetime. At least 128 bytes
