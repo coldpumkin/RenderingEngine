@@ -9,15 +9,27 @@
 옵션이 여럿이 되면서 키보드 토글로는 못 보게 됐다. 숫자 키 넷까지는 됐지만
 material·조명·pass를 각각 껐다 켜려면 화면에 목록이 있어야 한다.
 
-## 왜 이 조합이 맞았나 — 헤더가 둘 다 명시한다
+## Vulkan backend는 **안 가져온다**
 
-- **커스텀 로더**: `IMGUI_IMPL_VULKAN_NO_PROTOTYPES` + `ImGui_ImplVulkan_LoadFunctions`
-  (`imgui_impl_vulkan.h:40,116`). **`IMGUI_IMPL_VULKAN_USE_VOLK`는 쓰면 안 된다** -
-  그건 backend가 volk의 *전역* 함수 포인터를 부르게 하는데, 우리는
-  `volkLoadInstanceOnly`만 부르고 device 레벨 전역은 비워둔다. 붙여봤더니
-  `vkCreateDescriptorPool`이 null이라 앱이 로그 한 줄 없이 죽었다
-- **dynamic rendering**: `UseDynamicRendering` + `PipelineRenderingCreateInfo`
-  (`imgui_impl_vulkan.h:88,90`). 우리는 `VkRenderPass`를 안 만든다
+`imgui_impl_vulkan`을 한 번 썼다가 뺐다. 그게 들고 오는 것이 전부 이미 있는 것이었다:
+
+| backend가 만드는 것 | 우리 것 |
+|---|---|
+| 자기 `VkPipeline` | `Pipeline` + `gui.vert/frag` |
+| 자기 descriptor pool (`FREE_DESCRIPTOR_SET_BIT` 요구) | `Descriptors`의 pool |
+| 자기 함수 로더 | `VolkDeviceTable` |
+| 자기 정점 버퍼 | `Buffer` |
+
+그리고 요구하는 값 중에 **우리가 답할 수 없는 것**이 있었다 - `MinImageCount`와
+`ImageCount`다. swapchain은 첫 프레임에야 생기므로 초기화 시점에 줄 수 있는 건
+추측뿐이고, 실제로 주석에 *"not a promise about our swapchain"*이라고 적어야 했다.
+
+**함정도 하나 있었다**: `IMGUI_IMPL_VULKAN_USE_VOLK`를 붙이면 backend가 volk의 *전역*
+함수 포인터를 부른다. 우리는 `volkLoadInstanceOnly`만 부르고 device 레벨 전역은
+비워두므로 `vkCreateDescriptorPool`이 null이고, **앱이 로그 한 줄 없이 죽었다.**
+
+그래서 남은 것은 ImGui가 실제로 잘하는 것 하나다 — **위젯 호출을 삼각형 목록으로
+바꾸는 것**. 그리기는 `Gui.cpp`가 한다.
 
 ## 가져온 파일
 
@@ -29,11 +41,10 @@ imgui_widgets.cpp  imgui_internal.h
 imstb_rectpack.h  imstb_textedit.h  imstb_truetype.h
 LICENSE.txt
 backends/imgui_impl_glfw.{h,cpp}
-backends/imgui_impl_vulkan.{h,cpp}
 ```
 
-**뺀 것**: `imgui_demo.cpp`(1만 줄, 위젯 카탈로그) · `examples/` · `docs/` ·
-`misc/`. demo는 위젯을 구경하는 용도라 필요해지면 그때 한 파일만 더 가져온다.
+**뺀 것**: `backends/imgui_impl_vulkan.{h,cpp}`(위 참조) · `imgui_demo.cpp`(1만 줄,
+위젯 카탈로그) · `examples/` · `docs/` · `misc/`.
 
 ## CMake
 
@@ -54,8 +65,10 @@ backend 두 개는 상단 주석에 변경 이력이 있으니 갱신 시 읽는
 
 ## 우리 쪽 계약
 
-- **자기 descriptor pool을 만든다.** `VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT`를
-  요구하는데 우리 pool은 일부러 그 플래그가 없다(뽑아서 끝까지 쓰므로 반납할 일이
-  없다). 그래서 공유하지 않고 ImGui 것을 따로 둔다
 - **GUI는 pass 하나다.** post-process pass가 그린 뒤 같은 image에 loadOp=LOAD로
   덧그린다. 1 sample · swapchain format
+- **정점이 매 프레임 바뀐다.** 이 저장소에서 처음이다. mesh는 staging으로 한 번
+  올려 `DEVICE_LOCAL`에 두지만, 이건 `HOST_VISIBLE` + mapped에 frames-in-flight마다
+  한 쌍씩 두고 기록할 때 쓴다
+- **font atlas는 `Texture` 하나다.** `RGBA8_UNORM` - 색이 아니라 커버리지라
+  SRGB로 읽으면 글자가 얇아진다 (normal map과 같은 구분)

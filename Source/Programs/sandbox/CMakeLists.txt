@@ -78,7 +78,7 @@ find_program(GLSLC_EXE glslc HINTS "$ENV{VULKAN_SDK}/Bin" REQUIRED)
 set(SHADER_BUILD_DIR "${CMAKE_CURRENT_BINARY_DIR}/Shaders")
 set(SPV_FILES "")
 
-foreach(SHADER mesh.vert mesh.frag fullscreen.vert fullscreen.frag)
+foreach(SHADER mesh.vert mesh.frag fullscreen.vert fullscreen.frag gui.vert gui.frag)
     set(SRC "${CMAKE_CURRENT_SOURCE_DIR}/Shaders/${SHADER}")
     set(SPV "${SHADER_BUILD_DIR}/${SHADER}.spv")
     add_custom_command(
@@ -110,6 +110,8 @@ target_sources(sandbox PRIVATE
     Shaders/mesh.frag
     Shaders/fullscreen.vert
     Shaders/fullscreen.frag
+    Shaders/gui.vert
+    Shaders/gui.frag
 )
 set_source_files_properties(Shaders/mesh.vert Shaders/mesh.frag
                             PROPERTIES HEADER_FILE_ONLY TRUE)

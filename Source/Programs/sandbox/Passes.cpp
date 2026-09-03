@@ -364,7 +364,7 @@ static void RecordPostProcessPass(const FrameSlot& slot, const PostProcessPass& 
 }
 
 bool RecordFrame(const FrameSlot& slot, const ScenePass& scene,
-                 const PostProcessPass& post, const Texture& target,
+                 const PostProcessPass& post, Gui& gui, const Texture& target,
                  const DrawItem* items, uint32_t itemCount) noexcept {
     const VolkDeviceTable& vk = slot.dev->table;
 
@@ -391,7 +391,7 @@ bool RecordFrame(const FrameSlot& slot, const ScenePass& scene,
     // swapped.
     RecordScenePass(slot, scene, items, itemCount);
     RecordPostProcessPass(slot, post, target);
-    RecordGuiPass(slot, target);
+    RecordGuiPass(slot, gui, target);
 
     // The frame leaves for the presentation engine here, after everything that draws
     // into it. This used to sit at the end of the post-process pass, which made that

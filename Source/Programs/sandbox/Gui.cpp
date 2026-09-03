@@ -1,37 +1,25 @@
 ﻿#include "Gui.h"
 
-#include "Config.h"
 #include "Vulkan/Window.h"
 
 #include <imgui.h>
 #include <backends/imgui_impl_glfw.h>
-#include <backends/imgui_impl_vulkan.h>
 
 #include <GLFW/glfw3.h>
 
+#include <cstring>    // memcpy
+#include <iterator>   // std::size
+
 namespace {
 
-// Where ImGui's Vulkan calls come from.
+// Room for one frame of widgets. Fixed, because growing it would be a heap
+// allocation inside the frame loop.
 //
-// Not volk's globals. We fill the instance-level ones (volkLoadInstanceOnly) and
-// deliberately leave the device-level ones empty -- everything of ours goes through
-// VolkDeviceTable, so a second device cannot be overwritten by the last one loaded.
-// IMGUI_IMPL_VULKAN_USE_VOLK would have had the backend call those empty globals.
-//
-// vkGetInstanceProcAddr resolves device-level functions too. The loader puts a
-// trampoline in front of them, which costs a dispatch we are not in a position to
-// measure and keeps the rule intact.
-struct VulkanLoader {
-    VkInstance instance = VK_NULL_HANDLE;
-};
-
-PFN_vkVoidFunction LoadVulkanFunction(const char* name, void* userData) {
-    const VulkanLoader* loader = static_cast<const VulkanLoader*>(userData);
-    return vkGetInstanceProcAddr(loader->instance, name);
-}
-
-// Lives as long as ImGui does: the backend keeps the pointer it was handed.
-VulkanLoader g_loader;
+// The panel we have is a few hundred vertices with every section open. These are two
+// orders above that and still under a quarter megabyte for the pair -- the cost of
+// being wrong in the cheap direction.
+constexpr VkDeviceSize kMaxGuiVertexBytes = 192u * 1024u;
+constexpr VkDeviceSize kMaxGuiIndexBytes = 64u * 1024u;
 
 // What a descriptor type is, short enough to sit in a table.
 //
@@ -49,21 +37,21 @@ const char* TypeName(VkDescriptorType type) noexcept {
 // louder way of saying "we did not expect this" than a wrong name would be.
 const char* FormatName(VkFormat format) noexcept {
     switch (format) {
-    case VK_FORMAT_R8G8B8A8_SRGB:  return "RGBA8 srgb";
-    case VK_FORMAT_R8G8B8A8_UNORM: return "RGBA8 unorm";
-    case VK_FORMAT_B8G8R8A8_SRGB:  return "BGRA8 srgb";
-    case VK_FORMAT_B8G8R8A8_UNORM: return "BGRA8 unorm";
-    case VK_FORMAT_D32_SFLOAT:     return "D32 float";
+    case VK_FORMAT_R8G8B8A8_SRGB:     return "RGBA8 srgb";
+    case VK_FORMAT_R8G8B8A8_UNORM:    return "RGBA8 unorm";
+    case VK_FORMAT_B8G8R8A8_SRGB:     return "BGRA8 srgb";
+    case VK_FORMAT_B8G8R8A8_UNORM:    return "BGRA8 unorm";
+    case VK_FORMAT_D32_SFLOAT:        return "D32 float";
     case VK_FORMAT_D24_UNORM_S8_UINT: return "D24S8";
-    case VK_FORMAT_UNDEFINED:      return "-";
-    default:                       return "?";
+    case VK_FORMAT_UNDEFINED:         return "-";
+    default:                          return "?";
     }
 }
 
 // One line about an image: what it is, how big, how many samples.
 //
-// The sample count is the interesting column. Three of these are 4x and the two that
-// leave the frame are 1x, which is the whole shape of the resolve.
+// The sample count is the interesting column. The ones inside the scene pass are 4x
+// and the ones that leave it are 1x, which is the whole shape of the resolve.
 void ShowTexture(const char* name, const Texture* texture) noexcept {
     if (texture == nullptr) {
         ImGui::Text("%-9s -", name);
@@ -73,6 +61,26 @@ void ShowTexture(const char* name, const Texture* texture) noexcept {
     ImGui::Text("%-9s %-12s %4ux%-4u  %ux",
                 name, FormatName(d.format), d.extent.width, d.extent.height,
                 static_cast<uint32_t>(d.samples));
+}
+
+// One row per set a pipeline declares, and one line per binding in it.
+//
+// An empty set is printed too. Vulkan numbers sets by position, so set 1 cannot exist
+// without a set 0 in front of it, and a layout with no bindings is how that is said.
+void ShowSetLayouts(const char* name, const Pipeline* pipeline) noexcept {
+    if (pipeline == nullptr) { return; }
+    for (uint32_t set = 0; set < kMaxSets; ++set) {
+        const DescriptorLayout& layout = pipeline->setLayouts[set];
+        if (layout.bindingCount == 0) {
+            ImGui::Text("%-8s set %u   (empty)", set == 0 ? name : "", set);
+            continue;
+        }
+        ImGui::Text("%-8s set %u", set == 0 ? name : "", set);
+        for (uint32_t b = 0; b < layout.bindingCount; ++b) {
+            if (layout.types[b] == 0) { continue; }   // a hole in the numbering
+            ImGui::Text("             [%u] %s", b, TypeName(layout.types[b]));
+        }
+    }
 }
 
 // The values a pipeline was built from. Everything here is baked in at creation --
@@ -89,138 +97,123 @@ void ShowPipeline(const char* name, const Pipeline* pipeline) noexcept {
     ImGui::Text("         %s", d.fragPath != nullptr ? d.fragPath : "-");
 }
 
-// One row per set a pipeline declares, and one line per binding in it.
-//
-// An empty set is printed too. Vulkan numbers sets by position, so set 1 cannot exist
-// without a set 0 in front of it, and a layout with no bindings is how that is said.
-void ShowSetLayouts(const char* name, const Pipeline& pipeline) noexcept {
-    for (uint32_t set = 0; set < kMaxSets; ++set) {
-        const DescriptorLayout& layout = pipeline.setLayouts[set];
-        if (layout.bindingCount == 0) {
-            ImGui::Text("%-8s set %u   (empty)", set == 0 ? name : "", set);
-            continue;
-        }
-        ImGui::Text("%-8s set %u", set == 0 ? name : "", set);
-        for (uint32_t b = 0; b < layout.bindingCount; ++b) {
-            if (layout.types[b] == 0) { continue; }   // a hole in the numbering
-            ImGui::Text("             [%u] %s", b, TypeName(layout.types[b]));
-        }
-    }
-}
-
-// ImGui reports failures through a callback rather than a return value, because most
-// of its calls are inside its own recording. Ours only says so -- there is nothing to
-// unwind from a panel.
-void OnVulkanResult(VkResult result) noexcept {
-    if (result != VK_SUCCESS) { LOG("[gui] vulkan call failed (%d)\n", result); }
-}
-
-// One texture at a time is all the panel ever binds: its font atlas. The pool is sized
-// for a handful anyway, because ImGui_ImplVulkan_AddTexture exists and someone will
-// want to look at a render target through it.
-constexpr uint32_t kPoolSets = 8;
-
 }   // namespace
 
-bool CreateGui(const VulkanInstance& inst, const VulkanDevice& dev,
-               Window& window, VkFormat targetFormat, Gui* out) noexcept {
+const VkPipelineVertexInputStateCreateInfo& GuiVertexInput() noexcept {
+    // ImDrawVert is {ImVec2 pos, ImVec2 uv, ImU32 col} -- 20 bytes. Its offsets come
+    // from offsetof for the same reason the scene's do: a field moving must not need
+    // a second edit here.
+    static constexpr VkVertexInputBindingDescription binding{
+        0, sizeof(ImDrawVert), VK_VERTEX_INPUT_RATE_VERTEX};
+
+    static constexpr VkVertexInputAttributeDescription attributes[]{
+        {0, 0, VK_FORMAT_R32G32_SFLOAT,  offsetof(ImDrawVert, pos)},
+        {1, 0, VK_FORMAT_R32G32_SFLOAT,  offsetof(ImDrawVert, uv)},
+        // Four bytes, not four floats. UNORM is what turns 0..255 into the 0..1 the
+        // shader reads -- the conversion belongs to the format, not the shader.
+        {2, 0, VK_FORMAT_R8G8B8A8_UNORM, offsetof(ImDrawVert, col)},
+    };
+
+    static const VkPipelineVertexInputStateCreateInfo info{
+        VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO, nullptr, 0,
+        1, &binding,
+        static_cast<uint32_t>(std::size(attributes)), attributes};
+    return info;
+}
+
+bool CreateGui(const VulkanDevice& dev, const Commands& commands,
+               Window& window, Gui* out) noexcept {
     out->dev = &dev;
-
-    VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kPoolSets};
-    VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    // The one flag our own pool refuses. ImGui frees sets when a texture goes away.
-    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-    poolInfo.maxSets = kPoolSets;
-    poolInfo.poolSizeCount = 1;
-    poolInfo.pPoolSizes = &poolSize;
-    if (dev.table.vkCreateDescriptorPool(dev.handle, &poolInfo, nullptr, &out->pool)
-            != VK_SUCCESS) {
-        LOG("[gui] vkCreateDescriptorPool failed\n");
-        return false;
-    }
-
-    // Before Init, and before anything else the backend does: it has no prototypes
-    // to fall back on.
-    g_loader.instance = inst.handle;
-    if (!ImGui_ImplVulkan_LoadFunctions(LoadVulkanFunction, &g_loader)) {
-        LOG("[gui] ImGui_ImplVulkan_LoadFunctions failed" "\n");
-        return false;
-    }
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
+    out->started = true;
     ImGui::StyleColorsDark();
-
-    // The default font is 13px, which is a third of the height of the text in the
-    // console beside it. Scaling the built-in atlas is blurry at large factors but
-    // costs no font file; a real one goes in when the panel needs to be read rather
-    // than glanced at.
-    //
-    // ScaleAllSizes too, or the boxes and padding stay 13px-sized around 20px text.
-    constexpr float kUiScale = 1.6f;
-    ImGui::GetIO().FontGlobalScale = kUiScale;
-    ImGui::GetStyle().ScaleAllSizes(kUiScale);
 
     // No .ini file. It would remember window positions across runs, which makes two
     // runs of the same build differ -- the opposite of what the capture tool needs.
     ImGui::GetIO().IniFilename = nullptr;
 
+    // The default font is 13px, a third of the height of the text in the console
+    // beside it. Scaling the built-in atlas is blurry at large factors but costs no
+    // font file; a real one goes in when the panel has to be read rather than glanced
+    // at. ScaleAllSizes too, or the boxes stay 13px-sized around 20px text.
+    constexpr float kUiScale = 1.6f;
+    ImGui::GetIO().FontGlobalScale = kUiScale;
+    ImGui::GetStyle().ScaleAllSizes(kUiScale);
+
+    // Input only. The Vulkan half of ImGui's backends is what this file replaces.
     if (!ImGui_ImplGlfw_InitForVulkan(window.handle, true)) {
         LOG("[gui] ImGui_ImplGlfw_InitForVulkan failed\n");
         return false;
     }
-    out->started = true;
 
-    // Dynamic rendering, so no VkRenderPass: the format is handed over directly and
-    // has to be the one the pass below actually begins with.
-    VkPipelineRenderingCreateInfo rendering{
-        VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-    rendering.colorAttachmentCount = 1;
-    rendering.pColorAttachmentFormats = &targetFormat;
-
-    ImGui_ImplVulkan_InitInfo info{};
-    info.Instance = inst.handle;
-    info.PhysicalDevice = dev.gpu;
-    info.Device = dev.handle;
-    info.QueueFamily = dev.families.graphics;
-    info.Queue = dev.queues.graphics;
-    info.DescriptorPool = out->pool;
-    // Buffering counts, not a promise about our swapchain: the backend uses them to
-    // size its own vertex buffers. The real image count is not known here -- the
-    // swapchain is not built until the first frame.
-    info.MinImageCount = 2;
-    info.ImageCount = kDesiredSwapchainImages;
-    // 1, not the scene's 4x. The panel is drawn after the resolve, onto the swapchain.
-    info.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
-    info.UseDynamicRendering = true;
-    info.PipelineRenderingCreateInfo = rendering;
-    info.CheckVkResultFn = OnVulkanResult;
-
-    if (!ImGui_ImplVulkan_Init(&info)) {
-        LOG("[gui] ImGui_ImplVulkan_Init failed\n");
+    // The atlas, as one of our textures. RGBA8 rather than the single channel ImGui
+    // can also give, because one shared sampler reads every image the same way and a
+    // megabyte at init is cheaper than a second sampler.
+    //
+    // UNORM, not SRGB: these bytes are coverage, and encoding them would thin the
+    // text. The same distinction the normal maps needed.
+    unsigned char* pixels = nullptr;
+    int width = 0;
+    int height = 0;
+    ImGui::GetIO().Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
+    const TextureDesc fontDesc{{static_cast<uint32_t>(width), static_cast<uint32_t>(height)},
+                               VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT,
+                               VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT};
+    const size_t fontBytes = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
+    if (!CreateTextureFromPixels(dev, commands, fontDesc, pixels, fontBytes, &out->font)) {
         return false;
+    }
+    LOG("[gui] font atlas %dx%d\n", width, height);
+
+    // HOST_VISIBLE and mapped, unlike a mesh: the CPU rewrites these every frame, so
+    // a staging copy would be a round trip per frame for data that is already small.
+    for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+        if (!CreateBuffer(dev, kMaxGuiVertexBytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                          VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+                          VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+                              | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                          &out->frames[i].vertices)) {
+            return false;
+        }
+        if (!CreateBuffer(dev, kMaxGuiIndexBytes, VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                          VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+                          VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+                              | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                          &out->frames[i].indices)) {
+            return false;
+        }
+        if (out->frames[i].vertices.mapped == nullptr
+                || out->frames[i].indices.mapped == nullptr) {
+            LOG("[gui] gui buffers are not mapped\n");
+            return false;
+        }
     }
     return true;
 }
 
+bool CreateGuiSet(const Descriptors& descriptors, const Pipeline& pipeline,
+                  Gui* out) noexcept {
+    out->pipeline = &pipeline;
+    if (!AllocateSets(descriptors, pipeline.setLayouts[0], 1, &out->set)) {
+        return false;
+    }
+    const BindingValue values[] = {{out->font.image.view}};
+    UpdateSet(descriptors, pipeline.setLayouts[0], out->set, values, 1);
+    return true;
+}
+
 Gui::~Gui() {
-    if (dev == nullptr) { return; }
-    // Backends first, then the context, then what we made. ImGui destroys its own
-    // pipeline and font image in the Vulkan shutdown, and both read the device -- so
-    // main's vkDeviceWaitIdle has to have run, and it has (it is above every
-    // destructor).
     if (started) {
-        ImGui_ImplVulkan_Shutdown();
         ImGui_ImplGlfw_Shutdown();
         ImGui::DestroyContext();
     }
-    if (pool != VK_NULL_HANDLE) {
-        dev->table.vkDestroyDescriptorPool(dev->handle, pool, nullptr);
-    }
+    // The texture and the buffers are members and free themselves. The set goes with
+    // the pool, which outlives this because it is declared before it.
 }
 
 void BuildGui(ViewOptions* options, const GuiFrameInfo& info) noexcept {
-    ImGui_ImplVulkan_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
 
@@ -244,11 +237,6 @@ void BuildGui(ViewOptions* options, const GuiFrameInfo& info) noexcept {
     }
     ImGui::End();
 
-    // What the shader interface actually is
-    //
-    // Every number here was decided somewhere else and then became unreadable: a set
-    // layout is opaque once created, a pool forgets its sizes, and a push range lives
-    // in the .spv. This is the only place they are all visible at once.
     // Four sections, one window, collapsed by default. Five windows did not fit at
     // 1280x720 and the one you wanted was always the one off screen.
     ImGui::SetNextWindowPos(ImVec2(12.0f, 300.0f), ImGuiCond_FirstUseEver);
@@ -269,8 +257,9 @@ void BuildGui(ViewOptions* options, const GuiFrameInfo& info) noexcept {
                     d.imageDescriptors, d.bufferDescriptors);
         ImGui::Separator();
 
-        if (info.scenePipeline != nullptr) { ShowSetLayouts("scene", *info.scenePipeline); }
-        if (info.presentPipeline != nullptr) { ShowSetLayouts("present", *info.presentPipeline); }
+        ShowSetLayouts("scene", info.scenePipeline);
+        ShowSetLayouts("present", info.presentPipeline);
+        ShowSetLayouts("gui", info.guiPipeline);
     }
 
     if (ImGui::CollapsingHeader("shader data")) {
@@ -295,6 +284,11 @@ void BuildGui(ViewOptions* options, const GuiFrameInfo& info) noexcept {
                         (m.vertexCount * m.vertexStride) / 1024,
                         (m.indexCount * (m.indexType == VK_INDEX_TYPE_UINT16 ? 2u : 4u)) / 1024);
         }
+
+        // The panel's own, and the only vertices here that are rewritten per frame.
+        ImGui::Separator();
+        ImGui::Text("gui vtx  %3u B   x3 attrs   rewritten every frame",
+                    static_cast<uint32_t>(sizeof(ImDrawVert)));
     }
 
     // What this frame draws through, in the order it happens. The sample counts say
@@ -318,6 +312,7 @@ void BuildGui(ViewOptions* options, const GuiFrameInfo& info) noexcept {
     if (ImGui::CollapsingHeader("pipelines")) {
         ShowPipeline("scene", info.scenePipeline);
         ShowPipeline("present", info.presentPipeline);
+        ShowPipeline("gui", info.guiPipeline);
         ImGui::Separator();
         // The three the pipelines do not bake. Named here because the panel lists
         // what was baked, and the absence is the interesting half.
@@ -331,9 +326,47 @@ void BuildGui(ViewOptions* options, const GuiFrameInfo& info) noexcept {
     ImGui::Render();
 }
 
-void RecordGuiPass(const FrameSlot& slot, const Texture& target) noexcept {
-    ImDrawData* draws = ImGui::GetDrawData();
-    if (draws == nullptr) { return; }
+void RecordGuiPass(const FrameSlot& slot, Gui& gui, const Texture& target) noexcept {
+    const ImDrawData* draws = ImGui::GetDrawData();
+    if (draws == nullptr || draws->TotalVtxCount == 0 || gui.pipeline == nullptr) {
+        return;
+    }
+    const Pipeline& pipeline = *gui.pipeline;
+
+    const VkDeviceSize vertexBytes =
+        static_cast<VkDeviceSize>(draws->TotalVtxCount) * sizeof(ImDrawVert);
+    const VkDeviceSize indexBytes =
+        static_cast<VkDeviceSize>(draws->TotalIdxCount) * sizeof(ImDrawIdx);
+
+    Gui::PerFrame& buffers = gui.frames[slot.index];
+    if (vertexBytes > buffers.vertices.size || indexBytes > buffers.indices.size) {
+        // Skipping the panel is the right failure: the picture underneath is still
+        // correct, and half a panel would be worse than none.
+        if (!gui.warnedTooBig) {
+            gui.warnedTooBig = true;
+            LOG("[gui] a frame wanted %llu vertex bytes, the buffer holds %llu\n",
+                static_cast<unsigned long long>(vertexBytes),
+                static_cast<unsigned long long>(buffers.vertices.size));
+        }
+        return;
+    }
+
+    // ImGui keeps one list per window; the buffers here are one each, so the lists go
+    // in end to end and every draw below carries an offset into them.
+    //
+    // Safe to write now because BeginFrame waited on this slot's fence, so the GPU has
+    // finished with what this slot wrote last time round.
+    auto* vertexOut = static_cast<ImDrawVert*>(buffers.vertices.mapped);
+    auto* indexOut = static_cast<ImDrawIdx*>(buffers.indices.mapped);
+    for (int i = 0; i < draws->CmdListsCount; ++i) {
+        const ImDrawList* list = draws->CmdLists[i];
+        std::memcpy(vertexOut, list->VtxBuffer.Data,
+                    static_cast<size_t>(list->VtxBuffer.Size) * sizeof(ImDrawVert));
+        std::memcpy(indexOut, list->IdxBuffer.Data,
+                    static_cast<size_t>(list->IdxBuffer.Size) * sizeof(ImDrawIdx));
+        vertexOut += list->VtxBuffer.Size;
+        indexOut += list->IdxBuffer.Size;
+    }
 
     const VolkDeviceTable& vk = slot.dev->table;
     VkCommandBuffer cmd = slot.cmd;
@@ -354,8 +387,73 @@ void RecordGuiPass(const FrameSlot& slot, const Texture& target) noexcept {
     rendering.pColorAttachments = &color;
 
     vk.vkCmdBeginRendering(cmd, &rendering);
-    // No viewport or scissor set here: the backend sets its own from the draw data,
-    // which is in the window's pixels and would not survive our sign convention.
-    ImGui_ImplVulkan_RenderDrawData(draws, cmd);
+
+    const VkViewport viewport = MakeViewport(target.desc.extent, pipeline.desc.viewportY);
+    vk.vkCmdSetViewport(cmd, 0, 1, &viewport);
+    // Nothing is culled: the panel's triangles have no consistent winding, and a
+    // rectangle has no back to hide.
+    vk.vkCmdSetCullMode(cmd, VK_CULL_MODE_NONE);
+
+    vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.handle);
+    vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.layout,
+                               0, 1, &gui.set, 0, nullptr);
+
+    const VkDeviceSize offset = 0;
+    vk.vkCmdBindVertexBuffers(cmd, 0, 1, &buffers.vertices.handle, &offset);
+    // Contract: this type must match ImDrawIdx, which is 16 bits unless imconfig.h
+    //           says otherwise.
+    vk.vkCmdBindIndexBuffer(cmd, buffers.indices.handle, 0, VK_INDEX_TYPE_UINT16);
+
+    // Pixels to clip space. DisplayPos is not always zero -- it is the top-left of
+    // the area ImGui was told to draw into.
+    GuiPushConstants push{};
+    push.scale[0] = 2.0f / draws->DisplaySize.x;
+    push.scale[1] = 2.0f / draws->DisplaySize.y;
+    push.translate[0] = -1.0f - draws->DisplayPos.x * push.scale[0];
+    push.translate[1] = -1.0f - draws->DisplayPos.y * push.scale[1];
+    vk.vkCmdPushConstants(cmd, pipeline.layout, VK_SHADER_STAGE_VERTEX_BIT,
+                          0, sizeof(push), &push);
+
+    // One draw per command, and a scissor with it: clipping is how ImGui keeps a
+    // widget inside its window, and it changes far more often than anything in the
+    // scene pass does.
+    int vertexOffset = 0;
+    uint32_t indexOffset = 0;
+    for (int i = 0; i < draws->CmdListsCount; ++i) {
+        const ImDrawList* list = draws->CmdLists[i];
+        for (int c = 0; c < list->CmdBuffer.Size; ++c) {
+            const ImDrawCmd& command = list->CmdBuffer[c];
+
+            // A command can carry a callback instead of geometry. We register none,
+            // so one here would mean something else wrote into our draw list.
+            if (command.UserCallback != nullptr) { continue; }
+
+            // ClipRect is in ImGui's coordinates; subtracting DisplayPos makes it the
+            // framebuffer's. The clamp keeps a negative left edge -- a window dragged
+            // off screen -- from becoming a huge unsigned number.
+            const float left = command.ClipRect.x - draws->DisplayPos.x;
+            const float top = command.ClipRect.y - draws->DisplayPos.y;
+            const float right = command.ClipRect.z - draws->DisplayPos.x;
+            const float bottom = command.ClipRect.w - draws->DisplayPos.y;
+            if (right <= left || bottom <= top) { continue; }
+
+            VkRect2D scissor{};
+            scissor.offset.x = left > 0.0f ? static_cast<int32_t>(left) : 0;
+            scissor.offset.y = top > 0.0f ? static_cast<int32_t>(top) : 0;
+            scissor.extent.width =
+                static_cast<uint32_t>(right) - static_cast<uint32_t>(scissor.offset.x);
+            scissor.extent.height =
+                static_cast<uint32_t>(bottom) - static_cast<uint32_t>(scissor.offset.y);
+            vk.vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+            vk.vkCmdDrawIndexed(cmd, command.ElemCount, 1,
+                                command.IdxOffset + indexOffset,
+                                static_cast<int32_t>(command.VtxOffset) + vertexOffset,
+                                0);
+        }
+        indexOffset += static_cast<uint32_t>(list->IdxBuffer.Size);
+        vertexOffset += list->VtxBuffer.Size;
+    }
+
     vk.vkCmdEndRendering(cmd);
 }

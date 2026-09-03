@@ -53,6 +53,11 @@
 
 struct Mesh;
 
+// The panel is a pass too, and RecordFrame orders the three. Forward declared rather
+// than included: this file names it, Gui.h does not name a pass, and the arrow stays
+// pointing one way.
+struct Gui;
+
 
 // Which set is which
 // ============================================================================
@@ -285,5 +290,5 @@ bool CreatePostProcessPass(const Descriptors& descriptors, const ScenePass& sour
 // A Texture, not the whole FrameTarget: nothing here reads the index or the semaphore,
 // and those belong to getting the frame out, not to drawing it.
 bool RecordFrame(const FrameSlot& slot, const ScenePass& scene,
-                 const PostProcessPass& post, const Texture& target,
+                 const PostProcessPass& post, Gui& gui, const Texture& target,
                  const DrawItem* items, uint32_t itemCount) noexcept;

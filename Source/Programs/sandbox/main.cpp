@@ -351,6 +351,7 @@ int main() {
     Commands       commands;
     Pipeline       opaque;        // each owns the set layouts its shaders declare
     Pipeline       present;
+    Pipeline       guiPipeline;   // the panel's own. Its vertices are not our Vertex
     Descriptors    descriptors;   // the pool, so it outlives the sets drawn from it
     std::vector<Texture>  textures;    // one per material the scene names, checker last
     std::vector<Material> materials;   // their sets. Freed with the pool, not by these
@@ -391,6 +392,10 @@ int main() {
     if (!CreateDevice(inst, selection, &dev)) { return 1; }
     if (!CreateCommands(dev, &commands)) { return 1; }
 
+    // Here, not with the passes below: the descriptor pool has to be told about this
+    // one's set before it is created, and the font it points at is uploaded in here.
+    if (!CreateGui(dev, commands, window, &gui)) { return 1; }
+
     // Passes
     // ------------------------------------------------------------------------
     //
@@ -420,6 +425,20 @@ int main() {
     presentDesc.formats = AttachmentFormats{window.surfaceFormat.format};
     presentDesc.viewportY = ViewportY::Down;   // the shader makes its own uv
     if (!CreateGraphicsPipeline(dev, presentDesc, &present)) { return 1; }
+
+    // The panel. A different vertex type, a different set layout, and the only one
+    // of the three that blends -- a window has to be see-through to be over anything.
+    //
+    // Same target as present, so the same format and 1 sample. y-down because ImGui
+    // works in window pixels with the origin at the top left.
+    GraphicsPipelineDesc guiDesc;
+    guiDesc.vertPath = "Shaders/gui.vert.spv";
+    guiDesc.fragPath = "Shaders/gui.frag.spv";
+    guiDesc.vertexInput = &GuiVertexInput();
+    guiDesc.formats = AttachmentFormats{window.surfaceFormat.format};
+    guiDesc.viewportY = ViewportY::Down;
+    guiDesc.blending = Blending::Translucent;
+    if (!CreateGraphicsPipeline(dev, guiDesc, &guiPipeline)) { return 1; }
 
     // Render resolution
     // ------------------------------------------------------------------------
@@ -601,6 +620,8 @@ int main() {
         {&opaque.setLayouts[kFrameSet], kFramesInFlight},
         {&opaque.setLayouts[kMaterialSet], materialCount},
         {&present.setLayouts[kFrameSet], kFramesInFlight},
+        // One, and counted by neither of the other two reasons: there is one font.
+        {&guiPipeline.setLayouts[0], 1},
     };
     if (!CreateDescriptors(dev, setRequests,
                            static_cast<uint32_t>(std::size(setRequests)),
@@ -613,6 +634,8 @@ int main() {
         sources[i] = {&textures[static_cast<size_t>(i) * 2],
                       &textures[static_cast<size_t>(i) * 2 + 1]};
     }
+
+    if (!CreateGuiSet(descriptors, guiPipeline, &gui)) { return 1; }
 
     materials.resize(materialCount);
     if (!CreateMaterials(descriptors, opaque, sources.data(), materialCount,
@@ -641,9 +664,6 @@ int main() {
         if (!CreateFrameSlot(dev, commands, i, &slots[i])) { return 1; }
     }
 
-    // The swapchain's format, not the render target's: the panel goes on top of the
-    // finished picture, in the pass after the post-process one.
-    if (!CreateGui(inst, dev, window, window.surfaceFormat.format, &gui)) { return 1; }
 
     LOG("close the window to exit. The panel switches features off.\n");
 
@@ -811,6 +831,7 @@ int main() {
         guiInfo.vertexAttributes = VertexInput().vertexAttributeDescriptionCount;
         guiInfo.framesInFlight = kFramesInFlight;
         guiInfo.mesh = &mesh;
+        guiInfo.guiPipeline = &guiPipeline;
         guiInfo.slotIndex = slot.index;
         guiInfo.sceneColor = &scene.frames[slot.index].color;
         guiInfo.sceneResolve = &scene.frames[slot.index].colorResolve;
@@ -820,7 +841,7 @@ int main() {
 
 
         // Only the texture: recording has no use for the rest of the target.
-        if (!RecordFrame(slot, scene, post, *target.texture,
+        if (!RecordFrame(slot, scene, post, gui, *target.texture,
                          items.data(), static_cast<uint32_t>(items.size()))) {
             break;
         }
