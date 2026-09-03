@@ -97,11 +97,12 @@ void ShowSetLayouts(const char* name, const ShaderProgram* program) noexcept {
 void ShowPipeline(const char* name, const Pipeline* pipeline) noexcept {
     if (pipeline == nullptr) { return; }
     const GraphicsPipelineDesc& d = pipeline->desc;
-    ImGui::Text("%-8s %-11s  %ux  %s",
+    // No viewport orientation here any more: it is not baked, it is set once per
+    // pass at record time. What a pipeline holds is what a pipeline decides.
+    ImGui::Text("%-8s %-11s  %ux",
                 name,
                 d.blending == Blending::Opaque ? "opaque" : "translucent",
-                static_cast<uint32_t>(d.formats.samples),
-                d.viewportY == ViewportY::Up ? "y-up" : "y-down");
+                static_cast<uint32_t>(d.formats.samples));
     const char* frag = pipeline->program != nullptr ? pipeline->program->fragPath : nullptr;
     ImGui::Text("         %s", frag != nullptr ? frag : "-");
 }
@@ -334,7 +335,7 @@ void BuildGui(ViewOptions* options, const GuiFrameInfo& info) noexcept {
         ImGui::Separator();
         // The three the pipelines do not bake. Named here because the panel lists
         // what was baked, and the absence is the interesting half.
-        ImGui::TextUnformatted("dynamic  viewport  scissor  cullMode");
+        ImGui::TextUnformatted("dynamic  viewport  scissor  cullMode  frontFace");
     }
 
     ImGui::End();
@@ -408,8 +409,8 @@ void RecordGuiPass(const FrameSlot& slot, Gui& gui, const Texture& target) noexc
 
     vk.vkCmdBeginRendering(cmd, &rendering);
 
-    const VkViewport viewport = MakeViewport(target.desc.extent, pipeline.desc.viewportY);
-    vk.vkCmdSetViewport(cmd, 0, 1, &viewport);
+    // Down: ImGui works in window pixels with the origin at the top left.
+    SetViewportAndWinding(vk, cmd, target.desc.extent, ViewportY::Down);
     // Nothing is culled: the panel's triangles have no consistent winding, and a
     // rectangle has no back to hide.
     vk.vkCmdSetCullMode(cmd, VK_CULL_MODE_NONE);

@@ -20,6 +20,15 @@ VkViewport MakeViewport(VkExtent2D extent, ViewportY y) noexcept {
     return viewport;
 }
 
+// Both halves, from one value. The caller never writes the sign twice, which is what
+// keeps the winding from drifting away from the viewport it belongs to.
+void SetViewportAndWinding(const VolkDeviceTable& vk, VkCommandBuffer cmd,
+                           VkExtent2D extent, ViewportY y) noexcept {
+    const VkViewport viewport = MakeViewport(extent, y);
+    vk.vkCmdSetViewport(cmd, 0, 1, &viewport);
+    vk.vkCmdSetFrontFace(cmd, FrontFaceFor(y));
+}
+
 static const char* KindName(NumericKind kind) noexcept {
     switch (kind) {
         case NumericKind::Float: return "float";
@@ -292,7 +301,8 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     constexpr VkDynamicState kDynamicStates[] = {
         VK_DYNAMIC_STATE_VIEWPORT,
         VK_DYNAMIC_STATE_SCISSOR,
-        VK_DYNAMIC_STATE_CULL_MODE,   // core in Vulkan 1.3, which we require
+        VK_DYNAMIC_STATE_CULL_MODE,    // core in Vulkan 1.3, which we require
+        VK_DYNAMIC_STATE_FRONT_FACE,   // same, and the other half of the viewport sign
     };
     VkPipelineDynamicStateCreateInfo dynamicState{
         VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
@@ -302,9 +312,8 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     VkPipelineRasterizationStateCreateInfo rasterization{
         VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
     rasterization.polygonMode = desc.polygonMode;
-    // Ignored: VK_DYNAMIC_STATE_CULL_MODE is in the list above.
-    // Derived, so it cannot disagree with the viewport sign (Pipeline.h).
-    rasterization.frontFace = FrontFaceFor(desc.viewportY);
+    // cullMode and frontFace are both dynamic, so neither is read from here. They are
+    // the pass's: one viewport for every draw in it, and the winding that goes with it.
     rasterization.lineWidth = 1.0f;   // used by LINE only. Above 1.0 needs wideLines
 
     // --- Fragment output: samples, blending, depth --------------------------

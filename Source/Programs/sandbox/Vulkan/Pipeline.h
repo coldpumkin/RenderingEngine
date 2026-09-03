@@ -5,15 +5,21 @@
 #include "Vulkan/Shader.h"
 #include "Vulkan/VertexLayout.h"
 
-// ViewportY - one sign that decides two things
+// ViewportY - one sign that decides two things, both of them at record time
 // ============================================================================
 //
-// A negative viewport height makes the shader side y-up, and the same negation
-// flips the winding test. So the sign also chooses frontFace; written by hand in
-// two places they disagree silently until culling is turned on.
+// A negative viewport height makes the shader side y-up, and the same negation flips
+// the winding test. So the sign chooses frontFace as well, and written by hand in two
+// places the two disagree silently until culling is turned on.
+//
+// Neither half is baked. The viewport never was -- it is dynamic state so a resize
+// rebuilds nothing -- and frontFace joined it: VK_DYNAMIC_STATE_FRONT_FACE is core in
+// Vulkan 1.3, which we require, and the winding test is a register the same way cull
+// mode is. That leaves the sign where it belongs, which is the pass: every draw in one
+// shares a viewport, and nothing about it has to be known when a pipeline is compiled.
 //
 // Contract: both shaders emit triangles with positive shoelace area in clip space.
-//           Measured, not derived - both pipelines run CULL_MODE_BACK.
+//           Measured, not derived - the scene pass runs CULL_MODE_BACK.
 enum class ViewportY {
     Down,   // Vulkan default, positive height
     Up,     // negative height - our world is y-up
@@ -25,9 +31,16 @@ constexpr VkFrontFace FrontFaceFor(ViewportY y) noexcept {
                               : VK_FRONT_FACE_CLOCKWISE;
 }
 
-// Output: a viewport with the sign applied. The caller never writes the sign, so it
-//         cannot disagree with the frontFace baked into the pipeline.
+// Output: a viewport with the sign applied
 VkViewport MakeViewport(VkExtent2D extent, ViewportY y) noexcept;
+
+// Effect: sets both halves of the sign on the command buffer
+//
+// One call because they are one decision. Apart, a pass could set a viewport and leave
+// the winding from whatever ran before it -- and that is invisible until something is
+// culled, which is why the two were derived from one value while both were baked.
+void SetViewportAndWinding(const VolkDeviceTable& vk, VkCommandBuffer cmd,
+                           VkExtent2D extent, ViewportY y) noexcept;
 
 // Blending - one value, because blend and depth write cannot disagree
 // ============================================================================
@@ -45,7 +58,7 @@ enum class Blending {
 // from, which is the whole reason this is a struct and not five arguments:
 //
 //   the mesh supplies     vertexLayout
-//   the pass decides      formats . viewportY
+//   the pass decides      formats
 //   the variant chooses   polygonMode . blending
 //
 // The shaders are not here: what they require is ShaderProgram, and several pipelines
@@ -67,7 +80,6 @@ struct GraphicsPipelineDesc {
     // in, so a mismatch is caught at vkCmdBeginRendering. depth UNDEFINED = no depth.
     AttachmentFormats formats;
 
-    ViewportY viewportY = ViewportY::Down;
 
     // FILL is the only value anything passes right now. LINE needs the device's
     // fillModeNonSolid, which we stopped requesting -- switching to it means adding
@@ -89,8 +101,8 @@ struct Pipeline {
 
     VkPipeline handle = VK_NULL_HANDLE;
 
-    // What it was built from, and the only copy of it. Recording reads viewportY,
-    // a pass makes its attachments from formats, and a rebuild needs the rest.
+    // What it was built from, and the only copy of it. A pass makes its attachments
+    // from formats, and a rebuild needs the rest.
     //
     // Keeping it here is what lets those callers stop carrying their own: an
     // AttachmentFormats beside a pipeline is a second value that can disagree with

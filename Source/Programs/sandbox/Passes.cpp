@@ -296,8 +296,11 @@ static void RecordShadowPass(const FrameSlot& slot, const ShadowPass& shadow,
 
     vk.vkCmdBeginRendering(cmd, &rendering);
 
-    const VkViewport viewport = MakeViewport(extent, shadow.pipeline->desc.viewportY);
-    vk.vkCmdSetViewport(cmd, 0, 1, &viewport);
+    // Down, and here it settles one thing only: which way the map's v axis runs.
+    // mesh.frag reads it back as ndc * 0.5 + 0.5, which is this sign. The winding goes
+    // out with it and has no effect, because the pass culls nothing.
+    SetViewportAndWinding(vk, cmd, extent, ViewportY::Down);
+
     VkRect2D scissor{};
     scissor.extent = extent;
     vk.vkCmdSetScissor(cmd, 0, 1, &scissor);
@@ -423,10 +426,13 @@ static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
 
     vk.vkCmdBeginRendering(cmd, &rendering);
 
-    // Dynamic state, so a resize does not rebuild the pipeline. The sign comes from the
-    // pipeline itself, so it cannot disagree with the frontFace baked into it.
-    const VkViewport viewport = MakeViewport(extent, pipeline.desc.viewportY);
-    vk.vkCmdSetViewport(cmd, 0, 1, &viewport);
+    // Up, because our world is y-up, and the pass is where that belongs: every draw in
+    // here shares one viewport, and no pipeline had to be compiled knowing it.
+    //
+    // Both halves in one call. The winding test follows the sign, and this is the pass
+    // that actually culls -- set them apart and a wrong frontFace turns the scene
+    // inside out with nothing reporting it.
+    SetViewportAndWinding(vk, cmd, extent, ViewportY::Up);
 
     // Pixels outside this rect are discarded. Whole screen for now.
     VkRect2D scissor{};
@@ -569,9 +575,9 @@ static void RecordPostProcessPass(const FrameSlot& slot, const PostProcessPass& 
 
     vk.vkCmdBeginRendering(cmd, &rendering);
 
-    // Opposite sign from the scene pass: this pipeline is built ViewportY::Down.
-    const VkViewport viewport = MakeViewport(destExtent, pipeline.desc.viewportY);
-    vk.vkCmdSetViewport(cmd, 0, 1, &viewport);
+    // Down, the opposite of the scene pass: fullscreen.vert builds its own uv from
+    // gl_VertexIndex and expects the default orientation.
+    SetViewportAndWinding(vk, cmd, destExtent, ViewportY::Down);
 
     VkRect2D scissor{};
     scissor.extent = destExtent;
