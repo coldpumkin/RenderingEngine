@@ -63,8 +63,10 @@
 
 // What the loader found for one material, and the key two of them are compared on.
 //
-// An empty path means the material named no image there, and the caller substitutes:
-// a checker for the base colour, a flat normal for the other.
+// An empty path means the material named no image there, and the caller substitutes a
+// neutral one -- white for the base colour, flat for the normal. Neutral, not
+// distinctive: glTF says a material without a baseColorTexture is its factor alone,
+// and white is the texture that multiplies to exactly that.
 //
 // Every field that makes two materials different has to be in here. Cull is in it for
 // that reason and not because a name is an image: two glTF materials naming the same
@@ -237,10 +239,9 @@ static void GenerateTangents(Vertex* vertices, size_t vertexCount,
 //
 // Input:  path to a .gltf. Its .bin is opened from beside it
 // Output: vertices and indices appended end to end, one DrawItem per primitive,
-//         one entry per distinct (base colour, normal) pair the materials name,
-//         which of those each item wants (UINT32_MAX means the primitive named
-//         neither), and whether each item is double sided -- which the caller turns
-//         into a pipeline.
+//         one entry per distinct material the file names, and which of those each
+//         item wants. Every item gets a real index: a primitive naming no material is
+//         refused above.
 //         false means the file could not be turned into a scene, and says in the log
 //         which way. What was appended before that point is undefined: the caller
 //         exits, because there is nothing else here to draw.
@@ -409,14 +410,25 @@ static bool LoadGltf(const char* path,
             // go. Keyed on the pair, not on cgltf_material and not on base colour
             // alone: two materials naming the same two images should be one entry,
             // and two that share a base colour but differ in normal map must not be.
+            // Every primitive names one. A primitive without a material is legal glTF
+            // -- the spec says to draw it with the default material -- and that
+            // default is a thing we would have to build and never draw with, since
+            // Sponza has none. Refused instead, the way a missing NORMAL is.
+            if (prim.material == nullptr) {
+                LOG("[gltf] a primitive names no material\n");
+                cgltf_free(data);
+                return false;
+            }
+
             uint32_t material = UINT32_MAX;
-            if (prim.material != nullptr) {
+            {
                 MaterialSource named;
                 named.doubleSided = doubleSided;
                 named.params = params;
                 if (prim.material->has_pbr_metallic_roughness) {
                     const cgltf_texture* tex =
                         prim.material->pbr_metallic_roughness.base_color_texture.texture;
+
                     if (tex != nullptr && tex->image != nullptr
                             && tex->image->uri != nullptr) {
                         named.baseColor = tex->image->uri;
@@ -474,19 +486,6 @@ static bool LoadGltf(const char* path,
     return !items->empty();
 }
 
-// Small cells on purpose: one texel per cell makes a wrong uv obvious, and the
-// LINEAR sampler softens the edges. What a material that names no base colour gets.
-//
-// Output: pixels[size * size * 4], RGBA8
-static void MakeChecker(uint32_t size, uint8_t* pixels) noexcept {
-    for (uint32_t y = 0; y < size; ++y) {
-        for (uint32_t x = 0; x < size; ++x) {
-            const uint8_t v = ((x + y) % 2 == 0) ? 255 : 70;
-            uint8_t* p = pixels + (y * size + x) * 4;
-            p[0] = v; p[1] = v; p[2] = v; p[3] = 255;
-        }
-    }
-}
 
 // Effect: reads an image file into a texture, ready for a set to name it
 //
@@ -738,35 +737,36 @@ int main() {
     // Textures
     // ------------------------------------------------------------------------
     //
-    // Two per material, laid out in pairs, plus one extra material at the end for a
-    // primitive that named no texture at all.
+    // Two per material, laid out in pairs. One pair per material the file named and
+    // no extra: every primitive names a material, which the loader now insists on.
     //
-    // A material missing one gets a stand-in rather than a null. The set has two
-    // bindings and every one of them has to point somewhere; a null would be a
-    // validation error at bind time, and a branch in the shader would be a third way
-    // to say the same thing.
+    // A material missing one image gets a neutral texture rather than a null. The set
+    // has bindings that all have to point somewhere; a null would be a validation
+    // error at bind time, and a branch in the shader would be a third way to say the
+    // same thing.
     //
     // URIs are relative to the .gltf, per the spec, and Sponza keeps its images
     // beside it.
-    const uint32_t materialCount = static_cast<uint32_t>(materialSources.size()) + 1;
+    const uint32_t materialCount = static_cast<uint32_t>(materialSources.size());
     renderer.textures.resize(static_cast<size_t>(materialCount) * 2);
 
-    // Code, not a file, so a machine without the asset still draws something that
-    // shows whether uv and the sampler are right.
+    // One white texel, for a material that names no base colour. glTF says such a
+    // material is its baseColorFactor alone, and white is the texture that multiplies
+    // to exactly that -- a pattern here would be inventing detail the file does not
+    // have. A checker lived here for that reason and drew one nowhere in this asset:
+    // all 25 materials name a base colour.
     //
-    // SRGB: this is multiplied with the shader's output, so it must be in the same
-    // space as the render target. UNORM here would brighten the result.
-    constexpr uint32_t kCheckerSize = 8;
-    uint8_t checkerPixels[kCheckerSize * kCheckerSize * 4]{};
-    MakeChecker(kCheckerSize, checkerPixels);
-    const TextureDesc checkerDesc{{kCheckerSize, kCheckerSize},
-                                  VK_FORMAT_R8G8B8A8_SRGB, VK_SAMPLE_COUNT_1_BIT,
-                                  VK_IMAGE_USAGE_TRANSFER_DST_BIT
-                                      | VK_IMAGE_USAGE_SAMPLED_BIT};
+    // SRGB, because this is multiplied with the shader's output and has to be in the
+    // same space as the render target. UNORM would brighten the result.
+    const uint8_t whitePixel[4]{255, 255, 255, 255};
+    const TextureDesc whiteDesc{{1, 1},
+                                VK_FORMAT_R8G8B8A8_SRGB, VK_SAMPLE_COUNT_1_BIT,
+                                VK_IMAGE_USAGE_TRANSFER_DST_BIT
+                                    | VK_IMAGE_USAGE_SAMPLED_BIT};
 
-    // One texel, and the opposite space from the checker: (128,128,255) decodes to
-    // +z, which is the geometric normal unchanged. UNORM for the same reason the
-    // loaded ones are -- this is a direction.
+    // The same idea in the other space: (128,128,255) decodes to +z, the geometric
+    // normal unchanged. UNORM for the reason the loaded ones are -- this is a
+    // direction. One of Sponza's 25 materials uses it.
     const uint8_t flatNormalPixels[4]{128, 128, 255, 255};
     const TextureDesc flatNormalDesc{{1, 1},
                                      VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT,
@@ -774,8 +774,7 @@ int main() {
                                          | VK_IMAGE_USAGE_SAMPLED_BIT};
 
     for (uint32_t i = 0; i < materialCount; ++i) {
-        const MaterialSource named =
-            i < materialSources.size() ? materialSources[i] : MaterialSource{};
+        const MaterialSource& named = materialSources[i];
         Texture& base = renderer.textures[static_cast<size_t>(i) * 2];
         Texture& normal = renderer.textures[static_cast<size_t>(i) * 2 + 1];
 
@@ -784,8 +783,8 @@ int main() {
                                    + named.baseColor;
             if (!LoadTextureFile(dev, commands, path.c_str(),
                                  VK_FORMAT_R8G8B8A8_SRGB, &base)) { return 1; }
-        } else if (!CreateTextureFromPixels(dev, commands, checkerDesc, checkerPixels,
-                                            sizeof(checkerPixels), &base)) {
+        } else if (!CreateTextureFromPixels(dev, commands, whiteDesc, whitePixel,
+                                            sizeof(whitePixel), &base)) {
             return 1;
         }
 
@@ -852,15 +851,11 @@ int main() {
                          renderer.sceneProgram.setLayouts[kMaterialSet], sources.data(),
                          materialCount, renderer.materials.data())) { return 1; }
 
-    // Join the two halves the loader had to hand back separately. The stand-in pair is
-    // last, so it is what UINT32_MAX resolves to.
-    // An index, so this survives renderer.materials moving in memory -- only its
-    // length matters now, and the recorder checks every index against it. The array is
-    // filled once above and never grows.
-    const uint32_t kNoTexture = materialCount - 1;
+    // Join the two halves the loader had to hand back separately. An index rather than
+    // a pointer, so this survives renderer.materials moving in memory -- only its
+    // length matters, and the recorder checks every index against it.
     for (size_t i = 0; i < items.size(); ++i) {
-        const uint32_t index = itemMaterial[i];
-        items[i].material = index == UINT32_MAX ? kNoTexture : index;
+        items[i].material = itemMaterial[i];
     }
 
     // The draw order, now that both things a bind depends on hang off one pointer.

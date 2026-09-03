@@ -171,8 +171,7 @@ struct GuiFrameInfo {
     float frameSeconds = 0.0f;
 
     // The list's length, and the array's. Neither is a count of what happened: an
-    // item whose material index is out of range is skipped, and the last material is
-    // the stand-in for a primitive that named no texture.
+    // item whose material index is out of range is skipped.
     uint32_t itemCount = 0;
     uint32_t materialCount = 0;
 

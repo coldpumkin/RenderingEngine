@@ -284,9 +284,7 @@ void BuildGui(Gui* gui, const GuiFrameInfo& info) noexcept {
         ImGui::Text("binds  %u material   %u cull", info.materialBinds,
                     info.cullChanges);
 
-        // One less than the array, which is the stand-in at the end. Said this way so
-        // the panel and the loader's log report the same number.
-        ImGui::Text("mats   %u  + 1 stand-in", info.materialCount - 1);
+        ImGui::Text("mats   %u", info.materialCount);
     }
     ImGui::End();
 
