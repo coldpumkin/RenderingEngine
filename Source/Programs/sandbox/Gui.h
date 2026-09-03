@@ -76,7 +76,11 @@ struct Gui {
     VkDescriptorSet set = VK_NULL_HANDLE;   // drawn from our pool, names font
 
     // Non-owning, like the passes' own. Held so recording takes the same shape as
-    // theirs: the pass knows its pipeline, the caller does not carry it.
+    // theirs: the pass knows these, the caller does not carry them.
+    //
+    // Two, for the reason the other passes hold two: the program is the interface
+    // every pipeline here would share, the pipeline is the one variant.
+    const ShaderProgram* program = nullptr;
     const Pipeline* pipeline = nullptr;
 
     // Written at record time, so one pair per frame in flight. Fixed size: growing
@@ -112,7 +116,8 @@ bool CreateGui(const VulkanDevice& dev, const Commands& commands,
 //
 // Separate from the above because a set cannot exist before the pool, and the pool
 // cannot be sized before every pass has said what it wants.
-bool CreateGuiSet(const Descriptors& descriptors, const Pipeline& pipeline,
+bool CreateGuiSet(const Descriptors& descriptors, const ShaderProgram& program,
+                  const Pipeline& pipeline,
                   Gui* out) noexcept;
 
 // What the panel reads. One struct rather than a growing argument list, and every
@@ -128,6 +133,12 @@ struct GuiFrameInfo {
     uint32_t materialCount = 0;
 
     const Descriptors* descriptors = nullptr;
+
+    // Both halves, because the panel shows both: what the shaders require (the
+    // program's set layouts) and what one variant baked (the pipeline's desc).
+    const ShaderProgram* sceneProgram = nullptr;
+    const ShaderProgram* presentProgram = nullptr;
+    const ShaderProgram* guiProgram = nullptr;
     const Pipeline* scenePipeline = nullptr;
     const Pipeline* presentPipeline = nullptr;
     const Pipeline* guiPipeline = nullptr;

@@ -62,3 +62,54 @@ bool ReflectShaderFile(const char* path, ShaderInterface* out) noexcept;
 // Output: VK_NULL_HANDLE on failure
 VkShaderModule LoadShader(const VulkanDevice& dev, const char* path,
                           ShaderInterface* out) noexcept;
+
+
+// ShaderProgram - a pair of shaders, and everything Vulkan wants before a pipeline
+// ============================================================================
+//
+// The interface, split from the variant. Everything in here comes out of the .spv and
+// nothing comes from GraphicsPipelineDesc -- that is the whole line.
+//
+// It is a type because it belongs to a pass, not to a pipeline. Pipelines built from
+// one pair of shaders differ only in state the pass admits (polygon mode, blending),
+// and they have to share this: a set drawn from one of these layouts gets bound
+// through this pipeline layout, whichever pipeline is current. Vulkan calls two
+// layouts compatible when identically defined -- nothing checks the "identically", and
+// one object removes the question.
+//
+// The modules stay alive with it. A second variant should not reread the file, and
+// they cost nothing to keep.
+struct ShaderProgram {
+    const VulkanDevice* dev = nullptr;   // non-owning, needed to destroy
+
+    VkShaderModule vert = VK_NULL_HANDLE;
+    VkShaderModule frag = VK_NULL_HANDLE;
+    ShaderInterface vertInterface;
+    ShaderInterface fragInterface;
+
+    // One per set the shaders may declare, in set order. A set nothing declares still
+    // gets an entry with no bindings: Vulkan numbers sets by position, so set 1
+    // cannot be handed to vkCreatePipelineLayout without a set 0 in front of it.
+    //
+    // Which set means what is not decided here. The shaders declare positions; the
+    // layer that wrote those shaders is where the positions get names.
+    DescriptorLayout setLayouts[kMaxSets];
+    VkPipelineLayout layout = VK_NULL_HANDLE;
+
+    // For logs. String literals from the call site, so holding the pointers is free.
+    const char* vertPath = nullptr;
+    const char* fragPath = nullptr;
+
+    ShaderProgram() = default;
+    ~ShaderProgram();
+    ShaderProgram(const ShaderProgram&) = delete;
+    ShaderProgram& operator=(const ShaderProgram&) = delete;
+};
+
+// Effect: loads both stages, reads what they declare, and builds the set layouts and
+//         the pipeline layout from it.
+//
+// Contract: the two paths must outlive this -- they are kept for logging.
+bool CreateShaderProgram(const VulkanDevice& dev,
+                         const char* vertPath, const char* fragPath,
+                         ShaderProgram* out) noexcept;

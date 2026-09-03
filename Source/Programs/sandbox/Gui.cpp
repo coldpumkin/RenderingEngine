@@ -67,10 +67,10 @@ void ShowTexture(const char* name, const Texture* texture) noexcept {
 //
 // An empty set is printed too. Vulkan numbers sets by position, so set 1 cannot exist
 // without a set 0 in front of it, and a layout with no bindings is how that is said.
-void ShowSetLayouts(const char* name, const Pipeline* pipeline) noexcept {
-    if (pipeline == nullptr) { return; }
+void ShowSetLayouts(const char* name, const ShaderProgram* program) noexcept {
+    if (program == nullptr) { return; }
     for (uint32_t set = 0; set < kMaxSets; ++set) {
-        const DescriptorLayout& layout = pipeline->setLayouts[set];
+        const DescriptorLayout& layout = program->setLayouts[set];
         if (layout.bindingCount == 0) {
             ImGui::Text("%-8s set %u   (empty)", set == 0 ? name : "", set);
             continue;
@@ -94,7 +94,8 @@ void ShowPipeline(const char* name, const Pipeline* pipeline) noexcept {
                 d.blending == Blending::Opaque ? "opaque" : "translucent",
                 static_cast<uint32_t>(d.formats.samples),
                 d.viewportY == ViewportY::Up ? "y-up" : "y-down");
-    ImGui::Text("         %s", d.fragPath != nullptr ? d.fragPath : "-");
+    const char* frag = pipeline->program != nullptr ? pipeline->program->fragPath : nullptr;
+    ImGui::Text("         %s", frag != nullptr ? frag : "-");
 }
 
 }   // namespace
@@ -193,14 +194,15 @@ bool CreateGui(const VulkanDevice& dev, const Commands& commands,
     return true;
 }
 
-bool CreateGuiSet(const Descriptors& descriptors, const Pipeline& pipeline,
-                  Gui* out) noexcept {
+bool CreateGuiSet(const Descriptors& descriptors, const ShaderProgram& program,
+                  const Pipeline& pipeline, Gui* out) noexcept {
+    out->program = &program;
     out->pipeline = &pipeline;
-    if (!AllocateSets(descriptors, pipeline.setLayouts[0], 1, &out->set)) {
+    if (!AllocateSets(descriptors, program.setLayouts[0], 1, &out->set)) {
         return false;
     }
     const BindingValue values[] = {{out->font.view.handle}};
-    UpdateSet(descriptors, pipeline.setLayouts[0], out->set, values, 1);
+    UpdateSet(descriptors, program.setLayouts[0], out->set, values, 1);
     return true;
 }
 
@@ -257,9 +259,9 @@ void BuildGui(ViewOptions* options, const GuiFrameInfo& info) noexcept {
                     d.imageDescriptors, d.bufferDescriptors);
         ImGui::Separator();
 
-        ShowSetLayouts("scene", info.scenePipeline);
-        ShowSetLayouts("present", info.presentPipeline);
-        ShowSetLayouts("gui", info.guiPipeline);
+        ShowSetLayouts("scene", info.sceneProgram);
+        ShowSetLayouts("present", info.presentProgram);
+        ShowSetLayouts("gui", info.guiProgram);
     }
 
     if (ImGui::CollapsingHeader("shader data")) {
@@ -328,10 +330,12 @@ void BuildGui(ViewOptions* options, const GuiFrameInfo& info) noexcept {
 
 void RecordGuiPass(const FrameSlot& slot, Gui& gui, const Texture& target) noexcept {
     const ImDrawData* draws = ImGui::GetDrawData();
-    if (draws == nullptr || draws->TotalVtxCount == 0 || gui.pipeline == nullptr) {
+    if (draws == nullptr || draws->TotalVtxCount == 0 || gui.pipeline == nullptr
+            || gui.program == nullptr) {
         return;
     }
     const Pipeline& pipeline = *gui.pipeline;
+    const VkPipelineLayout layout = gui.program->layout;
 
     const VkDeviceSize vertexBytes =
         static_cast<VkDeviceSize>(draws->TotalVtxCount) * sizeof(ImDrawVert);
@@ -395,7 +399,7 @@ void RecordGuiPass(const FrameSlot& slot, Gui& gui, const Texture& target) noexc
     vk.vkCmdSetCullMode(cmd, VK_CULL_MODE_NONE);
 
     vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.handle);
-    vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.layout,
+    vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout,
                                0, 1, &gui.set, 0, nullptr);
 
     const VkDeviceSize offset = 0;
@@ -411,7 +415,7 @@ void RecordGuiPass(const FrameSlot& slot, Gui& gui, const Texture& target) noexc
     push.scale[1] = 2.0f / draws->DisplaySize.y;
     push.translate[0] = -1.0f - draws->DisplayPos.x * push.scale[0];
     push.translate[1] = -1.0f - draws->DisplayPos.y * push.scale[1];
-    vk.vkCmdPushConstants(cmd, pipeline.layout, VK_SHADER_STAGE_VERTEX_BIT,
+    vk.vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_VERTEX_BIT,
                           0, sizeof(push), &push);
 
     // One draw per command, and a scissor with it: clipping is how ImGui keeps a

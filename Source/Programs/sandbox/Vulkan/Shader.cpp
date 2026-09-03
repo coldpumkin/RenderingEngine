@@ -162,3 +162,68 @@ bool BuildSetLayout(const VulkanDevice& dev,
     out->bindingCount = count;
     return true;
 }
+
+bool CreateShaderProgram(const VulkanDevice& dev,
+                         const char* vertPath, const char* fragPath,
+                         ShaderProgram* out) noexcept {
+    out->dev = &dev;   // set first: the destructor runs even if this fails halfway
+    out->vertPath = vertPath;
+    out->fragPath = fragPath;
+
+    out->vert = LoadShader(dev, vertPath, &out->vertInterface);
+    out->frag = LoadShader(dev, fragPath, &out->fragInterface);
+    if (out->vert == VK_NULL_HANDLE || out->frag == VK_NULL_HANDLE) {
+        return false;
+    }
+
+    for (uint32_t set = 0; set < kMaxSets; ++set) {
+        if (!BuildSetLayout(dev, out->vertInterface, out->fragInterface, set,
+                            &out->setLayouts[set])) {
+            return false;
+        }
+    }
+
+    // One block, however many stages read it. Each stage reports only itself, so the
+    // flags are or-ed and the size is whichever declared one -- they are the same
+    // block, and glslc rejects a disagreement inside the shaders.
+    VkPushConstantRange pushRange{};
+    pushRange.stageFlags = out->vertInterface.pushStages | out->fragInterface.pushStages;
+    pushRange.size = out->vertInterface.pushSize > out->fragInterface.pushSize
+                         ? out->vertInterface.pushSize
+                         : out->fragInterface.pushSize;
+
+    VkPipelineLayoutCreateInfo info{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    if (pushRange.size != 0) {
+        info.pushConstantRangeCount = 1;
+        info.pPushConstantRanges = &pushRange;
+    }
+    // Every set, including ones no shader declared: their layouts are empty, and the
+    // position is what matters.
+    VkDescriptorSetLayout setHandles[kMaxSets]{};
+    for (uint32_t set = 0; set < kMaxSets; ++set) {
+        setHandles[set] = out->setLayouts[set].handle;
+    }
+    info.setLayoutCount = kMaxSets;
+    info.pSetLayouts = setHandles;
+
+    // A layout is required even when every set is empty.
+    if (dev.table.vkCreatePipelineLayout(dev.handle, &info, nullptr, &out->layout)
+            != VK_SUCCESS) {
+        LOG("[vk] vkCreatePipelineLayout failed: %s\n", vertPath);
+        return false;
+    }
+    return true;
+}
+
+// The modules go with it, not after the first pipeline: a second variant built from
+// this program needs them.
+ShaderProgram::~ShaderProgram() {
+    if (dev == nullptr) { return; }
+    const VolkDeviceTable& vk = dev->table;
+    vk.vkDestroyPipelineLayout(dev->handle, layout, nullptr);
+    for (const DescriptorLayout& set : setLayouts) {
+        vk.vkDestroyDescriptorSetLayout(dev->handle, set.handle, nullptr);
+    }
+    vk.vkDestroyShaderModule(dev->handle, vert, nullptr);
+    vk.vkDestroyShaderModule(dev->handle, frag, nullptr);
+}

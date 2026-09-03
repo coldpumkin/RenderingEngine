@@ -476,40 +476,50 @@ int main() {
     //
     // viewportY stays baked. It decides frontFace, and both would have to move
     // together -- nothing here asks for that.
+    // The program first: the shaders decide the set layouts and the push range, and a
+    // pipeline only picks state on top of that. Two pipelines from one program share
+    // every set already drawn from it.
+    if (!CreateShaderProgram(dev, "Shaders/mesh.vert.spv", "Shaders/mesh.frag.spv",
+                             &renderer.sceneProgram)) { return 1; }
+
     GraphicsPipelineDesc opaqueDesc;
-    opaqueDesc.vertPath = "Shaders/mesh.vert.spv";
-    opaqueDesc.fragPath = "Shaders/mesh.frag.spv";
     opaqueDesc.vertexInput = &VertexInput();
     opaqueDesc.formats = formats;
     opaqueDesc.viewportY = ViewportY::Up;            // our world is y-up
     opaqueDesc.polygonMode = VK_POLYGON_MODE_FILL;
     opaqueDesc.blending = Blending::Opaque;
-    if (!CreateGraphicsPipeline(dev, opaqueDesc, &renderer.scenePipeline)) { return 1; }
+    if (!CreateGraphicsPipeline(dev, renderer.sceneProgram, opaqueDesc,
+                                &renderer.scenePipeline)) { return 1; }
 
     // The format was settled by SelectSurfaceFormat above and does not change, so this
     // pipeline is right from the start and nothing rebuilds it.
     //
     // No vertex input, no depth, 1 sample -- MSAA ended at the resolve.
+    if (!CreateShaderProgram(dev, "Shaders/fullscreen.vert.spv",
+                             "Shaders/fullscreen.frag.spv",
+                             &renderer.presentProgram)) { return 1; }
+
     GraphicsPipelineDesc presentDesc;
-    presentDesc.vertPath = "Shaders/fullscreen.vert.spv";
-    presentDesc.fragPath = "Shaders/fullscreen.frag.spv";
     presentDesc.formats = AttachmentFormats{window.surfaceFormat.format};
     presentDesc.viewportY = ViewportY::Down;   // the shader makes its own uv
-    if (!CreateGraphicsPipeline(dev, presentDesc, &renderer.presentPipeline)) { return 1; }
+    if (!CreateGraphicsPipeline(dev, renderer.presentProgram, presentDesc,
+                                &renderer.presentPipeline)) { return 1; }
 
     // The panel. A different vertex type, a different set layout, and the only one
     // of the three that blends -- a window has to be see-through to be over anything.
     //
     // Same target as present, so the same format and 1 sample. y-down because ImGui
     // works in window pixels with the origin at the top left.
+    if (!CreateShaderProgram(dev, "Shaders/gui.vert.spv", "Shaders/gui.frag.spv",
+                             &renderer.guiProgram)) { return 1; }
+
     GraphicsPipelineDesc guiDesc;
-    guiDesc.vertPath = "Shaders/gui.vert.spv";
-    guiDesc.fragPath = "Shaders/gui.frag.spv";
     guiDesc.vertexInput = &GuiVertexInput();
     guiDesc.formats = AttachmentFormats{window.surfaceFormat.format};
     guiDesc.viewportY = ViewportY::Down;
     guiDesc.blending = Blending::Translucent;
-    if (!CreateGraphicsPipeline(dev, guiDesc, &renderer.guiPipeline)) { return 1; }
+    if (!CreateGraphicsPipeline(dev, renderer.guiProgram, guiDesc,
+                                &renderer.guiPipeline)) { return 1; }
 
     // Render resolution
     // ------------------------------------------------------------------------
@@ -687,11 +697,11 @@ int main() {
     // descriptors that is per set is not asked here: CreateDescriptors reads it off
     // the layout, so the second binding a material grew did not reach this line.
     const SetRequest setRequests[] = {
-        {&renderer.scenePipeline.setLayouts[kFrameSet], kFramesInFlight},
-        {&renderer.scenePipeline.setLayouts[kMaterialSet], materialCount},
-        {&renderer.presentPipeline.setLayouts[kFrameSet], kFramesInFlight},
+        {&renderer.sceneProgram.setLayouts[kFrameSet], kFramesInFlight},
+        {&renderer.sceneProgram.setLayouts[kMaterialSet], materialCount},
+        {&renderer.presentProgram.setLayouts[kFrameSet], kFramesInFlight},
         // One, and counted by neither of the other two reasons: there is one font.
-        {&renderer.guiPipeline.setLayouts[0], 1},
+        {&renderer.guiProgram.setLayouts[0], 1},
     };
     if (!CreateDescriptors(dev, setRequests,
                            static_cast<uint32_t>(std::size(setRequests)),
@@ -712,11 +722,12 @@ int main() {
                                                                : VK_CULL_MODE_BACK_BIT)};
     }
 
-    if (!CreateGuiSet(renderer.descriptors, renderer.guiPipeline,
+    if (!CreateGuiSet(renderer.descriptors, renderer.guiProgram, renderer.guiPipeline,
                       &renderer.guiPass)) { return 1; }
 
     renderer.materials.resize(materialCount);
-    if (!CreateMaterials(renderer.descriptors, renderer.scenePipeline, sources.data(),
+    if (!CreateMaterials(renderer.descriptors,
+                         renderer.sceneProgram.setLayouts[kMaterialSet], sources.data(),
                          materialCount, renderer.materials.data())) { return 1; }
 
     // Join the two halves the loader had to hand back separately. The stand-in pair is
@@ -758,10 +769,11 @@ int main() {
     // Passes first, in dependency order: the post pass's sets name what the scene
     // pass made. A slot owns none of that -- it only knows which frame it is.
     if (!CreateScenePass(dev, renderer.descriptors, formats, kRenderExtent,
-                         renderer.mesh, renderer.scenePipeline,
+                         renderer.mesh, renderer.sceneProgram, renderer.scenePipeline,
                          &renderer.scenePass)) { return 1; }
     if (!CreatePostProcessPass(renderer.descriptors, renderer.scenePass,
-                               renderer.presentPipeline, &renderer.postPass)) {
+                               renderer.presentProgram, renderer.presentPipeline,
+                               &renderer.postPass)) {
         return 1;
     }
 
@@ -940,6 +952,9 @@ int main() {
         guiInfo.drawCount = static_cast<uint32_t>(items.size());
         guiInfo.materialCount = materialCount;
         guiInfo.descriptors = &renderer.descriptors;
+        guiInfo.sceneProgram = &renderer.sceneProgram;
+        guiInfo.presentProgram = &renderer.presentProgram;
+        guiInfo.guiProgram = &renderer.guiProgram;
         guiInfo.scenePipeline = &renderer.scenePipeline;
         guiInfo.presentPipeline = &renderer.presentPipeline;
         guiInfo.uniformBytes = static_cast<uint32_t>(sizeof(SceneUniform));

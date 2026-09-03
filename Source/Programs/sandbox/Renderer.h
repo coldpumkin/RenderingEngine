@@ -43,20 +43,39 @@
 #include <vector>
 
 struct Renderer {
-    // --- HOW to draw ------------------------------------------------------
+    // --- WHAT the shaders require -----------------------------------------
     //
-    // Three pipelines, and what separates them is not "three passes" -- the scene
-    // pass could use several and the gui pass happens to use one. What separates
-    // them is that each pair of shaders declares a different interface:
+    // Three programs, one per pair of shaders. Each is the interface: set layouts,
+    // push range, pipeline layout -- everything read out of the .spv and nothing
+    // chosen by a caller.
     //
-    //   pipeline   shaders                vertex        target        blend
-    //   scene      mesh.vert/frag         Vertex (48)   color 4x      opaque
-    //   present    fullscreen.vert/frag   none          swapchain 1x  opaque
-    //   gui        gui.vert/frag          ImDrawVert    swapchain 1x  translucent
+    //   program   shaders                vertex        sets
+    //   scene     mesh.vert/frag         Vertex (48)   0 frame, 1 material
+    //   present   fullscreen.vert/frag   none          0 the scene's resolve
+    //   gui       gui.vert/frag          ImDrawVert    0 the font atlas
     //
     // The empty middle cell is the interesting one: a shader that builds its own
     // vertices needs no layout at all, and that is a property of the shader rather
     // than of the pass it happens to be in.
+    //
+    // Declared first, so they are destroyed last. Every pipeline points at one, and
+    // every descriptor set was drawn from one of their layouts.
+    ShaderProgram sceneProgram;
+    ShaderProgram presentProgram;
+    ShaderProgram guiProgram;
+
+    // --- HOW to draw ------------------------------------------------------
+    //
+    // A pipeline is one variant of a program: the state a pass admits, compiled.
+    // Today each program has exactly one, which is why the two look like one thing.
+    //
+    //   pipeline   from             target        polygon   blend
+    //   scene      sceneProgram     color 4x      fill      opaque
+    //   present    presentProgram   swapchain 1x  fill      opaque
+    //   gui        guiProgram       swapchain 1x  fill      translucent
+    //
+    // A second scene pipeline would appear in this table and nowhere else: it shares
+    // sceneProgram, so every set already allocated fits it.
     Pipeline scenePipeline;
     Pipeline presentPipeline;
     Pipeline guiPipeline;

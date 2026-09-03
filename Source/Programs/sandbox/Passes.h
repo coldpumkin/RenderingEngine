@@ -170,7 +170,7 @@ struct MaterialDesc {
 //
 // Contract: pipeline must be the one these will be bound with -- the set is drawn
 //           from its material layout.
-bool CreateMaterials(const Descriptors& descriptors, const Pipeline& pipeline,
+bool CreateMaterials(const Descriptors& descriptors, const DescriptorLayout& layout,
                      const MaterialDesc* sources, uint32_t count,
                      Material* out) noexcept;
 
@@ -234,6 +234,15 @@ struct DrawItem {
 struct ScenePass {
     const Mesh* mesh = nullptr;
 
+    // The shader interface every draw in this pass answers to: set layouts, push
+    // range, pipeline layout. It is the pass's and not a pipeline's, because a pass
+    // may hold several pipelines and they all bind through this one.
+    //
+    // This is also the pass's half of admission. A draw gets in when its pipeline was
+    // built from this program (so the sets fit) and for these attachment formats (so
+    // Vulkan accepts it at all).
+    const ShaderProgram* program = nullptr;
+
     // The draws bring their own now; this one is what the pass itself needs -- the
     // layout to bind set 0 with, and the viewport sign. Both are the same across
     // every pipeline a draw can name, because they all come from these shaders.
@@ -268,7 +277,7 @@ struct ScenePass {
 //           the mismatch is at least in one call, but nothing checks it.
 bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
                      AttachmentFormats formats, VkExtent2D extent,
-                     const Mesh& mesh,
+                     const Mesh& mesh, const ShaderProgram& program,
                      const Pipeline& pipeline, ScenePass* out) noexcept;
 
 
@@ -283,7 +292,8 @@ bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
 // swapchain's image count rather than by frames in flight.
 struct PostProcessPass {
     const ScenePass* source = nullptr;
-    const Pipeline* pipeline = nullptr;   // non-owning
+    const ShaderProgram* program = nullptr;   // the interface, shared. non-owning
+    const Pipeline* pipeline = nullptr;       // the one variant. non-owning
 
     // One per frame in flight, because each names that frame's colorResolve. Flat
     // rather than a PerFrame like the scene pass, since a set is all there is.
@@ -294,6 +304,7 @@ struct PostProcessPass {
 //
 // Contract: source must already be created -- the sets name its colorResolve images.
 bool CreatePostProcessPass(const Descriptors& descriptors, const ScenePass& source,
+                           const ShaderProgram& program,
                            const Pipeline& pipeline, PostProcessPass* out) noexcept;
 
 

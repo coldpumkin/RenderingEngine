@@ -12,9 +12,10 @@
 // no swapchain yet, and nothing here depends on one.
 bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
                      AttachmentFormats formats, VkExtent2D extent,
-                     const Mesh& mesh,
+                     const Mesh& mesh, const ShaderProgram& program,
                      const Pipeline& pipeline, ScenePass* out) noexcept {
     out->mesh = &mesh;
+    out->program = &program;
     out->pipeline = &pipeline;
 
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
@@ -64,7 +65,7 @@ bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
     // Drawn in one call, then handed out: vkAllocateDescriptorSets writes a flat
     // array and PerFrame is not one.
     VkDescriptorSet sets[kFramesInFlight]{};
-    if (!AllocateSets(descriptors, pipeline.setLayouts[kFrameSet], kFramesInFlight, sets)) {
+    if (!AllocateSets(descriptors, program.setLayouts[kFrameSet], kFramesInFlight, sets)) {
         return false;
     }
 
@@ -77,13 +78,13 @@ bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
         const BindingValue values[] = {
             {VK_NULL_HANDLE, frame.uniform.handle, sizeof(SceneUniform)},  // 0: scene
         };
-        UpdateSet(descriptors, pipeline.setLayouts[kFrameSet], frame.set,
+        UpdateSet(descriptors, program.setLayouts[kFrameSet], frame.set,
                   values, static_cast<uint32_t>(std::size(values)));
     }
     return true;
 }
 
-bool CreateMaterials(const Descriptors& descriptors, const Pipeline& pipeline,
+bool CreateMaterials(const Descriptors& descriptors, const DescriptorLayout& layout,
                      const MaterialDesc* sources, uint32_t count,
                      Material* out) noexcept {
     if (count == 0) { return true; }
@@ -91,7 +92,7 @@ bool CreateMaterials(const Descriptors& descriptors, const Pipeline& pipeline,
     // One call, because the pool hands sets out in batches and a per-material call
     // would ask it 25 times for the same layout.
     std::vector<VkDescriptorSet> sets(count);
-    if (!AllocateSets(descriptors, pipeline.setLayouts[kMaterialSet], count, sets.data())) {
+    if (!AllocateSets(descriptors, layout, count, sets.data())) {
         return false;
     }
 
@@ -103,18 +104,20 @@ bool CreateMaterials(const Descriptors& descriptors, const Pipeline& pipeline,
             {sources[i].baseColor->view.handle},   // 0
             {sources[i].normal->view.handle},      // 1
         };
-        UpdateSet(descriptors, pipeline.setLayouts[kMaterialSet], out[i].set,
+        UpdateSet(descriptors, layout, out[i].set,
                   values, static_cast<uint32_t>(std::size(values)));
     }
     return true;
 }
 
 bool CreatePostProcessPass(const Descriptors& descriptors, const ScenePass& source,
+                           const ShaderProgram& program,
                            const Pipeline& pipeline, PostProcessPass* out) noexcept {
     out->source = &source;
+    out->program = &program;
     out->pipeline = &pipeline;
 
-    if (!AllocateSets(descriptors, pipeline.setLayouts[kFrameSet], kFramesInFlight,
+    if (!AllocateSets(descriptors, program.setLayouts[kFrameSet], kFramesInFlight,
                       out->sets)) {
         return false;
     }
@@ -122,7 +125,7 @@ bool CreatePostProcessPass(const Descriptors& descriptors, const ScenePass& sour
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
         // The resolve, not color: a multisample image cannot be sampled.
         const BindingValue values[] = {{source.frames[i].colorResolve.view.handle}};
-        UpdateSet(descriptors, pipeline.setLayouts[kFrameSet], out->sets[i], values, 1);
+        UpdateSet(descriptors, program.setLayouts[kFrameSet], out->sets[i], values, 1);
     }
     return true;
 }
@@ -145,6 +148,11 @@ static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
     VkCommandBuffer cmd = slot.cmd;
     const Mesh& mesh = *scene.mesh;
     const Pipeline& pipeline = *scene.pipeline;
+
+    // Sets and push constants go through the pass's layout, not the pipeline's: every
+    // pipeline a draw here can name was built from the same program, so this is the
+    // one thing that stays put when the bound pipeline changes.
+    const VkPipelineLayout layout = scene.program->layout;
 
     // This slot's frame of the pass. The set that names these attachments is in the
     // same PerFrame, so the two cannot be picked apart by a wrong index.
@@ -227,7 +235,7 @@ static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
     vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.handle);
 
     // Once, above the loop: it is this frame's, and every draw in the pass reads it.
-    vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.layout,
+    vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout,
                                kFrameSet, 1, &targets.set, 0, nullptr);
 
     // binding 0 matches the pipeline's binding 0. offset changes once several meshes
@@ -267,7 +275,7 @@ static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
 
         if (item.material != boundMaterial) {
             vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                       pipeline.layout, kMaterialSet, 1,
+                                       layout, kMaterialSet, 1,
                                        &item.material->set, 0, nullptr);
             boundMaterial = item.material;
             if (stats != nullptr) { stats->materialBinds += 1; }
@@ -276,7 +284,7 @@ static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
         // viewProj is in the uniform this set already points at; only the item's own
         // values ride the command buffer.
         const PushConstants push{item.model, item.alpha, item.alphaCutoff};
-        vk.vkCmdPushConstants(cmd, pipeline.layout,
+        vk.vkCmdPushConstants(cmd, layout,
                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                               0, sizeof(push), &push);
 
@@ -306,6 +314,7 @@ static void RecordPostProcessPass(const FrameSlot& slot, const PostProcessPass& 
     const VolkDeviceTable& vk = slot.dev->table;
     VkCommandBuffer cmd = slot.cmd;
     const Pipeline& pipeline = *post.pipeline;
+    const VkPipelineLayout layout = post.program->layout;
 
     // What the scene pass left behind. The set bound below names this same image,
     // and both are picked by slot.index.
@@ -364,7 +373,7 @@ static void RecordPostProcessPass(const FrameSlot& slot, const PostProcessPass& 
     // fullscreen triangle, wound to face us.
     vk.vkCmdSetCullMode(cmd, VK_CULL_MODE_BACK_BIT);
 
-    vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.layout,
+    vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout,
                                0, 1, &post.sets[slot.index], 0, nullptr);
 
     // 3 vertices, no buffer. The shader builds them from gl_VertexIndex.

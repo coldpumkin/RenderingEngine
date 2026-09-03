@@ -26,19 +26,20 @@ VkViewport MakeViewport(VkExtent2D extent, ViewportY y) noexcept {
 // Push ranges and set layouts are no longer compared: they are built from the same
 // reflection, so there are no two sides left to disagree.
 static bool CheckVertexInterface(const GraphicsPipelineDesc& desc,
-                                 const ShaderInterface& vs) noexcept {
+                                 const ShaderInterface& vs,
+                                 const char* vertPath) noexcept {
     const uint32_t declared = desc.vertexInput != nullptr
                             ? desc.vertexInput->vertexAttributeDescriptionCount : 0;
     if (vs.inputCount != declared) {
         LOG("[vk] %s reads %u vertex inputs, the pipeline declares %u\n",
-            desc.vertPath, vs.inputCount, declared);
+            vertPath, vs.inputCount, declared);
         return false;
     }
     // A gap means a location is declared but never read. The layer catches it later;
     // catching it here names the shader.
     if (vs.inputCount != vs.maxInputLocation) {
         LOG("[vk] %s has gaps in its input locations (%u inputs, highest is %u)\n",
-            desc.vertPath, vs.inputCount, vs.maxInputLocation);
+            vertPath, vs.inputCount, vs.maxInputLocation);
         return false;
     }
     return true;
@@ -53,57 +54,31 @@ static bool CheckVertexInterface(const GraphicsPipelineDesc& desc,
 // Nearly all of it is baked at creation - that is what a Vulkan pipeline is - and
 // pDynamicState is the escape hatch. Two items take it here.
 bool CreateGraphicsPipeline(const VulkanDevice& dev,
+                                   const ShaderProgram& program,
                                    const GraphicsPipelineDesc& desc,
                                    Pipeline* out) noexcept {
     Pipeline& pipeline = *out;
     pipeline.dev = &dev;
+    pipeline.program = &program;
     pipeline.desc = desc;   // what it was built from, for recording and for a rebuild
 
-    // --- Shaders: desc.vertPath, desc.fragPath ------------------------------
-
-    ShaderInterface vsIface;
-    ShaderInterface fsIface;
-    VkShaderModule vs = LoadShader(dev, desc.vertPath, &vsIface);
-    VkShaderModule fs = LoadShader(dev, desc.fragPath, &fsIface);
-    if (vs == VK_NULL_HANDLE || fs == VK_NULL_HANDLE) {
-        if (vs != VK_NULL_HANDLE) { dev.table.vkDestroyShaderModule(dev.handle, vs, nullptr); }
-        if (fs != VK_NULL_HANDLE) { dev.table.vkDestroyShaderModule(dev.handle, fs, nullptr); }
+    // The shaders, their set layouts and their pipeline layout are the program's --
+    // several pipelines share one. Only the state below is this variant's.
+    //
+    // A rebuild reaches here with all of that already made, which is why the rebuild
+    // does not strand the sets allocated from those layouts.
+    if (!CheckVertexInterface(desc, program.vertInterface, program.vertPath)) {
         return false;
     }
-
-    if (!CheckVertexInterface(desc, vsIface)) {
-        dev.table.vkDestroyShaderModule(dev.handle, vs, nullptr);
-        dev.table.vkDestroyShaderModule(dev.handle, fs, nullptr);
-        return false;
-    }
-
-    // A rebuild reaches here with the layout already made. Remaking it would strand
-    // every set allocated from the old one.
-    for (uint32_t set = 0; set < kMaxSets; ++set) {
-        if (pipeline.setLayouts[set].handle != VK_NULL_HANDLE) { continue; }
-        if (!BuildSetLayout(dev, vsIface, fsIface, set, &pipeline.setLayouts[set])) {
-            dev.table.vkDestroyShaderModule(dev.handle, vs, nullptr);
-            dev.table.vkDestroyShaderModule(dev.handle, fs, nullptr);
-            return false;
-        }
-    }
-
-    // One block, however many stages read it. Each stage reports only itself, so the
-    // flags are or-ed and the size is whichever declared one -- they are the same
-    // block, and glslc rejects a disagreement inside the shaders.
-    VkPushConstantRange pushRange{};
-    pushRange.stageFlags = vsIface.pushStages | fsIface.pushStages;
-    pushRange.size = vsIface.pushSize > fsIface.pushSize ? vsIface.pushSize
-                                                         : fsIface.pushSize;
 
     VkPipelineShaderStageCreateInfo stages[2]{};
     stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-    stages[0].module = vs;
+    stages[0].module = program.vert;
     stages[0].pName = "main";           // entry point name
     stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    stages[1].module = fs;
+    stages[1].module = program.frag;
     stages[1].pName = "main";
 
     // --- Input: how bytes become vertices, vertices become primitives -------
@@ -201,31 +176,6 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     depthStencil.depthWriteEnable = translucent ? VK_FALSE : VK_TRUE;
     depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;   // clear is 1.0, so nearer wins
 
-    // --- What the shader may reach: push constants and descriptor sets ------
-
-    VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-    if (pushRange.size != 0) {
-        layoutInfo.pushConstantRangeCount = 1;
-        layoutInfo.pPushConstantRanges = &pushRange;
-    }
-    // Every set, including ones no shader declared: their layouts are empty, and the
-    // position is what matters. A shader reading only set 1 still needs set 0 in
-    // front of it, and an empty layout costs nothing.
-    VkDescriptorSetLayout setHandles[kMaxSets]{};
-    for (uint32_t set = 0; set < kMaxSets; ++set) {
-        setHandles[set] = pipeline.setLayouts[set].handle;
-    }
-    layoutInfo.setLayoutCount = kMaxSets;
-    layoutInfo.pSetLayouts = setHandles;
-    // A layout is required even when both are empty.
-    if (dev.table.vkCreatePipelineLayout(dev.handle, &layoutInfo, nullptr, &pipeline.layout)
-            != VK_SUCCESS) {
-        LOG("[vk] vkCreatePipelineLayout failed: %s\n", desc.vertPath);
-        dev.table.vkDestroyShaderModule(dev.handle, vs, nullptr);
-        dev.table.vkDestroyShaderModule(dev.handle, fs, nullptr);
-        return false;
-    }
-
     // --- What it draws into: attachment formats -----------------------------
     // Dynamic rendering writes the formats here instead of into a VkRenderPass.
     // This is the exact point where a pipeline becomes tied to a render target.
@@ -251,41 +201,34 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     info.pDepthStencilState = useDepth ? &depthStencil : nullptr;
     info.pColorBlendState = &colorBlend;
     info.pDynamicState = &dynamicState;
-    info.layout = pipeline.layout;
+    info.layout = program.layout;
     info.renderPass = VK_NULL_HANDLE;   // none: dynamic rendering
 
     const VkResult created = dev.table.vkCreateGraphicsPipelines(
         dev.handle, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline.handle);
 
-    // The modules are done once the pipeline exists - the code was compiled into it.
-    dev.table.vkDestroyShaderModule(dev.handle, vs, nullptr);
-    dev.table.vkDestroyShaderModule(dev.handle, fs, nullptr);
-
+    // The modules are not destroyed here any more: they are the program's, and a second
+    // variant built from it still needs them.
     if (created != VK_SUCCESS) {
-        LOG("[vk] vkCreateGraphicsPipelines failed (%d): %s\n", created, desc.vertPath);
-        return false;   // ~Pipeline cleans up the layout
+        LOG("[vk] vkCreateGraphicsPipelines failed (%d): %s\n", created, program.vertPath);
+        return false;
     }
     return true;
 }
 
 
+// Only the compiled object. The layout it was built against is the program's, and
+// outliving a rebuild is the point of that: sets drawn from those layouts stay valid.
 void DestroyPipeline(const VulkanDevice& dev, Pipeline* pipeline) noexcept {
     if (pipeline->handle != VK_NULL_HANDLE) {
         dev.table.vkDestroyPipeline(dev.handle, pipeline->handle, nullptr);
     }
-    if (pipeline->layout != VK_NULL_HANDLE) {
-        dev.table.vkDestroyPipelineLayout(dev.handle, pipeline->layout, nullptr);
-    }
-    // dev survives: Create* overwrites it anyway, and clearing it here would
-    // leave the destructor with nothing to free if a rebuild failed.
+    // dev and program survive: Create* overwrites them anyway, and clearing them here
+    // would leave the destructor with nothing to free if a rebuild failed.
     pipeline->handle = VK_NULL_HANDLE;
-    pipeline->layout = VK_NULL_HANDLE;
 }
 
 Pipeline::~Pipeline() {
     if (dev == nullptr) { return; }
     DestroyPipeline(*dev, this);
-    for (DescriptorLayout& set : setLayouts) {
-        dev->table.vkDestroyDescriptorSetLayout(dev->handle, set.handle, nullptr);
-    }
 }

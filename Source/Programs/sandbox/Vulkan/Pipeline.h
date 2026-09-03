@@ -54,8 +54,6 @@ enum class Blending {
 // The last row decides nothing: it carries values from Attachments so both sides of
 // a baked-in contract read the same one.
 struct GraphicsPipelineDesc {
-    const char* vertPath = nullptr;
-    const char* fragPath = nullptr;
 
     // nullptr means no vertex buffer - the shader builds its points from
     // gl_VertexIndex.
@@ -80,21 +78,15 @@ struct GraphicsPipelineDesc {
 struct Pipeline {
     const VulkanDevice* dev = nullptr;   // non-owning, needed to destroy
 
-    VkPipelineLayout layout = VK_NULL_HANDLE;
+    // The interface this variant was built against. Borrowed: several pipelines share
+    // one, which is the reason it is not in here. Recording binds sets and pushes
+    // constants through program->layout, not through anything this owns.
+    const ShaderProgram* program = nullptr;
+
     VkPipeline handle = VK_NULL_HANDLE;
 
-    // Read out of the shaders, like the push range. It outlives a rebuild: the sets
-    // already allocated from it stay valid only while it does.
-    // One per set the shaders may declare, in set order. A set nothing declares
-    // still has an entry with no bindings: Vulkan numbers sets by position, so set 1
-    // cannot be handed to vkCreatePipelineLayout without a set 0 in front of it.
-    //
-    // Which set means what is not decided here. The shaders declare positions; the
-    // layer that wrote those shaders is where the positions get names.
-    DescriptorLayout setLayouts[kMaxSets];
-
-    // What it was built from. Recording reads viewportY out of it, and a rebuild
-    // needs the rest -- without this the caller would have to keep the desc alive.
+    // What it was built from. Recording reads viewportY out of it, and a rebuild needs
+    // the rest -- without this the caller would have to keep the desc alive.
     GraphicsPipelineDesc desc;
 
     Pipeline() = default;
@@ -120,5 +112,6 @@ void DestroyPipeline(const VulkanDevice& dev, Pipeline* pipeline) noexcept;
 //           actually are.
 //           LINE polygonMode needs fillModeNonSolid, which is no longer requested.
 bool CreateGraphicsPipeline(const VulkanDevice& dev,
+                            const ShaderProgram& program,
                             const GraphicsPipelineDesc& desc,
                             Pipeline* out) noexcept;
