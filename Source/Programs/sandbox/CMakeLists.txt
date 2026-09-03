@@ -34,6 +34,7 @@ add_executable(sandbox
     Vertex.h             Vertex.cpp        # 우리 정점 형식 + 그 layout 선언
     Passes.h             Passes.cpp        # scene / post-process pass, DrawItem, 기록
     Gui.h                Gui.cpp           # ImGui 창 하나. 옵션을 눈으로 켠다
+    Renderer.h                             # device가 필요한 것 전부, 종류별로 묶어서
 
     main.cpp                # 무엇을 만들고 무엇을 프레임에 건네나
 )

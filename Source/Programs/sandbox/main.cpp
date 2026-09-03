@@ -18,6 +18,7 @@
 #include "Config.h"
 #include "Gui.h"                 // the panel, and the pass that draws it
 #include "Passes.h"             // what we draw. main assembles it and hands it the frame
+#include "Renderer.h"            // everything that needs a device, grouped by kind
 #include "Vertex.h"
 #include "Vulkan/Attachments.h"   // main picks what we draw into, not the device layer
 #include "Vulkan/Commands.h"
@@ -349,17 +350,11 @@ int main() {
     VulkanDevice   dev;
     Window         window;        // holds the swapchain, so it dies before dev
     Commands       commands;
-    Pipeline       opaque;        // each owns the set layouts its shaders declare
-    Pipeline       present;
-    Pipeline       guiPipeline;   // the panel's own. Its vertices are not our Vertex
-    Descriptors    descriptors;   // the pool, so it outlives the sets drawn from it
-    std::vector<Texture>  textures;    // one per material the scene names, checker last
-    std::vector<Material> materials;   // their sets. Freed with the pool, not by these
-    Mesh           mesh;          // before scene: the pass points at it
-    Gui            gui;           // before scene only because nothing points at it
-    ScenePass      scene;         // attachments, and the sets naming them
-    PostProcessPass post;         // reads scene, writes the swapchain
-    FrameSlot      slots[kFramesInFlight];   // command buffer and its two signals
+
+    // Everything past this line needs a VkDevice, which is the whole reason the line
+    // is here. What it holds and why it is grouped that way is in Renderer.h; the
+    // order inside it is a destruction contract, not a preference.
+    Renderer       renderer;
 
     // Ask, then build
     // ========================================================================
@@ -394,7 +389,7 @@ int main() {
 
     // Here, not with the passes below: the descriptor pool has to be told about this
     // one's set before it is created, and the font it points at is uploaded in here.
-    if (!CreateGui(dev, commands, window, &gui)) { return 1; }
+    if (!CreateGui(dev, commands, window, &renderer.guiPass)) { return 1; }
 
     // Passes
     // ------------------------------------------------------------------------
@@ -413,7 +408,7 @@ int main() {
     opaqueDesc.viewportY = ViewportY::Up;            // our world is y-up
     opaqueDesc.polygonMode = VK_POLYGON_MODE_FILL;
     opaqueDesc.blending = Blending::Opaque;
-    if (!CreateGraphicsPipeline(dev, opaqueDesc, &opaque)) { return 1; }
+    if (!CreateGraphicsPipeline(dev, opaqueDesc, &renderer.scenePipeline)) { return 1; }
 
     // The format was settled by SelectSurfaceFormat above and does not change, so this
     // pipeline is right from the start and nothing rebuilds it.
@@ -424,7 +419,7 @@ int main() {
     presentDesc.fragPath = "Shaders/fullscreen.frag.spv";
     presentDesc.formats = AttachmentFormats{window.surfaceFormat.format};
     presentDesc.viewportY = ViewportY::Down;   // the shader makes its own uv
-    if (!CreateGraphicsPipeline(dev, presentDesc, &present)) { return 1; }
+    if (!CreateGraphicsPipeline(dev, presentDesc, &renderer.presentPipeline)) { return 1; }
 
     // The panel. A different vertex type, a different set layout, and the only one
     // of the three that blends -- a window has to be see-through to be over anything.
@@ -438,7 +433,7 @@ int main() {
     guiDesc.formats = AttachmentFormats{window.surfaceFormat.format};
     guiDesc.viewportY = ViewportY::Down;
     guiDesc.blending = Blending::Translucent;
-    if (!CreateGraphicsPipeline(dev, guiDesc, &guiPipeline)) { return 1; }
+    if (!CreateGraphicsPipeline(dev, guiDesc, &renderer.guiPipeline)) { return 1; }
 
     // Render resolution
     // ------------------------------------------------------------------------
@@ -532,7 +527,8 @@ int main() {
     const MeshDesc meshDesc{sizeof(Vertex),
                             static_cast<uint32_t>(vertices.size()),
                             static_cast<uint32_t>(indices.size())};
-    if (!CreateMesh(dev, commands, meshDesc, vertices.data(), indices.data(), &mesh)) {
+    if (!CreateMesh(dev, commands, meshDesc, vertices.data(), indices.data(),
+                    &renderer.mesh)) {
         return 1;
     }
 
@@ -553,7 +549,7 @@ int main() {
     // validation error at bind time, and a branch in the shader would be a third way
     // to say the same thing.
     const uint32_t materialCount = static_cast<uint32_t>(materialUris.size()) + 1;
-    textures.resize(static_cast<size_t>(materialCount) * 2);
+    renderer.textures.resize(static_cast<size_t>(materialCount) * 2);
 
     // Code, not a file, so a machine without the asset still draws something that
     // shows whether uv and the sampler are right.
@@ -580,8 +576,8 @@ int main() {
     for (uint32_t i = 0; i < materialCount; ++i) {
         const MaterialUris named =
             i < materialUris.size() ? materialUris[i] : MaterialUris{};
-        Texture& base = textures[static_cast<size_t>(i) * 2];
-        Texture& normal = textures[static_cast<size_t>(i) * 2 + 1];
+        Texture& base = renderer.textures[static_cast<size_t>(i) * 2];
+        Texture& normal = renderer.textures[static_cast<size_t>(i) * 2 + 1];
 
         if (!named.baseColor.empty()) {
             const std::string path = std::string(LAMBDA_ASSET_ROOT "/Sponza/")
@@ -617,36 +613,38 @@ int main() {
     // descriptors that is per set is not asked here: CreateDescriptors reads it off
     // the layout, so the second binding a material grew did not reach this line.
     const SetRequest setRequests[] = {
-        {&opaque.setLayouts[kFrameSet], kFramesInFlight},
-        {&opaque.setLayouts[kMaterialSet], materialCount},
-        {&present.setLayouts[kFrameSet], kFramesInFlight},
+        {&renderer.scenePipeline.setLayouts[kFrameSet], kFramesInFlight},
+        {&renderer.scenePipeline.setLayouts[kMaterialSet], materialCount},
+        {&renderer.presentPipeline.setLayouts[kFrameSet], kFramesInFlight},
         // One, and counted by neither of the other two reasons: there is one font.
-        {&guiPipeline.setLayouts[0], 1},
+        {&renderer.guiPipeline.setLayouts[0], 1},
     };
     if (!CreateDescriptors(dev, setRequests,
                            static_cast<uint32_t>(std::size(setRequests)),
-                           &descriptors)) { return 1; }
+                           &renderer.descriptors)) { return 1; }
 
     // The pairs, as the two pointers a set is filled from. Built here rather than
     // stored, because textures owns them and this is only a way of reading it.
     std::vector<MaterialTextures> sources(materialCount);
     for (uint32_t i = 0; i < materialCount; ++i) {
-        sources[i] = {&textures[static_cast<size_t>(i) * 2],
-                      &textures[static_cast<size_t>(i) * 2 + 1]};
+        sources[i] = {&renderer.textures[static_cast<size_t>(i) * 2],
+                      &renderer.textures[static_cast<size_t>(i) * 2 + 1]};
     }
 
-    if (!CreateGuiSet(descriptors, guiPipeline, &gui)) { return 1; }
+    if (!CreateGuiSet(renderer.descriptors, renderer.guiPipeline,
+                      &renderer.guiPass)) { return 1; }
 
-    materials.resize(materialCount);
-    if (!CreateMaterials(descriptors, opaque, sources.data(), materialCount,
-                         materials.data())) { return 1; }
+    renderer.materials.resize(materialCount);
+    if (!CreateMaterials(renderer.descriptors, renderer.scenePipeline, sources.data(),
+                         materialCount, renderer.materials.data())) { return 1; }
 
     // Join the two halves the loader had to hand back separately. The stand-in pair is
     // last, so it is what UINT32_MAX resolves to.
     const uint32_t kNoTexture = materialCount - 1;
     for (size_t i = 0; i < items.size(); ++i) {
         const uint32_t index = itemMaterial[i];
-        items[i].material = materials[index == UINT32_MAX ? kNoTexture : index].set;
+        items[i].material =
+            renderer.materials[index == UINT32_MAX ? kNoTexture : index].set;
         items[i].cullMode = itemDoubleSided[i] != 0 ? VK_CULL_MODE_NONE
                                                     : VK_CULL_MODE_BACK_BIT;
     }
@@ -656,12 +654,16 @@ int main() {
     //
     // Passes first, in dependency order: the post pass's sets name what the scene
     // pass made. A slot owns none of that -- it only knows which frame it is.
-    if (!CreateScenePass(dev, descriptors, formats, kRenderExtent,
-                         mesh, opaque, &scene)) { return 1; }
-    if (!CreatePostProcessPass(descriptors, scene, present, &post)) { return 1; }
+    if (!CreateScenePass(dev, renderer.descriptors, formats, kRenderExtent,
+                         renderer.mesh, renderer.scenePipeline,
+                         &renderer.scenePass)) { return 1; }
+    if (!CreatePostProcessPass(renderer.descriptors, renderer.scenePass,
+                               renderer.presentPipeline, &renderer.postPass)) {
+        return 1;
+    }
 
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
-        if (!CreateFrameSlot(dev, commands, i, &slots[i])) { return 1; }
+        if (!CreateFrameSlot(dev, commands, i, &renderer.slots[i])) { return 1; }
     }
 
 
@@ -792,8 +794,8 @@ int main() {
         //
         // Through slot.index, not slotIndex: recording picks the pass's frame that way
         // too, and one of the two would otherwise have to be kept in step by hand.
-        FrameSlot& slot = slots[slotIndex];
-        scene.frames[slot.index].uniformValue =
+        FrameSlot& slot = renderer.slots[slotIndex];
+        renderer.scenePass.frames[slot.index].uniformValue =
             {camera, glm::vec4{lightDir, 0.0f},
              glm::vec4{1.0f, 0.95f, 0.9f, 0.15f}, glm::vec4{eye, 48.0f},
              viewOptions.normalMap ? 1.0f : 0.0f, viewOptions.baseColor ? 1.0f : 0.0f,
@@ -822,26 +824,27 @@ int main() {
         guiInfo.frameSeconds = dt;
         guiInfo.drawCount = static_cast<uint32_t>(items.size());
         guiInfo.materialCount = materialCount;
-        guiInfo.descriptors = &descriptors;
-        guiInfo.scenePipeline = &opaque;
-        guiInfo.presentPipeline = &present;
+        guiInfo.descriptors = &renderer.descriptors;
+        guiInfo.scenePipeline = &renderer.scenePipeline;
+        guiInfo.presentPipeline = &renderer.presentPipeline;
         guiInfo.uniformBytes = static_cast<uint32_t>(sizeof(SceneUniform));
         guiInfo.pushBytes = static_cast<uint32_t>(sizeof(PushConstants));
         guiInfo.vertexStride = static_cast<uint32_t>(sizeof(Vertex));
         guiInfo.vertexAttributes = VertexInput().vertexAttributeDescriptionCount;
         guiInfo.framesInFlight = kFramesInFlight;
-        guiInfo.mesh = &mesh;
-        guiInfo.guiPipeline = &guiPipeline;
+        guiInfo.mesh = &renderer.mesh;
+        guiInfo.guiPipeline = &renderer.guiPipeline;
         guiInfo.slotIndex = slot.index;
-        guiInfo.sceneColor = &scene.frames[slot.index].color;
-        guiInfo.sceneResolve = &scene.frames[slot.index].colorResolve;
-        guiInfo.sceneDepth = &scene.frames[slot.index].depth;
+        guiInfo.sceneColor = &renderer.scenePass.frames[slot.index].color;
+        guiInfo.sceneResolve = &renderer.scenePass.frames[slot.index].colorResolve;
+        guiInfo.sceneDepth = &renderer.scenePass.frames[slot.index].depth;
         guiInfo.frameTarget = target.texture;
         BuildGui(&viewOptions, guiInfo);
 
 
         // Only the texture: recording has no use for the rest of the target.
-        if (!RecordFrame(slot, scene, post, gui, *target.texture,
+        if (!RecordFrame(slot, renderer.scenePass, renderer.postPass,
+                         renderer.guiPass, *target.texture,
                          items.data(), static_cast<uint32_t>(items.size()))) {
             break;
         }
