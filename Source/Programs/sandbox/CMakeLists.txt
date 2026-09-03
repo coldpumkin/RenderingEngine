@@ -34,7 +34,7 @@ target_include_directories(sandbox PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 # 평평하게 쓰는 동안은 sandbox가 volk와 GLFW를 직접 든다.
 # 중간 모듈이 없으므로 숨길 것도 없다.
-target_link_libraries(sandbox PRIVATE volk glfw vma glm spirv-reflect)
+target_link_libraries(sandbox PRIVATE volk glfw vma glm spirv-reflect cgltf)
 
 # std::fopen이 MSVC에서 C4996(deprecated)로 경고를 낸다. fopen_s는 표준이 아니라
 # 이 파일이 MSVC 전용이 되고, 여기서는 셰이더 파일 하나를 읽을 뿐이라 얻는 게 없다.
