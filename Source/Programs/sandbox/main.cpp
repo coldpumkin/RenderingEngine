@@ -108,9 +108,20 @@ static void MakeSphere(uint32_t stacks, uint32_t slices, float radius,
 //
 // Empty means the material named none, and the caller substitutes: a checker for the
 // base colour, a flat normal for the other.
-struct MaterialUris {
+// What the loader found for one material, and the key two of them are compared on.
+//
+// Every field that makes two materials different has to be in here. Cull is in it for
+// that reason and not because a name is an image: two glTF materials naming the same
+// two images but differing in double_sided are two materials, and leaving cull out of
+// the key would quietly make them one. That is what makes Material::cullMode a
+// function of the material rather than a coincidence -- in Sponza it costs no extra
+// entry, because no two share a pair.
+//
+// The factors are the next thing missing here, and they collapse the same way today.
+struct MaterialSource {
     std::string baseColor;
     std::string normal;
+    bool doubleSided = false;
 };
 
 // A glTF file, flattened into the one mesh and the one item list this pass draws.
@@ -139,8 +150,7 @@ static bool LoadGltf(const char* path,
                      std::vector<uint16_t>* indices,
                      std::vector<DrawItem>* items,
                      std::vector<uint32_t>* itemMaterial,
-                     std::vector<uint8_t>* itemDoubleSided,
-                     std::vector<MaterialUris>* materialUris) noexcept {
+                     std::vector<MaterialSource>* materialSources) noexcept {
     cgltf_options options{};
     cgltf_data* data = nullptr;
 
@@ -220,8 +230,9 @@ static bool LoadGltf(const char* path,
             }
 
             // Two things the material says that land in different places: the cutoff
-            // is a number the shader compares against, cull is state a pipeline bakes
-            // in. Only the second one forces a second pipeline.
+            // is a number the shader compares against, cull is rasterizer state. Both
+            // belong to the material; only the cutoff still rides the draw, because
+            // moving it means giving the material a uniform buffer.
             //
             // In this asset the two move together (all 3 MASK materials are also
             // double sided), but nothing in glTF says they must, so they are read
@@ -234,7 +245,6 @@ static bool LoadGltf(const char* path,
                 }
                 doubleSided = prim.material->double_sided != 0;
             }
-            itemDoubleSided->push_back(doubleSided ? 1u : 0u);
 
             // Which images this material names, as a position in a list built as we
             // go. Keyed on the pair, not on cgltf_material and not on base colour
@@ -242,7 +252,8 @@ static bool LoadGltf(const char* path,
             // and two that share a base colour but differ in normal map must not be.
             uint32_t material = UINT32_MAX;
             if (prim.material != nullptr) {
-                MaterialUris named;
+                MaterialSource named;
+                named.doubleSided = doubleSided;
                 if (prim.material->has_pbr_metallic_roughness) {
                     const cgltf_texture* tex =
                         prim.material->pbr_metallic_roughness.base_color_texture.texture;
@@ -258,16 +269,17 @@ static bool LoadGltf(const char* path,
                 }
 
                 if (!named.baseColor.empty() || !named.normal.empty()) {
-                    for (size_t m = 0; m < materialUris->size(); ++m) {
-                        if ((*materialUris)[m].baseColor == named.baseColor
-                                && (*materialUris)[m].normal == named.normal) {
+                    for (size_t m = 0; m < materialSources->size(); ++m) {
+                        if ((*materialSources)[m].baseColor == named.baseColor
+                                && (*materialSources)[m].normal == named.normal
+                                && (*materialSources)[m].doubleSided == named.doubleSided) {
                             material = static_cast<uint32_t>(m);
                             break;
                         }
                     }
                     if (material == UINT32_MAX) {
-                        material = static_cast<uint32_t>(materialUris->size());
-                        materialUris->push_back(named);
+                        material = static_cast<uint32_t>(materialSources->size());
+                        materialSources->push_back(named);
                     }
                 }
             }
@@ -283,7 +295,7 @@ static bool LoadGltf(const char* path,
     }
 
     LOG("[gltf] %s: %zu primitives, %zu vertices, %zu indices, %zu materials\n",
-        path, items->size(), vertices->size(), indices->size(), materialUris->size());
+        path, items->size(), vertices->size(), indices->size(), materialSources->size());
 
     cgltf_free(data);
     return !items->empty();
@@ -463,14 +475,13 @@ int main() {
     // is the fallback, and it is also what says whether a blank screen is the loader's
     // fault or the renderer's.
     const char* const kScenePath = LAMBDA_ASSET_ROOT "/Sponza/Sponza.gltf";
-    std::vector<uint32_t> itemMaterial;      // one per item, indexing materialUris
-    std::vector<uint8_t> itemDoubleSided;    // one per item, choosing the pipeline
-    std::vector<MaterialUris> materialUris;
+    std::vector<uint32_t> itemMaterial;      // one per item, indexing materialSources
+    std::vector<MaterialSource> materialSources;
     bool loaded = false;
     if (std::FILE* probe = std::fopen(kScenePath, "rb")) {
         std::fclose(probe);
         loaded = LoadGltf(kScenePath, &vertices, &indices, &items,
-                          &itemMaterial, &itemDoubleSided, &materialUris);
+                          &itemMaterial, &materialSources);
     } else {
         LOG("[scene] no %s -- drawing the generated sphere instead\n", kScenePath);
     }
@@ -515,10 +526,9 @@ int main() {
         // No material of their own: they take the checker, like a glTF primitive
         // that names no texture. Closed shapes, so they cull like the opaque ones.
         for (const glm::mat4& m : kPlacements) {
-            items.push_back(DrawItem{m, 1.0f, 0.0f, kSphereIndices,
-                                     VK_CULL_MODE_BACK_BIT, VK_NULL_HANDLE, 0});
+            // material is filled in below, once the Material array exists.
+            items.push_back(DrawItem{m, 1.0f, 0.0f, kSphereIndices, nullptr, 0});
             itemMaterial.push_back(UINT32_MAX);
-            itemDoubleSided.push_back(0);
         }
     }
 
@@ -548,7 +558,7 @@ int main() {
     // bindings and every one of them has to point somewhere; a null would be a
     // validation error at bind time, and a branch in the shader would be a third way
     // to say the same thing.
-    const uint32_t materialCount = static_cast<uint32_t>(materialUris.size()) + 1;
+    const uint32_t materialCount = static_cast<uint32_t>(materialSources.size()) + 1;
     renderer.textures.resize(static_cast<size_t>(materialCount) * 2);
 
     // Code, not a file, so a machine without the asset still draws something that
@@ -574,8 +584,8 @@ int main() {
                                          | VK_IMAGE_USAGE_SAMPLED_BIT};
 
     for (uint32_t i = 0; i < materialCount; ++i) {
-        const MaterialUris named =
-            i < materialUris.size() ? materialUris[i] : MaterialUris{};
+        const MaterialSource named =
+            i < materialSources.size() ? materialSources[i] : MaterialSource{};
         Texture& base = renderer.textures[static_cast<size_t>(i) * 2];
         Texture& normal = renderer.textures[static_cast<size_t>(i) * 2 + 1];
 
@@ -625,10 +635,17 @@ int main() {
 
     // The pairs, as the two pointers a set is filled from. Built here rather than
     // stored, because textures owns them and this is only a way of reading it.
-    std::vector<MaterialTextures> sources(materialCount);
+    std::vector<MaterialDesc> sources(materialCount);
     for (uint32_t i = 0; i < materialCount; ++i) {
+        // The stand-in is last and the loader did not describe it: closed shapes, so
+        // it culls like the opaque ones.
+        const bool doubleSided = i < materialSources.size() && materialSources[i].doubleSided;
+        // The cast is for the braced init: the enum is int, the flags field is
+        // unsigned, and that counts as narrowing here.
         sources[i] = {&renderer.textures[static_cast<size_t>(i) * 2],
-                      &renderer.textures[static_cast<size_t>(i) * 2 + 1]};
+                      &renderer.textures[static_cast<size_t>(i) * 2 + 1],
+                      static_cast<VkCullModeFlags>(doubleSided ? VK_CULL_MODE_NONE
+                                                               : VK_CULL_MODE_BACK_BIT)};
     }
 
     if (!CreateGuiSet(renderer.descriptors, renderer.guiPipeline,
@@ -640,13 +657,13 @@ int main() {
 
     // Join the two halves the loader had to hand back separately. The stand-in pair is
     // last, so it is what UINT32_MAX resolves to.
+    // Contract: renderer.materials must not be resized after this -- the items point
+    //           into it. It is filled once above and never grows.
     const uint32_t kNoTexture = materialCount - 1;
     for (size_t i = 0; i < items.size(); ++i) {
         const uint32_t index = itemMaterial[i];
         items[i].material =
-            renderer.materials[index == UINT32_MAX ? kNoTexture : index].set;
-        items[i].cullMode = itemDoubleSided[i] != 0 ? VK_CULL_MODE_NONE
-                                                    : VK_CULL_MODE_BACK_BIT;
+            &renderer.materials[index == UINT32_MAX ? kNoTexture : index];
     }
 
     // Frames

@@ -79,7 +79,7 @@ bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
 }
 
 bool CreateMaterials(const Descriptors& descriptors, const Pipeline& pipeline,
-                     const MaterialTextures* sources, uint32_t count,
+                     const MaterialDesc* sources, uint32_t count,
                      Material* out) noexcept {
     if (count == 0) { return true; }
 
@@ -92,6 +92,7 @@ bool CreateMaterials(const Descriptors& descriptors, const Pipeline& pipeline,
 
     for (uint32_t i = 0; i < count; ++i) {
         out[i].set = sets[i];
+        out[i].cullMode = sources[i].cullMode;   // copied, not bound: it is not a binding
         // Order is binding order, which the shader declares and reflection reports.
         const BindingValue values[] = {
             {sources[i].baseColor->view.handle},   // 0
@@ -242,20 +243,25 @@ static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
     //
     // UINT32_MAX rather than a cull value: every real value is a legal starting
     // state, so "not set yet" needs one that is not.
-    VkDescriptorSet boundMaterial = VK_NULL_HANDLE;
+    //
+    // Both now read one pointer, so an item cannot ask for a cull mode its material
+    // does not have. They still change at different rates: cull is a function of the
+    // material, and a function is coarser than what it is a function of.
+    const Material* boundMaterial = nullptr;
     VkCullModeFlags boundCull = UINT32_MAX;
     for (uint32_t i = 0; i < itemCount; ++i) {
         const DrawItem& item = items[i];
+        if (item.material == nullptr) { continue; }   // no set to bind, so nothing to draw
 
-        if (item.cullMode != boundCull) {
-            vk.vkCmdSetCullMode(cmd, item.cullMode);
-            boundCull = item.cullMode;
+        if (item.material->cullMode != boundCull) {
+            vk.vkCmdSetCullMode(cmd, item.material->cullMode);
+            boundCull = item.material->cullMode;
         }
 
         if (item.material != boundMaterial) {
             vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                        pipeline.layout, kMaterialSet, 1,
-                                       &item.material, 0, nullptr);
+                                       &item.material->set, 0, nullptr);
             boundMaterial = item.material;
         }
 

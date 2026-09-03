@@ -137,18 +137,33 @@ struct PushConstants {
 // Two bindings now, in the one set. The prediction written here held: a second thing
 // a material owns is another binding, not another set, because it is counted the same
 // way -- one per material. Roughness would be the third.
+//
+// The set is not all of it. What a surface looks like also decides one thing no shader
+// can be handed, and that is the line the second field is on.
 struct Material {
     VkDescriptorSet set = VK_NULL_HANDLE;
+
+    // glTF doubleSided, as the value the API wants. Here rather than on the draw
+    // because it is counted the way the set is -- one per material, never per draw --
+    // and a draw storing it again lets the two disagree.
+    //
+    // Not a binding: the rasterizer is not a shader input, so this is the one material
+    // value that cannot ride in the set. It goes out as vkCmdSetCullMode instead.
+    //
+    // A function of the material only because the loader keys materials on it. Two
+    // glTF materials sharing textures but differing here stay two.
+    VkCullModeFlags cullMode = VK_CULL_MODE_BACK_BIT;
 };
 
-// What one material is made of, before it becomes a set. Pointers: the scene owns the
-// textures, and two materials naming one image share it.
+// What one material is made of, before it becomes a Material. Pointers: the scene owns
+// the textures, and two materials naming one image share it.
 //
-// Neither may be null. A material the asset left without a normal map takes a flat
-// one, which is the caller's to supply -- this layer has no way to make a texture.
-struct MaterialTextures {
+// Neither texture may be null. A material the asset left without a normal map takes a
+// flat one, which is the caller's to supply -- this layer has no way to make a texture.
+struct MaterialDesc {
     const Texture* baseColor = nullptr;
     const Texture* normal = nullptr;
+    VkCullModeFlags cullMode = VK_CULL_MODE_BACK_BIT;
 };
 
 // Effect: draws one set per material and points each at its textures
@@ -156,7 +171,7 @@ struct MaterialTextures {
 // Contract: pipeline must be the one these will be bound with -- the set is drawn
 //           from its material layout.
 bool CreateMaterials(const Descriptors& descriptors, const Pipeline& pipeline,
-                     const MaterialTextures* sources, uint32_t count,
+                     const MaterialDesc* sources, uint32_t count,
                      Material* out) noexcept;
 
 
@@ -184,16 +199,15 @@ struct DrawItem {
     float alphaCutoff = 0.0f;   // 0 = draw every texel
     IndexRange range{};
 
-    // glTF doubleSided, as the value the API wants. A pipeline once, because cull
-    // was baked -- it is dynamic state now, so what varies per draw is a number
-    // again rather than a whole compiled object.
-    VkCullModeFlags cullMode = VK_CULL_MODE_BACK_BIT;
-
-    // The set, not an index into a list the recorder would also have to be handed.
+    // The material, not its set. Two reasons the handle was not enough: the recorder
+    // needs the cull mode as well, and a sort key needs something that has an order --
+    // a descriptor set handle is a number the driver chose.
+    //
     // Bound only when it differs from the last one, so the order items are written in
-    // decides how many binds happen -- that is what a sort key would be sorting.
-    // The pipeline above is bound the same way, and the two do not change together.
-    VkDescriptorSet material = VK_NULL_HANDLE;
+    // decides how many binds happen -- that is what a sort key would be sorting. Cull
+    // is set the same way, and the two now change together because both come from
+    // here.
+    const Material* material = nullptr;
 
     // Added to every index this draw reads, so a primitive's indices can stay
     // relative to its own vertices. glTF numbers each primitive from zero, and
