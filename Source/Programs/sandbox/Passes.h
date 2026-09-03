@@ -96,17 +96,20 @@ struct SceneUniform {
     float useAlphaMask;
 };
 
-// Rides inside the command buffer: no pool, no set, no lifetime. At least 128 bytes
-// are guaranteed, which is why the three matrices are multiplied on the CPU - sent
-// apart they would be 192. Lighting that wants world space splits model back out.
+// Rides inside the command buffer: no pool, no set, no lifetime. The spec guarantees
+// only 128 bytes, so what goes here is what changes per draw and nothing else.
+//
+// model, not an mvp. It was one when the camera was a per-draw value; the camera
+// moved into the frame's uniform, and the vertex shader multiplies viewProj there.
+// Sending both would be 128 bytes of matrices alone.
 //
 // Contract: field order and types match the shader's push_constant block. The layer
 //           checks the size, not the order.
 // Contract: every stage that reads it must be in pushRange.stageFlags - fragment
-//           reads alpha, so VERTEX alone is not enough.
+//           reads alpha and alphaCutoff, so VERTEX alone is not enough.
 struct PushConstants {
-    glm::mat4 mvp;   // model -> world -> view -> clip
-    float alpha;     // 1.0 is opaque. Opaque pipelines ignore it: blending is off
+    glm::mat4 model;   // object -> world. viewProj is in SceneUniform
+    float alpha;       // 1.0 is opaque. Opaque pipelines ignore it: blending is off
 
     // glTF alphaMode MASK: a texel below this is thrown away. 0 keeps everything,
     // which is what OPAQUE means, so the two modes are one value and not a flag
