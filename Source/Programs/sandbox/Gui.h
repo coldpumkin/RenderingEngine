@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 // Gui - one panel, and the pass that draws it
 // ============================================================================
@@ -14,9 +14,11 @@
 // The panel exists because the toggles ran out of keys. Four fit on 1..4; the next
 // thing to switch off would need a fifth nobody remembers.
 
+#include "Vulkan/Descriptors.h"
 #include "Vulkan/Device.h"
 #include "Vulkan/Frame.h"
 #include "Vulkan/Instance.h"
+#include "Vulkan/Pipeline.h"
 #include "Vulkan/Texture.h"
 
 struct Window;
@@ -61,6 +63,31 @@ struct Gui {
 bool CreateGui(const VulkanInstance& inst, const VulkanDevice& dev,
                Window& window, VkFormat targetFormat, Gui* out) noexcept;
 
+// What the panel reads. One struct rather than a growing argument list, and every
+// field is borrowed -- main fills it each frame from things it already holds.
+//
+// The pipelines are here for their set layouts. Those are the only description of the
+// shader interface that exists at runtime: the .spv is gone, and Vulkan will not
+// answer a question about a VkDescriptorSetLayout once it is made. Same for the
+// pool's sizes, which is why Descriptors keeps them.
+struct GuiFrameInfo {
+    float frameSeconds = 0.0f;
+    uint32_t drawCount = 0;
+    uint32_t materialCount = 0;
+
+    const Descriptors* descriptors = nullptr;
+    const Pipeline* scenePipeline = nullptr;
+    const Pipeline* presentPipeline = nullptr;
+
+    // sizeof on our side of the boundary. The shader's side is in the .spv and the
+    // two are checked only where the pipeline was built.
+    uint32_t uniformBytes = 0;
+    uint32_t pushBytes = 0;
+    uint32_t vertexStride = 0;
+    uint32_t vertexAttributes = 0;
+    uint32_t framesInFlight = 0;
+};
+
 // Effect: builds this frame's widgets and leaves them ready to record
 //
 // Input/Output: options, edited in place by the checkboxes
@@ -68,8 +95,7 @@ bool CreateGui(const VulkanInstance& inst, const VulkanDevice& dev,
 // Separate from the recording below because it runs where the rest of the frame's
 // state is decided, not where commands are written -- the same line the uniform is
 // on. Nothing here touches the GPU.
-void BuildGui(ViewOptions* options, float frameSeconds,
-              uint32_t drawCount, uint32_t materialCount) noexcept;
+void BuildGui(ViewOptions* options, const GuiFrameInfo& info) noexcept;
 
 // Effect: appends the panel's draws to the slot's command buffer
 //

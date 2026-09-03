@@ -35,6 +35,17 @@ struct Descriptors {
     VkSampler sampler = VK_NULL_HANDLE;
     VkDescriptorPool pool = VK_NULL_HANDLE;
 
+    // What the pool was built for. Kept because **Vulkan has no way to ask**: the
+    // sizes go into vkCreateDescriptorPool and are never readable again, so a panel
+    // that wants to show them has no other source.
+    //
+    // Two different things, which is the whole reason the pool takes both: how many
+    // sets can be drawn, and how many descriptors those sets contain. A layout with
+    // two bindings spends one set and two descriptors.
+    uint32_t maxSets = 0;
+    uint32_t imageDescriptors = 0;    // COMBINED_IMAGE_SAMPLER
+    uint32_t bufferDescriptors = 0;   // UNIFORM_BUFFER
+
     Descriptors() = default;
     ~Descriptors();
     Descriptors(const Descriptors&) = delete;

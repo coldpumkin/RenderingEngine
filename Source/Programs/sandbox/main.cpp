@@ -797,7 +797,19 @@ int main() {
         // The panel is state, like the camera above it, so it is built here and not
         // where commands are written. dt is last frame's, which is what a frame time
         // reading means anyway.
-        BuildGui(&viewOptions, dt, static_cast<uint32_t>(items.size()), materialCount);
+        GuiFrameInfo guiInfo;
+        guiInfo.frameSeconds = dt;
+        guiInfo.drawCount = static_cast<uint32_t>(items.size());
+        guiInfo.materialCount = materialCount;
+        guiInfo.descriptors = &descriptors;
+        guiInfo.scenePipeline = &opaque;
+        guiInfo.presentPipeline = &present;
+        guiInfo.uniformBytes = static_cast<uint32_t>(sizeof(SceneUniform));
+        guiInfo.pushBytes = static_cast<uint32_t>(sizeof(PushConstants));
+        guiInfo.vertexStride = static_cast<uint32_t>(sizeof(Vertex));
+        guiInfo.vertexAttributes = VertexInput().vertexAttributeDescriptionCount;
+        guiInfo.framesInFlight = kFramesInFlight;
+        BuildGui(&viewOptions, guiInfo);
 
         // Draw it
         // --------------------------------------------------------------------

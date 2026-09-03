@@ -33,6 +33,37 @@ PFN_vkVoidFunction LoadVulkanFunction(const char* name, void* userData) {
 // Lives as long as ImGui does: the backend keeps the pointer it was handed.
 VulkanLoader g_loader;
 
+// What a descriptor type is, short enough to sit in a table.
+//
+// Only the two we declare. A third would be an unnamed number here, which is louder
+// than a wrong name -- the panel exists to show what is actually there.
+const char* TypeName(VkDescriptorType type) noexcept {
+    switch (type) {
+    case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER: return "sampler2D";
+    case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:         return "uniform";
+    default: return "?";
+    }
+}
+
+// One row per set a pipeline declares, and one line per binding in it.
+//
+// An empty set is printed too. Vulkan numbers sets by position, so set 1 cannot exist
+// without a set 0 in front of it, and a layout with no bindings is how that is said.
+void ShowSetLayouts(const char* name, const Pipeline& pipeline) noexcept {
+    for (uint32_t set = 0; set < kMaxSets; ++set) {
+        const DescriptorLayout& layout = pipeline.setLayouts[set];
+        if (layout.bindingCount == 0) {
+            ImGui::Text("%-8s set %u   (empty)", set == 0 ? name : "", set);
+            continue;
+        }
+        ImGui::Text("%-8s set %u", set == 0 ? name : "", set);
+        for (uint32_t b = 0; b < layout.bindingCount; ++b) {
+            if (layout.types[b] == 0) { continue; }   // a hole in the numbering
+            ImGui::Text("             [%u] %s", b, TypeName(layout.types[b]));
+        }
+    }
+}
+
 // ImGui reports failures through a callback rather than a return value, because most
 // of its calls are inside its own recording. Ours only says so -- there is nothing to
 // unwind from a panel.
@@ -144,15 +175,15 @@ Gui::~Gui() {
     }
 }
 
-void BuildGui(ViewOptions* options, float frameSeconds,
-              uint32_t drawCount, uint32_t materialCount) noexcept {
+void BuildGui(ViewOptions* options, const GuiFrameInfo& info) noexcept {
     ImGui_ImplVulkan_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
 
     ImGui::SetNextWindowPos(ImVec2(12.0f, 12.0f), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(340.0f, 0.0f), ImGuiCond_FirstUseEver);
-    if (ImGui::Begin("View")) {
+    // AlwaysAutoResize, not a size: every one of these is a list whose length is a
+    // fact about the program, and a scrollbar would hide the part that changed.
+    if (ImGui::Begin("View", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::Checkbox("normal map", &options->normalMap);
         ImGui::Checkbox("base colour", &options->baseColor);
         ImGui::Checkbox("specular", &options->specular);
@@ -162,10 +193,46 @@ void BuildGui(ViewOptions* options, float frameSeconds,
         // Both numbers, because they answer different questions: the rate is what a
         // person reads, the milliseconds are what a change moves. A guard on the
         // first frame, where the gap is zero.
-        const float fps = frameSeconds > 0.0f ? 1.0f / frameSeconds : 0.0f;
-        ImGui::Text("fps    %.0f  (%.2f ms)", fps, frameSeconds * 1000.0f);
-        ImGui::Text("draws  %u", drawCount);
-        ImGui::Text("mats   %u", materialCount);
+        const float fps = info.frameSeconds > 0.0f ? 1.0f / info.frameSeconds : 0.0f;
+        ImGui::Text("fps    %.0f  (%.2f ms)", fps, info.frameSeconds * 1000.0f);
+        ImGui::Text("draws  %u", info.drawCount);
+        ImGui::Text("mats   %u", info.materialCount);
+    }
+    ImGui::End();
+
+    // What the shader interface actually is
+    //
+    // Every number here was decided somewhere else and then became unreadable: a set
+    // layout is opaque once created, a pool forgets its sizes, and a push range lives
+    // in the .spv. This is the only place they are all visible at once.
+    ImGui::SetNextWindowPos(ImVec2(12.0f, 300.0f), ImGuiCond_FirstUseEver);
+    if (ImGui::Begin("Descriptors", nullptr, ImGuiWindowFlags_AlwaysAutoResize)
+            && info.descriptors != nullptr) {
+        const Descriptors& d = *info.descriptors;
+
+        // Two numbers because the pool takes two: how many sets may be drawn, and how
+        // many descriptors those sets hold. A layout with two bindings spends one of
+        // the first and two of the second.
+        ImGui::Text("pool   %u sets", d.maxSets);
+        ImGui::Text("       %u sampler2D  +  %u uniform",
+                    d.imageDescriptors, d.bufferDescriptors);
+        ImGui::Separator();
+
+        if (info.scenePipeline != nullptr) { ShowSetLayouts("scene", *info.scenePipeline); }
+        if (info.presentPipeline != nullptr) { ShowSetLayouts("present", *info.presentPipeline); }
+    }
+    ImGui::End();
+
+    ImGui::SetNextWindowPos(ImVec2(12.0f, 580.0f), ImGuiCond_FirstUseEver);
+    if (ImGui::Begin("Shader data", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        // Three ways to get bytes to a shader, and the reason there are three is how
+        // often each changes and how big it is allowed to be.
+        ImGui::Text("uniform  %3u B   x%u    per frame, host visible + mapped",
+                    info.uniformBytes, info.framesInFlight);
+        ImGui::Text("push     %3u B         per draw, inside the command buffer",
+                    info.pushBytes);
+        ImGui::Text("vertex   %3u B   x%u attrs   per vertex, in the buffer",
+                    info.vertexStride, info.vertexAttributes);
     }
     ImGui::End();
 

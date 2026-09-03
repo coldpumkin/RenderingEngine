@@ -97,11 +97,15 @@ bool CreateDescriptors(const VulkanDevice& dev,
         for (uint32_t r = 0; r < requestCount; ++r) {
             n += requests[r].count * CountOfType(*requests[r].layout, type);
         }
+        if (type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) { out->imageDescriptors = n; }
+        else { out->bufferDescriptors = n; }
+
         if (n == 0) { continue; }
         poolSizes[sizeCount].type = type;
         poolSizes[sizeCount].descriptorCount = n;
         ++sizeCount;
     }
+    out->maxSets = maxSets;
 
     VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     poolInfo.maxSets = maxSets;
