@@ -303,7 +303,14 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
         VK_DYNAMIC_STATE_SCISSOR,
         VK_DYNAMIC_STATE_CULL_MODE,    // core in Vulkan 1.3, which we require
         VK_DYNAMIC_STATE_FRONT_FACE,   // same, and the other half of the viewport sign
+        VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE,   // same again
     };
+
+    // Which of these is dynamic and which is baked is not about how often a value
+    // changes. viewport, cull, winding and the depth test are registers the hardware
+    // reads per draw; polygonMode, blending, sample count and the attachment formats
+    // change what the driver compiles, so those stay in the desc. The wireframe
+    // pipeline exists because of that line and nothing else does.
     VkPipelineDynamicStateCreateInfo dynamicState{
         VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
     dynamicState.dynamicStateCount = static_cast<uint32_t>(std::size(kDynamicStates));
@@ -354,7 +361,9 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     const bool useDepth = desc.formats.depth != VK_FORMAT_UNDEFINED;
     VkPipelineDepthStencilStateCreateInfo depthStencil{
         VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-    depthStencil.depthTestEnable = VK_TRUE;   // translucent behind opaque is still hidden
+    // Ignored: VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE is in the list above. Set anyway,
+    // because a pipeline created with a state it never uses reads as an oversight.
+    depthStencil.depthTestEnable = VK_TRUE;
     depthStencil.depthWriteEnable = translucent ? VK_FALSE : VK_TRUE;
     depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;   // clear is 1.0, so nearer wins
 

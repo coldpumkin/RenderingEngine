@@ -65,9 +65,28 @@ struct ViewOptions {
     bool alphaMask = true;
     bool shadow = true;
 
-    // Unlike the five above, this one does not reach a shader. It picks which pipeline
-    // the scene pass binds, so it is read on the CPU and never enters the uniform.
+    // The three below do not reach a shader. They are read on the CPU where the scene
+    // pass records, and they differ in what that costs:
+    //
+    //   wireframe   polygonMode is compiled in, so it selects between two pipelines
+    //   depthTest   dynamic state, one command, no pipeline
+    //   cull        dynamic state, and one the material already sets per draw
+    //
+    // Which is which is not about how often they change -- all three change never, or
+    // when a checkbox moves. It is about whether the driver has to compile something
+    // different.
     bool wireframe = false;
+
+    // Off, the depth test stops hiding anything and the draw order becomes visible:
+    // what is on screen is whatever was recorded last. That is the order main sorted
+    // into, made looking at it possible.
+    bool depthTest = true;
+
+    // Material means each draw keeps the cull mode its glTF material asked for, which
+    // is what the sort key groups by. The other three override every draw, and Front
+    // is the one worth having -- it shows the inside of a closed surface.
+    enum class CullChoice { Material, None, Back, Front };
+    CullChoice cull = CullChoice::Material;
 };
 
 // The same switches as the shader reads them.
@@ -235,11 +254,17 @@ void BuildGui(Gui* gui, const GuiFrameInfo& info) noexcept;
 VkBuffer GuiOptionsBuffer(const Gui& gui, uint32_t frameIndex) noexcept;
 constexpr VkDeviceSize kGuiOptionsSize = sizeof(ViewOptionsUniform);
 
-// Output: whether the scene pass should bind its wireframe variant
-//
-// A function for the same reason GuiOptionsBuffer is one: what the pass needs is one
-// answer, and this is the whole of what it may know about the panel.
+// The three CPU-side answers the scene pass needs. Functions for the same reason
+// GuiOptionsBuffer is one: what the pass needs is an answer, and these are the whole
+// of what it may know about the panel.
 bool GuiWireframe(const Gui& gui) noexcept;
+bool GuiDepthTest(const Gui& gui) noexcept;
+
+// Output: the cull mode to use for every draw, or UINT32_MAX to leave it to each
+//         material. The sentinel is outside VkCullModeFlagBits, so no real value
+//         collides with it.
+constexpr VkCullModeFlags kCullFromMaterial = UINT32_MAX;
+VkCullModeFlags GuiCullMode(const Gui& gui) noexcept;
 
 // Effect: copies this frame's switches into the buffer the scene pass will read
 //

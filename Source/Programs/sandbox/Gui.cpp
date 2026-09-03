@@ -232,6 +232,19 @@ bool GuiWireframe(const Gui& gui) noexcept {
     return gui.options.wireframe;
 }
 
+bool GuiDepthTest(const Gui& gui) noexcept {
+    return gui.options.depthTest;
+}
+
+VkCullModeFlags GuiCullMode(const Gui& gui) noexcept {
+    switch (gui.options.cull) {
+    case ViewOptions::CullChoice::None:  return VK_CULL_MODE_NONE;
+    case ViewOptions::CullChoice::Back:  return VK_CULL_MODE_BACK_BIT;
+    case ViewOptions::CullChoice::Front: return VK_CULL_MODE_FRONT_BIT;
+    default:                             return kCullFromMaterial;
+    }
+}
+
 VkBuffer GuiOptionsBuffer(const Gui& gui, uint32_t frameIndex) noexcept {
     return gui.frames[frameIndex].options.handle;
 }
@@ -261,11 +274,22 @@ void BuildGui(Gui* gui, const GuiFrameInfo& info) noexcept {
         ImGui::Checkbox("alpha mask", &options->alphaMask);
         ImGui::Checkbox("shadow", &options->shadow);
 
-        // Separated because it is a different kind of switch: the five above turn a
-        // term of the lighting off, this one swaps the pipeline the same draws go
-        // through.
+        // Separated because these are a different kind of switch: the five above turn
+        // a term of the lighting off, these change how the same draws are rasterized.
         ImGui::Separator();
         ImGui::Checkbox("wireframe", &options->wireframe);
+        ImGui::Checkbox("depth test", &options->depthTest);
+
+        // Four choices, and the first is not an override: it leaves each draw with the
+        // cull mode its material asked for, which is what the sort key groups by. The
+        // draw-stat line above shows what that costs -- picking any of the other three
+        // takes cull changes to 1.
+        const char* const kCullNames[] = {"material", "none", "back", "front"};
+        int cull = static_cast<int>(options->cull);
+        if (ImGui::Combo("cull", &cull, kCullNames,
+                         static_cast<int>(std::size(kCullNames)))) {
+            options->cull = static_cast<ViewOptions::CullChoice>(cull);
+        }
 
         ImGui::Separator();
         // Both numbers, because they answer different questions: the rate is what a
@@ -448,6 +472,9 @@ void RecordGuiPass(const FrameSlot& slot, Gui& gui, const Texture& target) noexc
     // Nothing is culled: the panel's triangles have no consistent winding, and a
     // rectangle has no back to hide.
     vk.vkCmdSetCullMode(cmd, VK_CULL_MODE_NONE);
+
+    // No depth attachment here either, and the state is dynamic for every pipeline.
+    vk.vkCmdSetDepthTestEnable(cmd, VK_FALSE);
 
     vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.handle);
     vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout,

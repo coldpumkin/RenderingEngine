@@ -323,6 +323,10 @@ static void RecordShadowPass(const FrameSlot& slot, const ShadowPass& shadow,
     // way -- which is what the comparison wants.
     vk.vkCmdSetCullMode(cmd, VK_CULL_MODE_NONE);
 
+    // Every dynamic state has to be set before every draw, whichever pass. This pass
+    // writes the depth that is its whole product, so the test is on.
+    vk.vkCmdSetDepthTestEnable(cmd, VK_TRUE);
+
     vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadow.pipeline->handle);
     vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                shadow.program->layout, kFrameSet, 1, &frame.set,
@@ -359,8 +363,16 @@ static void RecordShadowPass(const FrameSlot& slot, const ShadowPass& shadow,
                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 }
 
+// What the panel decided about rasterization, as the three values this pass uses.
+// Gathered into one struct so the signature does not grow a parameter per checkbox.
+struct SceneRasterOptions {
+    bool wireframe = false;
+    bool depthTest = true;
+    VkCullModeFlags cull = kCullFromMaterial;
+};
+
 static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
-                            const DrawList& draws, bool wireframe,
+                            const DrawList& draws, SceneRasterOptions raster,
                             DrawStats* stats) noexcept {
     const VolkDeviceTable& vk = slot.dev->table;
     VkCommandBuffer cmd = slot.cmd;
@@ -368,7 +380,7 @@ static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
 
     // One choice for the whole pass. Both were built from scene.program, so every set
     // allocated for this pass fits either one and nothing below changes.
-    const Pipeline& pipeline = wireframe ? *scene.wirePipeline : *scene.pipeline;
+    const Pipeline& pipeline = raster.wireframe ? *scene.wirePipeline : *scene.pipeline;
 
     // Sets and push constants go through the pass's layout, not the pipeline's: every
     // pipeline a draw here can name was built from the same program, so this is the
@@ -451,6 +463,14 @@ static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
     // inside out with nothing reporting it.
     SetViewportAndWinding(vk, cmd, extent, ViewportY::Up);
 
+    // Dynamic, so turning the depth test off costs a command and not a pipeline. With
+    // it off nothing is hidden and what survives is whatever was drawn last, which is
+    // the order this list was sorted into.
+    //
+    // The write goes with it: the spec makes depthWriteEnable irrelevant while the
+    // test is disabled, so there is nothing to turn off separately.
+    vk.vkCmdSetDepthTestEnable(cmd, raster.depthTest ? VK_TRUE : VK_FALSE);
+
     // Pixels outside this rect are discarded. Whole screen for now.
     VkRect2D scissor{};
     scissor.extent = extent;
@@ -498,9 +518,14 @@ static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
         if (item.material >= draws.materialCount) { continue; }
         const Material& material = draws.materials[item.material];
 
-        if (material.cullMode != boundCull) {
-            vk.vkCmdSetCullMode(cmd, material.cullMode);
-            boundCull = material.cullMode;
+        // The material's, unless the panel overrode it. An override makes every draw
+        // ask for the same value, so this fires once for the pass -- which is what the
+        // panel's cull-change count shows.
+        const VkCullModeFlags wantCull =
+            raster.cull == kCullFromMaterial ? material.cullMode : raster.cull;
+        if (wantCull != boundCull) {
+            vk.vkCmdSetCullMode(cmd, wantCull);
+            boundCull = wantCull;
             if (stats != nullptr) { stats->cullChanges += 1; }
         }
 
@@ -606,6 +631,10 @@ static void RecordPostProcessPass(const FrameSlot& slot, const PostProcessPass& 
     // fullscreen triangle, wound to face us.
     vk.vkCmdSetCullMode(cmd, VK_CULL_MODE_BACK_BIT);
 
+    // No depth attachment in this pass, so the test has nothing to read -- and the
+    // state still has to be set, because it is dynamic for every pipeline.
+    vk.vkCmdSetDepthTestEnable(cmd, VK_FALSE);
+
     vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout,
                                0, 1, &post.sets[slot.index], 0, nullptr);
 
@@ -657,7 +686,10 @@ bool RecordFrame(const FrameSlot& slot, const ShadowPass& shadow,
     // Shadow first, and the order is these lines. The scene pass's set already names
     // the map; what it cannot say is that the map has been drawn this frame.
     RecordShadowPass(slot, shadow, draws);
-    RecordScenePass(slot, scene, draws, GuiWireframe(gui), stats);
+    RecordScenePass(slot, scene, draws,
+                    SceneRasterOptions{GuiWireframe(gui), GuiDepthTest(gui),
+                                       GuiCullMode(gui)},
+                    stats);
     RecordPostProcessPass(slot, post, target);
     RecordGuiPass(slot, gui, target);
 
