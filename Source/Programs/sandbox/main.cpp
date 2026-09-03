@@ -125,6 +125,69 @@ struct MaterialSource {
     bool doubleSided = false;
 };
 
+// Capture
+// ============================================================================
+//
+// What the scene pass produced, as a file, read off the GPU. The alternative was a
+// screenshot of the window, which reads whatever is at those coordinates -- the same
+// binary measured 0.95% and 14.26% black on two runs. This reads the image itself, so
+// two runs of one build are identical by construction and a diff is only ever code.
+//
+// colorResolve is the subject: at kRenderExtent whatever the window is doing, and
+// before the panel is drawn on top.
+
+static void Put32(uint8_t* at, uint32_t value) noexcept {
+    at[0] = static_cast<uint8_t>(value);
+    at[1] = static_cast<uint8_t>(value >> 8);
+    at[2] = static_cast<uint8_t>(value >> 16);
+    at[3] = static_cast<uint8_t>(value >> 24);
+}
+
+// A 24-bit BMP: a 54-byte header, then rows bottom-up with each padded to 4 bytes.
+// Written by hand rather than vendoring an encoder for one debug path, and BMP rather
+// than PPM because Windows opens it without asking what it is.
+//
+// Input: rgba is width * height * 4, top row first, red first
+static bool WriteBmp(const char* path, uint32_t width, uint32_t height,
+                     const uint8_t* rgba) noexcept {
+    const uint32_t rowBytes = width * 3;
+    const uint32_t pad = (4 - (rowBytes % 4)) % 4;
+    const uint32_t imageBytes = (rowBytes + pad) * height;
+
+    std::FILE* file = std::fopen(path, "wb");
+    if (file == nullptr) {
+        LOG("[capture] cannot write %s\n", path);
+        return false;
+    }
+
+    uint8_t header[54]{};
+    header[0] = 'B';
+    header[1] = 'M';
+    Put32(header + 2, 54 + imageBytes);   // file size
+    Put32(header + 10, 54);               // where the pixels start
+    Put32(header + 14, 40);               // DIB header size
+    Put32(header + 18, width);
+    Put32(header + 22, height);
+    header[26] = 1;                       // planes
+    header[28] = 24;                      // bits per pixel
+    Put32(header + 34, imageBytes);
+    std::fwrite(header, 1, sizeof(header), file);
+
+    std::vector<uint8_t> row(rowBytes + pad, 0);
+    for (uint32_t y = 0; y < height; ++y) {
+        // BMP counts rows from the bottom, and stores them as B, G, R.
+        const uint8_t* src = rgba + static_cast<size_t>(height - 1 - y) * width * 4;
+        for (uint32_t x = 0; x < width; ++x) {
+            row[x * 3 + 0] = src[x * 4 + 2];
+            row[x * 3 + 1] = src[x * 4 + 1];
+            row[x * 3 + 2] = src[x * 4 + 0];
+        }
+        std::fwrite(row.data(), 1, row.size(), file);
+    }
+    std::fclose(file);
+    return true;
+}
+
 // A glTF file, flattened into the one mesh and the one item list this pass draws.
 //
 // Input:  path to a .gltf. Its .bin is opened from beside it
@@ -722,6 +785,13 @@ int main() {
     // the panel because it is a number to compare between runs, not to watch.
     bool loggedDrawStats = false;
 
+    // Set it to a path and the first frame is written there and the program exits.
+    // An environment variable for the reason LAMBDA_FIXED_TIME is one: what a capture
+    // wants and what a person running this wants are opposite.
+    //
+    // Implies fixed time -- a capture of a moving light is not comparable to anything.
+    const char* const capturePath = std::getenv("LAMBDA_CAPTURE");
+
     // Deterministic capture.
     //
     // The light is the only thing here that reads absolute time, and it turns every
@@ -734,7 +804,8 @@ int main() {
     //
     // Read once. getenv per frame would be a lookup for a value that cannot change.
     // dt still comes from the real clock, or the camera would stop answering keys.
-    const bool fixedTime = std::getenv("LAMBDA_FIXED_TIME") != nullptr;
+    const bool fixedTime =
+        std::getenv("LAMBDA_FIXED_TIME") != nullptr || capturePath != nullptr;
     constexpr float kFixedTime = 1.0f;   // any constant. 1.0 puts the light off-axis
 
     // What to leave out. Edited by the panel's checkboxes, read by the uniform.
@@ -908,6 +979,26 @@ int main() {
             break;
         }
         if (!PresentFrame(dev, &window, target)) {
+            break;
+        }
+
+        // One frame, then out. Everything the picture depends on is settled before the
+        // loop -- textures uploaded, camera at its start -- so waiting longer only adds
+        // whatever the clock and the keyboard did meanwhile.
+        //
+        // The wait is for this frame's own submit: colorResolve is being written by
+        // the commands just sent, and ReadTexturePixels copies from it.
+        if (capturePath != nullptr) {
+            dev.table.vkDeviceWaitIdle(dev.handle);
+            const Texture& shot = renderer.scenePass.frames[slot.index].colorResolve;
+            std::vector<uint8_t> pixels;
+            if (ReadTexturePixels(dev, commands, shot,
+                                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, &pixels)
+                    && WriteBmp(capturePath, shot.desc.extent.width,
+                                shot.desc.extent.height, pixels.data())) {
+                LOG("[capture] %ux%u -> %s\n",
+                    shot.desc.extent.width, shot.desc.extent.height, capturePath);
+            }
             break;
         }
 

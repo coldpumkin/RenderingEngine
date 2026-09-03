@@ -20,6 +20,9 @@
 
 #include "Vulkan/Image.h"
 
+#include <cstdint>
+#include <vector>   // ReadTexturePixels hands back a whole image
+
 struct Commands;
 
 // What one texture is. usage is the only field a caller really chooses -- the rest
@@ -58,3 +61,20 @@ bool CreateTextureFromPixels(const VulkanDevice& dev, const Commands& commands,
                              const TextureDesc& desc,
                              const void* pixels, VkDeviceSize size,
                              Texture* out) noexcept;
+
+// The other direction: what the GPU drew, back where the CPU can look at it.
+//
+// Input:  current is the layout the image is in when this runs. It is put back that
+//         way, so reading does not disturb the frame after it.
+// Output: out holds width * height * 4 bytes, tightly packed, in the image's own
+//         channel order.
+//
+// Contract: usage must include TRANSFER_SRC, samples must be 1 (a multisample image
+//           cannot be copied to a buffer), and the format must be four 8-bit channels.
+//           All three are checked -- this runs off a switch, so a wrong call should
+//           say so rather than trip the validation layer.
+//
+// Blocks on the GPU, like the upload above. Not a per-frame path.
+bool ReadTexturePixels(const VulkanDevice& dev, const Commands& commands,
+                       const Texture& texture, VkImageLayout current,
+                       std::vector<uint8_t>* out) noexcept;

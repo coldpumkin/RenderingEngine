@@ -28,9 +28,14 @@ bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
                                  VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT}, &frame.color)) {
             return false;
         }
+        // TRANSFER_SRC is for reading it back: this is the one image in the frame that
+        // is both what the scene produced and 1-sample, so it is the only one a
+        // capture can copy. Always on rather than behind a switch -- a flag that is
+        // only set in capture builds makes the captured frame a different frame.
         if (!CreateTexture(dev, {extent, formats.color, VK_SAMPLE_COUNT_1_BIT,
                                  VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
-                                     | VK_IMAGE_USAGE_SAMPLED_BIT},
+                                     | VK_IMAGE_USAGE_SAMPLED_BIT
+                                     | VK_IMAGE_USAGE_TRANSFER_SRC_BIT},
                            &frame.colorResolve)) {
             return false;
         }
