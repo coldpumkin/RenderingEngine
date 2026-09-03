@@ -33,6 +33,7 @@
 
 #include <cmath>      // cos, sin
 #include <cstdio>     // fopen, to test for the asset before loading it
+#include <cstdlib>    // getenv, for the deterministic-capture switch
 #include <iterator>   // std::size
 #include <string>     // the texture path the glTF names
 #include <vector>     // scene data is too big for the stack now
@@ -596,6 +597,21 @@ int main() {
     uint32_t slotIndex = 0;       // which slot this frame borrows
     double lastTime = glfwGetTime();
 
+    // Deterministic capture.
+    //
+    // The light is the only thing here that reads absolute time, and it turns every
+    // frame -- so two runs never draw the same picture, and two screenshots cannot be
+    // told apart from what the code changed. With LAMBDA_FIXED_TIME set, it stops.
+    //
+    // An environment variable rather than a Config constant: what a capture wants and
+    // what a person running it wants are opposite, and a constant would have to be
+    // edited between them.
+    //
+    // Read once. getenv per frame would be a lookup for a value that cannot change.
+    // dt still comes from the real clock, or the camera would stop answering keys.
+    const bool fixedTime = std::getenv("LAMBDA_FIXED_TIME") != nullptr;
+    constexpr float kFixedTime = 1.0f;   // any constant. 1.0 puts the light off-axis
+
     glm::vec3 eye{0.0f, 0.0f, 3.5f};
     float yaw = -90.0f;           // -90 looks down -z, per the forward expression below
     float pitch = 0.0f;
@@ -624,7 +640,7 @@ int main() {
         // One clock reading, two values: t is absolute (object spin), dt is the gap
         // (camera movement). Reading twice would let them drift apart.
         const double now = glfwGetTime();
-        const float t = static_cast<float>(now);
+        const float t = fixedTime ? kFixedTime : static_cast<float>(now);
         const float dt = static_cast<float>(now - lastTime);
         lastTime = now;
 
