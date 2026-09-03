@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 // Renderer - everything a frame is drawn with, grouped by what kind of thing it is
 // ============================================================================
@@ -49,10 +49,15 @@ struct Renderer {
     // push range, pipeline layout -- everything read out of the .spv and nothing
     // chosen by a caller.
     //
-    //   program   shaders                vertex        sets
-    //   scene     mesh.vert/frag         Vertex (48)   0 frame, 1 material
-    //   present   fullscreen.vert/frag   none          0 the scene's resolve
-    //   gui       gui.vert/frag          ImDrawVert    0 the font atlas
+    //   program   shaders                vertex          sets
+    //   shadow    shadow.vert/frag       position (48)   0 the light's matrix
+    //   scene     mesh.vert/frag         Vertex (48)     0 frame, 1 material
+    //   present   fullscreen.vert/frag   none            0 the scene's resolve
+    //   gui       gui.vert/frag          ImDrawVert      0 the font atlas
+    //
+    // The shadow row reads the same buffer over the same stride as the scene row and
+    // declares one attribute of it. A layout feeds what its shader reads, and this one
+    // reads position.
     //
     // The empty middle cell is the interesting one: a shader that builds its own
     // vertices needs no layout at all, and that is a property of the shader rather
@@ -60,6 +65,7 @@ struct Renderer {
     //
     // Declared first, so they are destroyed last. Every pipeline points at one, and
     // every descriptor set was drawn from one of their layouts.
+    ShaderProgram shadowProgram;
     ShaderProgram sceneProgram;
     ShaderProgram presentProgram;
     ShaderProgram guiProgram;
@@ -69,13 +75,19 @@ struct Renderer {
     // A pipeline is one variant of a program: the state a pass admits, compiled.
     // Today each program has exactly one, which is why the two look like one thing.
     //
-    //   pipeline   from             target        polygon   blend
-    //   scene      sceneProgram     color 4x      fill      opaque
-    //   present    presentProgram   swapchain 1x  fill      opaque
-    //   gui        guiProgram       swapchain 1x  fill      translucent
+    //   pipeline   from             target          polygon   blend
+    //   shadow     shadowProgram    depth only 1x   fill      opaque
+    //   scene      sceneProgram     color 4x        fill      opaque
+    //   present    presentProgram   swapchain 1x    fill      opaque
+    //   gui        guiProgram       swapchain 1x    fill      translucent
+    //
+    // "depth only" is a colour format of UNDEFINED, and it is checked rather than
+    // assumed: a fragment stage with no outputs and a pass with no colour attachment
+    // have to agree, and CreateGraphicsPipeline refuses the pair that does not.
     //
     // A second scene pipeline would appear in this table and nowhere else: it shares
     // sceneProgram, so every set already allocated fits it.
+    Pipeline shadowPipeline;
     Pipeline scenePipeline;
     Pipeline presentPipeline;
     Pipeline guiPipeline;
@@ -99,11 +111,15 @@ struct Renderer {
 
     // --- WHERE a frame goes -----------------------------------------------
     //
-    // Three passes in the order RecordFrame runs them. What is not written down
-    // anywhere is the edge between them: postPass reads what scenePass wrote, and
-    // it says so by walking a path (source->frames[i].colorResolve) rather than by
-    // naming a resource both of them know. That missing name is the open trigger
-    // in CLAUDE.md.
+    // Four passes in the order RecordFrame runs them, which is also the reverse of
+    // the order they are destroyed in -- and that is not a coincidence here, it is the
+    // dependency: scenePass's sets name shadowPass's depth maps, postPass reads what
+    // scenePass wrote.
+    //
+    // Both edges are walked as paths (shadow.frames[i].depth,
+    // source->frames[i].colorResolve) rather than named. There are two of them now,
+    // which is what the open trigger in CLAUDE.md was waiting for.
+    ShadowPass shadowPass;
     ScenePass scenePass;
     PostProcessPass postPass;
     Gui guiPass;

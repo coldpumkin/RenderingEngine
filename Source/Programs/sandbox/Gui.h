@@ -63,6 +63,7 @@ struct ViewOptions {
     bool baseColor = true;
     bool specular = true;
     bool alphaMask = true;
+    bool shadow = true;
 };
 
 // ImGui keeps its widget state in a global context, so this holds only what we own

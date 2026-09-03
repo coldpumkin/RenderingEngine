@@ -14,6 +14,11 @@ layout(location = 3) in vec4 fragTangent;
 // Contract: same fields as SceneUniform in Passes.h.
 layout(set = 0, binding = 0) uniform Scene {
     mat4 viewProj;
+
+    // The same world, seen from the light. Here rather than in the push block for the
+    // reason the camera is: one light for every draw in the pass.
+    mat4 lightViewProj;
+
     vec4 lightDir;
     vec4 lightColor;
     vec4 viewPos;
@@ -21,7 +26,16 @@ layout(set = 0, binding = 0) uniform Scene {
     float useBaseColor;
     float useSpecular;
     float useAlphaMask;
+    float useShadow;
 } scene;
+
+// Binding 1 of the frame's set: the depth the shadow pass wrote, counted the same way
+// the uniform above is -- one per frame in flight, because each frame draws its own.
+//
+// A plain sampler2D, so this reads the stored depth and compares it here. A
+// comparison sampler would do the test in hardware and give free 2x2 filtering, and
+// that is what the first soft edge will ask for.
+layout(set = 0, binding = 1) uniform sampler2D shadowMap;
 
 // Set 1 is the material's -- three bindings, not three sets, because all three are
 // counted the same way: one per material. Separate from set 0 because that one is
@@ -55,6 +69,31 @@ layout(push_constant) uniform Push {
 } pc;
 
 layout(location = 0) out vec4 outColor;
+
+// Output: 1 where the light reaches this point, 0 where something else got there first
+//
+// ndotl steers the bias: a surface edge-on to the light spans many depths inside one
+// shadow texel, so it needs more slack than one facing the light does. Without it the
+// choice is between acne on the flat surfaces and a gap under every object.
+float ShadowFactor(vec3 worldPos, float ndotl) {
+    const vec4 clip = scene.lightViewProj * vec4(worldPos, 1.0);
+
+    // The light is directional, so its projection is orthographic and w is 1. Divided
+    // anyway -- this line is what would have to change for a spot light, and it should
+    // be visible rather than assumed.
+    const vec3 ndc = clip.xyz / clip.w;
+    const vec2 uv = ndc.xy * 0.5 + 0.5;
+
+    // Outside the map is not "in shadow": the light's ortho box covers the scene we
+    // chose, and anything past it has no depth to compare against. The sampler wraps,
+    // so without this the far end of the atrium would be shaded by the near end.
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || ndc.z > 1.0) {
+        return 1.0;
+    }
+
+    const float bias = max(0.0025 * (1.0 - ndotl), 0.0004);
+    return texture(shadowMap, uv).r + bias < ndc.z ? 0.0 : 1.0;
+}
 
 void main() {
     // Before the lighting: a thrown-away fragment should cost nothing after this
@@ -93,6 +132,11 @@ void main() {
     // Gated on lambert: a surface facing away from the light cannot shine.
     const float specular = highlight * step(0.0001, lambert) * scene.useSpecular;
 
+    // Skipped where the surface already faces away: it is unlit either way, and the
+    // bias is meaningless at a grazing angle.
+    const float shade = (scene.useShadow > 0.5 && lambert > 0.0)
+                      ? ShadowFactor(fragWorldPos, lambert) : 1.0;
+
     // Diffuse takes the surface colour, specular does not -- a highlight is the light
     // itself reflected, not the paint.
     // A flat grey when it is off, so the shape and the lighting stay readable.
@@ -100,8 +144,9 @@ void main() {
     const vec3 albedo = scene.useBaseColor > 0.5
                       ? sampled.rgb * mtl.baseColorFactor.rgb
                       : vec3(0.8);
-    const vec3 lit = (scene.lightColor.rgb * lambert + scene.lightColor.a) * albedo
-                   + scene.lightColor.rgb * specular;
+    // Ambient is outside the shade: a shadowed surface is still lit by the room.
+    const vec3 lit = (scene.lightColor.rgb * lambert * shade + scene.lightColor.a) * albedo
+                   + scene.lightColor.rgb * specular * shade;
 
     outColor = vec4(lit, pc.alpha);
 }

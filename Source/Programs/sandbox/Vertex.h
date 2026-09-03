@@ -31,3 +31,11 @@ struct Vertex {
 // The vertex layout for Vertex, as a value. Callers put it in desc.vertexLayout; a
 // shader that builds its own points (fullscreen) leaves that default, stride 0.
 VertexLayout VertexInput() noexcept;
+
+// The same buffer read for position alone, which is all a depth-only pass needs.
+//
+// Same stride, one attribute: a layout does not have to feed every field the buffer
+// holds, and the pipeline steps over the rest. It is a separate layout rather than a
+// subset taken at runtime because the shader decides which locations it reads, and
+// this is the value that has to match shadow.vert's one input.
+VertexLayout PositionInput() noexcept;

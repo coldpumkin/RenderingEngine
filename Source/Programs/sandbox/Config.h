@@ -20,6 +20,17 @@ constexpr uint32_t kDesiredSwapchainImages = 3;
 constexpr uint32_t kRenderWidth = 1280;
 constexpr uint32_t kRenderHeight = 720;
 
+// The shadow map, square because the light's ortho box is. Independent of the render
+// resolution: what decides it is how much world one texel covers, not how many pixels
+// end up looking at it.
+constexpr uint32_t kShadowResolution = 2048;
+
+// Half-width of that box, in world units, and how far back the light sits. Sponza is
+// about 20 x 12 x 12 after its scale, so this covers it with room for the light to
+// swing around. Too large and every texel spans more world than it can resolve.
+constexpr float kShadowRadius = 13.0f;
+constexpr float kShadowDistance = 22.0f;
+
 // ChooseRenderTargetFormats lowers it to what color and depth both support. No 1x
 // path: there the resolve attachment is illegal, and it would never run here anyway.
 constexpr uint32_t kDesiredSampleCount = 4;

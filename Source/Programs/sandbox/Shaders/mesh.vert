@@ -13,6 +13,11 @@ layout(location = 3) in vec4 inTangent;   // xyz along +u, w = bitangent sign
 // Contract: same fields as SceneUniform in Passes.h. Written once per frame.
 layout(set = 0, binding = 0) uniform Scene {
     mat4 viewProj;
+
+    // The same world, seen from the light. Here rather than in the push block for the
+    // reason the camera is: one light for every draw in the pass.
+    mat4 lightViewProj;
+
     vec4 lightDir;
     vec4 lightColor;
     vec4 viewPos;
@@ -20,6 +25,7 @@ layout(set = 0, binding = 0) uniform Scene {
     float useBaseColor;
     float useSpecular;
     float useAlphaMask;
+    float useShadow;
 } scene;
 
 // Contract: same block in the fragment stage, field for field.

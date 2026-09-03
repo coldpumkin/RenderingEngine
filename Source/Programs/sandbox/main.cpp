@@ -454,6 +454,24 @@ int main() {
     //
     // viewportY stays baked. It decides frontFace, and both would have to move
     // together -- nothing here asks for that.
+    // The depth-only pass, first because the scene pass reads what it draws.
+    //
+    // No colour format at all: the fragment stage declares no outputs, and the two
+    // have to agree. One sample, because a visibility test cannot be averaged.
+    if (!CreateShaderProgram(dev, "Shaders/shadow.vert.spv", "Shaders/shadow.frag.spv",
+                             &renderer.shadowProgram)) { return 1; }
+
+    GraphicsPipelineDesc shadowDesc;
+    shadowDesc.vertexLayout = PositionInput();
+    shadowDesc.formats = AttachmentFormats{VK_FORMAT_UNDEFINED, formats.depth,
+                                           VK_SAMPLE_COUNT_1_BIT};
+    // Down, and it decides one thing only: which way the map's v axis runs. mesh.frag
+    // reads it back as ndc * 0.5 + 0.5, which is this sign. frontFace comes along and
+    // does not matter -- the pass culls nothing.
+    shadowDesc.viewportY = ViewportY::Down;
+    if (!CreateGraphicsPipeline(dev, renderer.shadowProgram, shadowDesc,
+                                &renderer.shadowPipeline)) { return 1; }
+
     // The program first: the shaders decide the set layouts and the push range, and a
     // pipeline only picks state on top of that. Two pipelines from one program share
     // every set already drawn from it.
@@ -630,6 +648,7 @@ int main() {
     // descriptors that is per set is not asked here: CreateDescriptors reads it off
     // the layout, so the second binding a material grew did not reach this line.
     const SetRequest setRequests[] = {
+        {&renderer.shadowProgram.setLayouts[kFrameSet], kFramesInFlight},
         {&renderer.sceneProgram.setLayouts[kFrameSet], kFramesInFlight},
         {&renderer.sceneProgram.setLayouts[kMaterialSet], materialCount},
         {&renderer.presentProgram.setLayouts[kFrameSet], kFramesInFlight},
@@ -712,11 +731,15 @@ int main() {
     // Frames
     // ------------------------------------------------------------------------
     //
-    // Passes first, in dependency order: the post pass's sets name what the scene
-    // pass made. A slot owns none of that -- it only knows which frame it is.
+    // Passes first, in dependency order: the scene pass's sets name the shadow maps,
+    // the post pass's name what the scene pass made. A slot owns none of that -- it
+    // only knows which frame it is.
+    if (!CreateShadowPass(dev, renderer.descriptors, formats.depth, kShadowResolution,
+                          renderer.mesh, renderer.shadowProgram,
+                          renderer.shadowPipeline, &renderer.shadowPass)) { return 1; }
     if (!CreateScenePass(dev, renderer.descriptors, formats, kRenderExtent,
                          renderer.mesh, renderer.sceneProgram, renderer.scenePipeline,
-                         &renderer.scenePass)) { return 1; }
+                         renderer.shadowPass, &renderer.scenePass)) { return 1; }
     if (!CreatePostProcessPass(renderer.descriptors, renderer.scenePass,
                                renderer.presentProgram, renderer.presentPipeline,
                                &renderer.postPass)) {
@@ -781,9 +804,12 @@ int main() {
     // is to see both within a second of each other.
     ViewOptions viewOptions;   // 'view' is the matrix below
 
-    glm::vec3 eye{0.0f, 0.0f, 3.5f};
-    float yaw = -90.0f;           // -90 looks down -z, per the forward expression below
-    float pitch = 0.0f;
+    // Inside the atrium, looking along it. The old value put the camera at the origin
+    // facing -z, which is a wall from here -- it was chosen when the scene was five
+    // spheres around the origin.
+    glm::vec3 eye{-7.0f, 5.5f, 0.0f};
+    float yaw = 0.0f;             // 0 looks down +x, per the forward expression below
+    float pitch = -12.0f;         // the atrium floor, from the height of its gallery
 
     while (glfwWindowShouldClose(window.handle) == 0) {
         glfwPollEvents();
@@ -860,8 +886,36 @@ int main() {
         //
         // One directional light, circling so the brightness visibly changes -- the
         // objects turn about z, which leaves their normals fixed.
+        // y is 3.0, not the 0.5 it was before there was a shadow, and it was measured
+        // rather than chosen: at 0.5 and at 1.4 the arcades block the sun before it
+        // reaches the open middle and the whole scene reads as one flat dark mass.
+        // From here the light comes down the courtyard and the columns cast across it.
+        //
+        // xz still turn with t, so what moves is the direction the shadows fall.
         const glm::vec3 lightDir = glm::normalize(
-            glm::vec3{std::cos(t) * 0.7f, 0.5f, std::sin(t) * 0.7f});
+            glm::vec3{std::cos(t) * 0.7f, 3.0f, std::sin(t) * 0.7f});
+
+        // Where the light looks from, and how much it can see.
+        //
+        // Orthographic because the light is directional: its rays are parallel, so
+        // there is no eye point to project from -- only a box, and the box is what
+        // decides how much world one shadow texel covers.
+        //
+        // The centre is fixed rather than fitted to the camera. Fitting is what a real
+        // one does (and what cascades are), and it needs the frustum's corners in
+        // light space; a constant box is honest about covering this scene and nothing
+        // larger, and mesh.frag returns "lit" for anything outside it.
+        //
+        // lightDir points from the surface toward the light, so the eye is the centre
+        // plus that. It never lines up with world up -- y is fixed at 0.5 while xz go
+        // round -- which is what keeps lookAt's cross product from collapsing.
+        constexpr glm::vec3 kSceneCenter{0.0f, 3.0f, 0.0f};
+        const glm::mat4 lightView =
+            glm::lookAt(kSceneCenter + lightDir * kShadowDistance, kSceneCenter, kWorldUp);
+        const glm::mat4 lightProj =
+            glm::ortho(-kShadowRadius, kShadowRadius, -kShadowRadius, kShadowRadius,
+                       0.1f, kShadowDistance * 2.0f);
+        const glm::mat4 lightViewProj = lightProj * lightView;
 
         // Fill this frame's share of the pass
         //
@@ -873,11 +927,18 @@ int main() {
         // Through slot.index, not slotIndex: recording picks the pass's frame that way
         // too, and one of the two would otherwise have to be kept in step by hand.
         FrameSlot& slot = renderer.slots[slotIndex];
+
+        // The same matrix reaches the GPU twice, through two sets, because two passes
+        // need it and neither reads the other's uniform. Sharing one buffer would mean
+        // one set layout that both programs answer to, and they do not: the shadow
+        // stage has no use for a camera, a light colour or four switches.
+        renderer.shadowPass.frames[slot.index].uniformValue = {lightViewProj};
         renderer.scenePass.frames[slot.index].uniformValue =
-            {camera, glm::vec4{lightDir, 0.0f},
+            {camera, lightViewProj, glm::vec4{lightDir, 0.0f},
              glm::vec4{1.0f, 0.95f, 0.9f, 0.15f}, glm::vec4{eye, 48.0f},
              viewOptions.normalMap ? 1.0f : 0.0f, viewOptions.baseColor ? 1.0f : 0.0f,
-             viewOptions.specular ? 1.0f : 0.0f, viewOptions.alphaMask ? 1.0f : 0.0f};
+             viewOptions.specular ? 1.0f : 0.0f, viewOptions.alphaMask ? 1.0f : 0.0f,
+             viewOptions.shadow ? 1.0f : 0.0f};
 
         // Draw it
         // --------------------------------------------------------------------
@@ -931,7 +992,8 @@ int main() {
         // Reset rather than declared here: the counters add up, and the panel above
         // read last frame's values before this line overwrites them.
         drawStats = DrawStats{};
-        if (!RecordFrame(slot, renderer.scenePass, renderer.postPass,
+        if (!RecordFrame(slot, renderer.shadowPass, renderer.scenePass,
+                         renderer.postPass,
                          renderer.guiPass, *target.texture, drawList, &drawStats)) {
             break;
         }

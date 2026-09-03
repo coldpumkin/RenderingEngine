@@ -85,20 +85,31 @@ constexpr uint32_t kMaterialSet = 1;   // what a surface looks like. One per mat
 // leftover beats hiding it.
 struct SceneUniform {
     glm::mat4 viewProj;
+
+    // The same world from the light's side, which is what turns a depth in the shadow
+    // map into a comparison with this fragment. One per frame like the camera: every
+    // draw in the pass reads it, and it changes when the light moves.
+    glm::mat4 lightViewProj;
+
     glm::vec4 lightDir;     // xyz = surface toward the light, w unused
     glm::vec4 lightColor;   // rgb = colour, a = ambient
     glm::vec4 viewPos;      // xyz = camera position, w = specular exponent
 
     // What to leave out, so a feature can be compared against its own absence
-    // without rebuilding. Four floats rather than a bitfield: std140 packs them into
-    // one vec4 either way, and this way each has a name on both sides of the
-    // boundary instead of a bit position nobody can read.
+    // without rebuilding. Floats rather than a bitfield: std140 packs them into whole
+    // vec4s either way, and this way each has a name on both sides of the boundary
+    // instead of a bit position nobody can read.
     //
     // 0 or 1. The shader compares against 0.5 so a half value is not a third state.
     float useNormalMap;
     float useBaseColor;
     float useSpecular;
     float useAlphaMask;
+
+    // The fifth switch starts a second vec4, and std140 rounds the block up to it.
+    // Named rather than left implicit, the way the vec4s above are.
+    float useShadow;
+    float pad[3];
 };
 
 // Rides inside the command buffer: no pool, no set, no lifetime. The spec guarantees
@@ -285,6 +296,52 @@ struct DrawList {
 };
 
 
+// ShadowPass - the same surfaces, depth only, from where the light is
+// ============================================================================
+//
+// The first pass here with no colour attachment. Its product is a depth image the
+// scene pass samples, which makes it also the first thing depth does outside the
+// frame that produced it.
+//
+// One matrix, its own set, its own program. Not the scene's uniform: that one carries
+// a camera and four switches this stage never reads, and one layout answering to half
+// of each pass is how a set stops meaning anything.
+//
+// Contract: field order matches the Shadow block in shadow.vert.
+struct ShadowUniform {
+    glm::mat4 lightViewProj;
+};
+
+struct ShadowPass {
+    const Mesh* mesh = nullptr;
+    const ShaderProgram* program = nullptr;
+    const Pipeline* pipeline = nullptr;
+
+    // Per frame in flight for the reason the scene's attachments are: the CPU writes
+    // the next frame's matrix while the GPU still reads the previous frame's map.
+    struct PerFrame {
+        // DEPTH_STENCIL_ATTACHMENT to draw into and SAMPLED to be read afterwards.
+        // One sample: multisampling a visibility test would average depths that were
+        // never on the same surface.
+        Texture depth;
+
+        ShadowUniform uniformValue{};
+        Buffer uniform;
+        VkDescriptorSet set = VK_NULL_HANDLE;
+    };
+    PerFrame frames[kFramesInFlight];
+};
+
+// Effect: creates each frame's depth map and the set naming its matrix
+//
+// Contract: depthFormat must be what pipeline was built with, and extent is square --
+//           the light's box is.
+bool CreateShadowPass(const VulkanDevice& dev, const Descriptors& descriptors,
+                      VkFormat depthFormat, uint32_t resolution,
+                      const Mesh& mesh, const ShaderProgram& program,
+                      const Pipeline& pipeline, ShadowPass* out) noexcept;
+
+
 // ScenePass - the off-screen pass, and what it draws into
 // ============================================================================
 //
@@ -343,10 +400,14 @@ struct ScenePass {
 //
 // Contract: formats must be what pipeline was built with. Both are arguments here so
 //           the mismatch is at least in one call, but nothing checks it.
+// Contract: shadow must already be created -- each frame's set names its depth map,
+//           frame for frame. Taken by value at set-fill time and not stored: the
+//           barrier that makes it readable belongs to the pass that writes it.
 bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
                      AttachmentFormats formats, VkExtent2D extent,
                      const Mesh& mesh, const ShaderProgram& program,
-                     const Pipeline& pipeline, ScenePass* out) noexcept;
+                     const Pipeline& pipeline, const ShadowPass& shadow,
+                     ScenePass* out) noexcept;
 
 
 // PostProcessPass - reads what the scene pass produced, writes the frame's target
@@ -400,6 +461,7 @@ struct DrawStats {
 // Takes the slot but never touches its fence or semaphore -- a rule, not a type.
 // A Texture, not the whole FrameTarget: nothing here reads the index or the semaphore,
 // and those belong to getting the frame out, not to drawing it.
-bool RecordFrame(const FrameSlot& slot, const ScenePass& scene,
+bool RecordFrame(const FrameSlot& slot, const ShadowPass& shadow,
+                 const ScenePass& scene,
                  const PostProcessPass& post, Gui& gui, const Texture& target,
                  const DrawList& draws, DrawStats* stats = nullptr) noexcept;

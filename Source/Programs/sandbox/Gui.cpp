@@ -228,6 +228,7 @@ void BuildGui(ViewOptions* options, const GuiFrameInfo& info) noexcept {
         ImGui::Checkbox("base colour", &options->baseColor);
         ImGui::Checkbox("specular", &options->specular);
         ImGui::Checkbox("alpha mask", &options->alphaMask);
+        ImGui::Checkbox("shadow", &options->shadow);
 
         ImGui::Separator();
         // Both numbers, because they answer different questions: the rate is what a

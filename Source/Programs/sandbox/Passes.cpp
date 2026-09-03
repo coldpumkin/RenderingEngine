@@ -10,12 +10,73 @@
 
 #include <glm/matrix.hpp>   // inverse, transpose
 
+bool CreateShadowPass(const VulkanDevice& dev, const Descriptors& descriptors,
+                      VkFormat depthFormat, uint32_t resolution,
+                      const Mesh& mesh, const ShaderProgram& program,
+                      const Pipeline& pipeline, ShadowPass* out) noexcept {
+    out->mesh = &mesh;
+    out->program = &program;
+    out->pipeline = &pipeline;
+
+    // Stride, not the whole layout. The scene pass compares layouts because its
+    // pipeline reads every attribute; this one reads position alone, so what has to
+    // agree is where one vertex ends -- the pipeline steps over the rest.
+    if (mesh.desc.vertexLayout.stride != pipeline.desc.vertexLayout.stride) {
+        LOG("[vk] the mesh and the shadow pipeline disagree about the vertex stride\n");
+        return false;
+    }
+
+    const VkExtent2D extent{resolution, resolution};
+    for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+        ShadowPass::PerFrame& frame = out->frames[i];
+
+        // Both usages, which is what makes this image the seam between two passes.
+        // One sample: averaging depths across an edge produces a value no surface was
+        // ever at, and every fragment comparing against it is wrong.
+        if (!CreateTexture(dev, {extent, depthFormat, VK_SAMPLE_COUNT_1_BIT,
+                                 VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
+                                     | VK_IMAGE_USAGE_SAMPLED_BIT},
+                           &frame.depth)) {
+            return false;
+        }
+
+        if (!CreateBuffer(dev, sizeof(ShadowUniform),
+                          VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                          VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+                          VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+                              | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                          &frame.uniform)) {
+            return false;
+        }
+        if (frame.uniform.mapped == nullptr) {
+            LOG("[vk] shadow uniform buffer is not mapped\n");
+            return false;
+        }
+    }
+
+    VkDescriptorSet sets[kFramesInFlight]{};
+    if (!AllocateSets(descriptors, program.setLayouts[kFrameSet], kFramesInFlight, sets)) {
+        return false;
+    }
+    for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+        ShadowPass::PerFrame& frame = out->frames[i];
+        frame.set = sets[i];
+        const BindingValue values[] = {
+            {VK_NULL_HANDLE, frame.uniform.handle, sizeof(ShadowUniform)},  // 0: matrix
+        };
+        UpdateSet(descriptors, program.setLayouts[kFrameSet], frame.set,
+                  values, static_cast<uint32_t>(std::size(values)));
+    }
+    return true;
+}
+
 // Built without looking at the window, so this works while minimized - there may be
 // no swapchain yet, and nothing here depends on one.
 bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
                      AttachmentFormats formats, VkExtent2D extent,
                      const Mesh& mesh, const ShaderProgram& program,
-                     const Pipeline& pipeline, ScenePass* out) noexcept {
+                     const Pipeline& pipeline, const ShadowPass& shadow,
+                     ScenePass* out) noexcept {
     out->mesh = &mesh;
     out->program = &program;
     out->pipeline = &pipeline;
@@ -83,10 +144,16 @@ bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
         ScenePass::PerFrame& frame = out->frames[i];
         frame.set = sets[i];
 
-        // One binding now. The texture that used to sit beside it is a material's,
-        // and a material's set is counted by materials rather than by frames.
+        // Two bindings, counted the same way: this frame's camera and light, and the
+        // depth map the shadow pass drew for this same frame. Frame for frame -- a
+        // set naming another slot's map would read what the GPU is still writing.
+        //
+        // The image is here rather than in the material set because how many there are
+        // is decided by frames in flight, and that is the whole rule for which set a
+        // binding belongs in.
         const BindingValue values[] = {
             {VK_NULL_HANDLE, frame.uniform.handle, sizeof(SceneUniform)},  // 0: scene
+            {shadow.frames[i].depth.view.handle, VK_NULL_HANDLE, 0},       // 1: shadow map
         };
         UpdateSet(descriptors, program.setLayouts[kFrameSet], frame.set,
                   values, static_cast<uint32_t>(std::size(values)));
@@ -184,6 +251,90 @@ bool CreatePostProcessPass(const Descriptors& descriptors, const ScenePass& sour
 //
 // One mesh for every item: the spans in items index into it. A second mesh means
 // another BindVertexBuffers, which is why the bind sits above the loop and not in it.
+// Depth only, and every item in one go: what casts a shadow is a shape, so nothing
+// here binds a material or sets a cull mode per draw.
+static void RecordShadowPass(const FrameSlot& slot, const ShadowPass& shadow,
+                             const DrawList& draws) noexcept {
+    const VolkDeviceTable& vk = slot.dev->table;
+    VkCommandBuffer cmd = slot.cmd;
+    const ShadowPass::PerFrame& frame = shadow.frames[slot.index];
+    const VkExtent2D extent = frame.depth.desc.extent;
+
+    // oldLayout UNDEFINED: loadOp CLEAR overwrites, and the last frame's map is spent.
+    // The image was left SHADER_READ_ONLY by the frame before, and discarding that is
+    // exactly what UNDEFINED means.
+    RecordLayoutTransition(vk, cmd, frame.depth.image.handle, VK_IMAGE_ASPECT_DEPTH_BIT,
+                           VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                           VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT
+                               | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                           VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                           VK_IMAGE_LAYOUT_UNDEFINED,
+                           VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
+
+    // storeOp STORE, unlike the scene pass's depth: this one is the product.
+    VkRenderingAttachmentInfo depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    depth.imageView = frame.depth.view.handle;
+    depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depth.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    depth.clearValue.depthStencil.depth = 1.0f;   // nothing seen yet is farthest
+
+    // colorAttachmentCount 0 and no pColorAttachments. The pipeline was compiled the
+    // same way, from a fragment stage that declares no outputs.
+    VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
+    rendering.renderArea.extent = extent;
+    rendering.layerCount = 1;
+    rendering.pDepthAttachment = &depth;
+
+    vk.vkCmdBeginRendering(cmd, &rendering);
+
+    const VkViewport viewport = MakeViewport(extent, shadow.pipeline->desc.viewportY);
+    vk.vkCmdSetViewport(cmd, 0, 1, &viewport);
+    VkRect2D scissor{};
+    scissor.extent = extent;
+    vk.vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+    // NONE, once for the pass. Culling here would be a choice about which face writes
+    // the depth, and with none of it culled the value is the nearest surface either
+    // way -- which is what the comparison wants.
+    vk.vkCmdSetCullMode(cmd, VK_CULL_MODE_NONE);
+
+    vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadow.pipeline->handle);
+    vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                               shadow.program->layout, kFrameSet, 1, &frame.set,
+                               0, nullptr);
+
+    const Mesh& mesh = *shadow.mesh;
+    const VkDeviceSize offset = 0;
+    vk.vkCmdBindVertexBuffers(cmd, 0, 1, &mesh.vertices.handle, &offset);
+    vk.vkCmdBindIndexBuffer(cmd, mesh.indices.handle, 0, mesh.desc.indexType);
+
+    for (uint32_t i = 0; i < draws.itemCount; ++i) {
+        const DrawItem& item = draws.items[i];
+        if (item.material >= draws.materialCount) { continue; }
+
+        // The model matrix alone. shadow.vert declares the front of the same block the
+        // scene shaders declare all of, so the offset is shared and the size is not.
+        vk.vkCmdPushConstants(cmd, shadow.program->layout, VK_SHADER_STAGE_VERTEX_BIT,
+                              0, sizeof(item.model), &item.model);
+        vk.vkCmdDrawIndexed(cmd, item.range.count, 1, item.range.firstIndex,
+                            item.vertexOffset, 0);
+    }
+
+    vk.vkCmdEndRendering(cmd);
+
+    // Handed over here rather than at the top of the scene pass. The pass that wrote
+    // an image is what knows when it stopped writing, and this keeps the scene pass
+    // from having to name a pass it only reads through a descriptor.
+    RecordLayoutTransition(vk, cmd, frame.depth.image.handle, VK_IMAGE_ASPECT_DEPTH_BIT,
+                           VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                           VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                           VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                           VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                           VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+}
+
 static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
                             const DrawList& draws, DrawStats* stats) noexcept {
     const VolkDeviceTable& vk = slot.dev->table;
@@ -438,13 +589,18 @@ static void RecordPostProcessPass(const FrameSlot& slot, const PostProcessPass& 
     // otherwise.
 }
 
-bool RecordFrame(const FrameSlot& slot, const ScenePass& scene,
+bool RecordFrame(const FrameSlot& slot, const ShadowPass& shadow,
+                 const ScenePass& scene,
                  const PostProcessPass& post, Gui& gui, const Texture& target,
                  const DrawList& draws, DrawStats* stats) noexcept {
     const VolkDeviceTable& vk = slot.dev->table;
 
     // The value and its GPU copy meet here. Safe because BeginFrame waited on this
     // slot's fence, and this runs after it -- an acquired image is its precondition.
+    // Both passes' uniforms, for the same reason and in the order they are read.
+    const ShadowPass::PerFrame& shadowFrame = shadow.frames[slot.index];
+    std::memcpy(shadowFrame.uniform.mapped, &shadowFrame.uniformValue,
+                sizeof(shadowFrame.uniformValue));
     const ScenePass::PerFrame& frame = scene.frames[slot.index];
     std::memcpy(frame.uniform.mapped, &frame.uniformValue, sizeof(frame.uniformValue));
     VkCommandBuffer cmd = slot.cmd;
@@ -464,6 +620,9 @@ bool RecordFrame(const FrameSlot& slot, const ScenePass& scene,
     // The order is here, in these three lines, and nowhere else. post.source points
     // at scene, but that is a dependency -- it would not stop these from being
     // swapped.
+    // Shadow first, and the order is these lines. The scene pass's set already names
+    // the map; what it cannot say is that the map has been drawn this frame.
+    RecordShadowPass(slot, shadow, draws);
     RecordScenePass(slot, scene, draws, stats);
     RecordPostProcessPass(slot, post, target);
     RecordGuiPass(slot, gui, target);
