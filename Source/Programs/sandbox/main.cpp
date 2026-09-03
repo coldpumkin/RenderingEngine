@@ -587,6 +587,20 @@ int main() {
     if (!CreateDevice(inst, selection, &dev)) { return 1; }
     if (!CreateCommands(dev, &commands)) { return 1; }
 
+    // The swapchain is made here rather than on the first frame, because what it
+    // decides -- the surface format -- is an input to the pipeline built below. Left
+    // to the loop, that pipeline starts with no format at all and throws itself away
+    // one frame later.
+    //
+    // false here is fatal, unlike the same call inside BeginFrame. There it means the
+    // window is minimised and the frame is skipped; here it means we never had a place
+    // to draw. Starting minimised would land in this branch, which is rare enough that
+    // failing is the honest answer until it actually happens.
+    if (!EnsureSwapchain(dev, &window)) {
+        LOG("[vk] cannot create a swapchain -- is the window minimised?\n");
+        return 1;
+    }
+
     // Passes
     // ------------------------------------------------------------------------
     //
@@ -607,12 +621,16 @@ int main() {
     opaqueDesc.blending = Blending::Opaque;
     if (!CreateGraphicsPipeline(dev, opaqueDesc, &opaque)) { return 1; }
 
-    // Built with an empty format: the swapchain decides that, and the swapchain is
-    // made in the loop, which rebuilds this the first time it sees one.
+    // The format comes from the swapchain made above, so this is right the first time.
+    // EnsurePostProcessPipeline still compares every frame -- moving the window to a
+    // monitor in another format is what it is for, and now it simply passes on frame
+    // one instead of rebuilding.
+    //
     // No vertex input, no depth, 1 sample -- MSAA ended at the resolve.
     GraphicsPipelineDesc presentDesc;
     presentDesc.vertPath = "Shaders/fullscreen.vert.spv";
     presentDesc.fragPath = "Shaders/fullscreen.frag.spv";
+    presentDesc.formats = AttachmentFormats{window.surfaceFormat.format};
     presentDesc.viewportY = ViewportY::Down;   // the shader makes its own uv
     presentDesc.cullMode = VK_CULL_MODE_BACK_BIT;
     if (!CreateGraphicsPipeline(dev, presentDesc, &present)) { return 1; }
@@ -742,8 +760,6 @@ int main() {
         if (!CreateFrameSlot(dev, commands, i, &slots[i])) { return 1; }
     }
 
-    // No swapchain yet: the loop's EnsureSwapchain makes it, and the first creation
-    // takes the same path as a recreation.
     LOG("close the window to exit.\n");
 
     // Frame state
