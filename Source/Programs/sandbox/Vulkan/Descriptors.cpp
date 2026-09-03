@@ -12,7 +12,7 @@
 // becomes COMBINED_IMAGE_SAMPLER), and stageFlags is FRAGMENT because that is the
 // only stage we reflect for descriptors -- a vertex shader reading a texture would
 // need its own pass over that stage.
-// 한 layout이 타입별로 descriptor를 몇 개 요구하는지.
+// How many descriptors of one type a layout asks for.
 static uint32_t CountOfType(const DescriptorLayout& layout, VkDescriptorType type) noexcept {
     uint32_t n = 0;
     for (uint32_t i = 0; i < layout.bindingCount; ++i) {
@@ -55,39 +55,43 @@ bool CreateDescriptors(const VulkanDevice& dev,
                        Descriptors* out) noexcept {
     out->dev = &dev;
 
-    // Sampler는 image가 아니라 읽는 규칙이다. 그래서 image와 따로 살고 하나로
-    // 여러 image를 읽는다. 두 layout이 이것 하나를 같이 쓴다.
+    // A sampler is not an image, it is the rule for reading one -- so it lives apart
+    // from any image and one of them serves every layout here.
     //
-    // LINEAR: 렌더 해상도와 창 크기가 다를 수 있어 확대·축소가 일어난다
+    // LINEAR: the render resolution and the window size are independent, so something
+    // is always being scaled.
     //
-    // REPEAT: **에셋이 그것을 전제로 만들어졌다.** Sponza의 uv는 u -27.79..32.29 /
-    // v -4.95..7.58이고 103개 primitive 중 45개가 0~1 밖이다 - 벽 한 장을 타일로 깔려고
-    // 그렇게 적은 것이라, CLAMP면 그 45개가 가장자리 한 줄로 늘어난다.
+    // REPEAT, because **the asset was authored expecting it.** Sponza's uvs run
+    // u -27.79..32.29 and v -4.95..7.58, and 45 of its 103 primitives leave 0..1 --
+    // that is how one wall texture is tiled across a surface. Under CLAMP those 45
+    // would stretch their edge pixel across the whole wall.
     //
-    // 반대 대가는 texture atlas다: 한 장에 여러 그림이 있으면 반대편이 말려 들어온다.
-    // Sponza는 그림당 파일 하나라 해당 없다.
+    // The cost is paid by a texture atlas, where several pictures share one image and
+    // the far side bleeds in. Sponza keeps one file per picture, so it does not.
     VkSamplerCreateInfo samplerInfo{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
     samplerInfo.magFilter = VK_FILTER_LINEAR;
     samplerInfo.minFilter = VK_FILTER_LINEAR;
     samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;   // mipmap이 없다
+    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;   // no mips to choose from
     if (dev.table.vkCreateSampler(dev.handle, &samplerInfo, nullptr, &out->sampler)
             != VK_SUCCESS) {
         LOG("[vk] vkCreateSampler failed\n");
         return false;
     }
 
-    // Pool은 자라지 않아서 크기를 미리 정한다. 타입별 개수도 같이 말해야 한다.
+    // A pool does not grow, so its size is settled here and the per-type counts with
+    // it.
     //
-    // 두 값이 다른 것을 센다 - set의 개수와 descriptor의 개수다. layout마다 binding
-    // 수가 달라서 뒤는 가중합이고, 앞의 배수가 아니다.
+    // The two numbers count different things -- how many sets, and how many
+    // descriptors those sets hold. Layouts differ in binding count, so the second is a
+    // weighted sum rather than a multiple of the first.
     uint32_t maxSets = 0;
     for (uint32_t r = 0; r < requestCount; ++r) { maxSets += requests[r].count; }
 
-    // 타입마다 따로 센다. 요구가 0인 타입은 빼야 한다 - 스펙이 descriptorCount 0을
-    // 금지한다.
+    // Counted per type, and a type nobody asked for is left out: the spec forbids a
+    // pool size with descriptorCount 0.
     constexpr VkDescriptorType kTypes[] = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                            VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER};
     VkDescriptorPoolSize poolSizes[std::size(kTypes)]{};
@@ -111,8 +115,9 @@ bool CreateDescriptors(const VulkanDevice& dev,
     poolInfo.maxSets = maxSets;
     poolInfo.poolSizeCount = sizeCount;
     poolInfo.pPoolSizes = poolSizes;
-    // FREE_DESCRIPTOR_SET을 안 주면 set을 개별 반납할 수 없다. 시작할 때 뽑아서
-    // 끝까지 쓰므로 반납할 일이 없고, 안 주는 쪽이 driver에게 쉽다.
+    // No FREE_DESCRIPTOR_SET, so a set cannot be returned on its own. Every set here
+    // is drawn at startup and held until the pool goes, so there is nothing to return
+    // -- and without the flag the driver can allocate more simply.
     if (dev.table.vkCreateDescriptorPool(dev.handle, &poolInfo, nullptr, &out->pool)
             != VK_SUCCESS) {
         LOG("[vk] vkCreateDescriptorPool failed\n");
@@ -133,17 +138,19 @@ void UpdateSet(const Descriptors& descriptors, const DescriptorLayout& layout,
         return;
     }
 
-    // 뽑은 set은 비어 있어서 binding마다 채운다. type이 어느 info를 쓸지 정한다.
+    // An allocated set points at nothing, so each binding is filled here. The type
+    // decides which of the two infos is read.
     //
-    // imageLayout은 bind 시점이 아니라 읽는 시점의 layout이다. Texture 업로드와
-    // RecordPostProcessPass가 그 전에 SHADER_READ_ONLY_OPTIMAL로 전이시키는 것과 짝이다.
+    // imageLayout is the layout at read time, not at bind time. Its other half is the
+    // barrier that puts the image there before the draw -- the texture upload does it
+    // for materials, RecordShadowPass and RecordPostProcessPass for what they wrote.
     VkDescriptorImageInfo imageInfo[kMaxBindingsPerSet]{};
     VkDescriptorBufferInfo bufferInfo[kMaxBindingsPerSet]{};
     VkWriteDescriptorSet write[kMaxBindingsPerSet]{};
     uint32_t used = 0;
     for (uint32_t i = 0; i < count; ++i) {
         const VkDescriptorType type = layout.types[i];
-        if (type == 0) { continue; }   // 번호에 구멍이 있는 경우
+        if (type == 0) { continue; }   // a hole in the binding numbering
 
         write[used].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         write[used].dstSet = set;
@@ -164,7 +171,8 @@ void UpdateSet(const Descriptors& descriptors, const DescriptorLayout& layout,
         ++used;
     }
 
-    // 스펙: 이 함수는 실패하지 않는다. 잘못 채우면 validation layer가 잡는다.
+    // The spec gives this no failure to report. A wrong fill is the validation
+    // layer's to catch, not ours.
     dev.table.vkUpdateDescriptorSets(dev.handle, used, write, 0, nullptr);
 }
 

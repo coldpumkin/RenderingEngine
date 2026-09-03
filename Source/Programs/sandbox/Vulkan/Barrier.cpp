@@ -12,7 +12,8 @@ void RecordLayoutTransition(const VolkDeviceTable& vk, VkCommandBuffer cmd, VkIm
     barrier.dstAccessMask = dstAccess;
     barrier.oldLayout = oldLayout;
     barrier.newLayout = newLayout;
-    // IGNORED = 큐 패밀리를 안 옮긴다. 그래픽스 큐 안에서만 쓰는 이미지들이다.
+    // IGNORED: no queue family transfer. Everything we barrier lives on the graphics
+    // queue, and a transfer would need the matching pair on the other side.
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.image = image;

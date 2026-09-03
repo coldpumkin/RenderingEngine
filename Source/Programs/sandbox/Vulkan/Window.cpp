@@ -4,27 +4,24 @@
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3native.h>
 
-// ============================================================================
-// 2. 창 시스템 (프로세스 하나당) + 창 (창마다)
-// ============================================================================
-//
-// 둘을 나눈 이유: **glfwInit/glfwTerminate는 창이 아니라 프로세스 단위다.**
-// 창이 둘이 돼도 초기화는 한 번이고, glfwTerminate는 **모든** 창을 부순다.
-// 한 함수에 섞여 있으면 창이 둘 될 때 바로 어긋난다.
+// Two types because **glfwInit and glfwTerminate are per process, not per window.**
+// A second window would not initialize again, and glfwTerminate destroys **every**
+// window there is. Mixed into one function, that goes wrong the moment there are two.
 
 static void OnGlfwError(int code, const char* description) {
     LOG("[glfw] error %d: %s\n", code, description);
 }
 
 WindowSystem::~WindowSystem() {
-    // **모든 창이 죽은 뒤에 불려야 한다.** glfwTerminate는 남은 창을 전부 부순다.
-    // main()에서 제일 먼저 선언하면(= 제일 나중에 파괴) 그 순서가 보장된다.
+    // **Runs after every window is gone.** glfwTerminate destroys whatever is left, so
+    // declaring this first in main -- destroyed last -- is what orders it.
     if (initialized) { glfwTerminate(); }
 }
 
 bool InitWindowSystem(WindowSystem* out) noexcept {
-    // 에러 콜백을 glfwInit보다 먼저 건다. glfwInit 자체의 실패 이유도 받으려면 그래야 한다
-    // (GLFW 문서가 명시하는, 초기화 전에 부를 수 있는 예외 함수).
+    // The error callback goes on before glfwInit, so that glfwInit's own failure has
+    // somewhere to report. GLFW documents this as one of the few calls allowed before
+    // initialization.
     glfwSetErrorCallback(OnGlfwError);
     if (glfwInit() != GLFW_TRUE) {
         LOG("[glfw] glfwInit failed\n");
@@ -42,16 +39,17 @@ static void OnFramebufferResized(GLFWwindow* handle, int /*w*/, int /*h*/) {
     }
 }
 
-// 창 + 서피스까지 만든다. 스왑체인은 디바이스가 생긴 뒤라 여기서 못 만든다.
+// The window and its surface. The swapchain needs a device, which does not exist yet.
 //
-// **out으로 받는 이유**: glfwSetWindowUserPointer에 넣을 주소가 **호출자가 들고 있을
-// 최종 주소**여야 한다. 값으로 반환하면 함수 안의 임시 객체 주소를 넣게 된다.
+// **An out parameter, not a return value**, because the address handed to
+// glfwSetWindowUserPointer has to be the one the caller will keep. Returned by value,
+// what gets registered is the address of a local.
 bool OpenWindow(const VulkanInstance& inst,
                 int width, int height, const char* title,
                 Window* out) noexcept {
     out->inst = &inst;
 
-    // GLFW는 기본적으로 OpenGL 컨텍스트를 같이 만든다. Vulkan을 쓰므로 끈다.
+    // GLFW creates an OpenGL context by default. We have no use for one.
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 
     out->handle = glfwCreateWindow(width, height, title, nullptr, nullptr);
@@ -62,8 +60,9 @@ bool OpenWindow(const VulkanInstance& inst,
     glfwSetWindowUserPointer(out->handle, out);
     glfwSetFramebufferSizeCallback(out->handle, OnFramebufferResized);
 
-    // glfwCreateWindowSurface()도 있지만 쓰지 않는다. 직접 만들면 **창 라이브러리와
-    // Vulkan이 서로를 모르는 상태로 남는다** - GLFW가 VkInstance를 알 필요가 없다.
+    // glfwCreateWindowSurface exists and is not used. Making the surface ourselves
+    // leaves **the window library and Vulkan unaware of each other** -- GLFW never
+    // needs to be told what a VkInstance is.
     VkWin32SurfaceCreateInfoKHR info{VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR};
     info.hinstance = GetModuleHandleW(nullptr);
     info.hwnd = glfwGetWin32Window(out->handle);
@@ -85,11 +84,11 @@ bool WindowHasDrawableSize(const Window& window) noexcept {
     return width > 0 && height > 0;
 }
 
-// 중첩의 역순으로 부순다: 스왑체인 -> 서피스 -> 창.
+// Destroyed inside out: swapchain -> surface -> window.
 //
-// **서피스가 창보다 먼저 죽어야 한다** - 죽은 HWND를 참조하게 된다.
-// 스왑체인은 자기 소멸자가 알아서 처리하지만, **서피스보다 먼저** 죽어야 하므로
-// 여기서 명시적으로 먼저 놓는다 (멤버 파괴는 이 본문 뒤에 일어난다).
+// **The surface has to go before the window**, or it references a dead HWND. The
+// swapchain has a destructor of its own, but it has to run **before the surface** --
+// and members are destroyed after this body, so it is released here by hand.
 Window::~Window() {
     swapchain.reset();
 

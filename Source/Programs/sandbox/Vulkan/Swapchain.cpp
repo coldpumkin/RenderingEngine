@@ -20,10 +20,12 @@ static VkSurfaceFormatKHR ChooseSurfaceFormat(const std::vector<VkSurfaceFormatK
     return VkSurfaceFormatKHR{};
 }
 
-// OPAQUE = 알파를 무시하고 불투명하게 합성. 창 투명도를 안 쓰므로 이게 맞다.
+// OPAQUE composites without reading the alpha, which is what we want -- nothing here
+// uses window transparency.
 //
-// FIFO와 달리 스펙이 지원을 보장하지 않아 확인하고 고른다. 지원 안 하는 값을 박으면
-// vkCreateSwapchainKHR이 실패하는데 그 실패 코드만으로는 원인을 알 수 없다.
+// Unlike FIFO, the spec guarantees no particular mode is supported, so one is picked
+// from what the surface reports. Writing an unsupported value in makes
+// vkCreateSwapchainKHR fail with a code that does not say why.
 static VkCompositeAlphaFlagBitsKHR ChooseCompositeAlpha(VkCompositeAlphaFlagsKHR supported) noexcept {
     constexpr VkCompositeAlphaFlagBitsKHR kPreferred[] = {
         VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
@@ -34,26 +36,26 @@ static VkCompositeAlphaFlagBitsKHR ChooseCompositeAlpha(VkCompositeAlphaFlagsKHR
     for (VkCompositeAlphaFlagBitsKHR candidate : kPreferred) {
         if ((supported & candidate) != 0) { return candidate; }
     }
-    return static_cast<VkCompositeAlphaFlagBitsKHR>(0);   // 드라이버가 스펙을 어긴 경우
+    return static_cast<VkCompositeAlphaFlagBitsKHR>(0);   // a driver breaking the spec
 }
 
 Swapchain::~Swapchain() {
     if (handle == VK_NULL_HANDLE || dev == nullptr) { return; }
     const VulkanDevice& d = *dev;
 
-    // **여기서 기다리지 않는다.** 소멸자가 device를 세우면 "놓는 것"과 "파괴하는 것"이
-    // 한 시점으로 붙고, 리사이즈마다 GPU가 멈춘다.
+    // **No wait here.** A destructor that stalls the device would weld "let go" and
+    // "destroy" into one moment, and every resize would stop the GPU.
     //
-    // Contract: 안전은 두 경로 중 하나가 보장한다 -
-    //   런타임  RetiredSwapchain의 셈이 끝났다 (AdvanceRetiredSwapchains)
-    //   종료    main이 vkDeviceWaitIdle을 먼저 부른다
-    // 어긋나면 검증 레이어가 "사용 중인 object 파괴"로 잡는다.
+    // Contract: one of two paths has already made this safe --
+    //   at run time  the RetiredSwapchain count ran out (AdvanceRetiredSwapchains)
+    //   at exit      main called vkDeviceWaitIdle first
+    // Out of step, the validation layer reports destroying an object still in use.
 
     for (SwapchainImage& img : images) {
         d.table.vkDestroySemaphore(d.handle, img.renderFinished, nullptr);
     }
-    // ~Image가 view를 지운다. image 자체는 allocation이 없어서 건드리지 않는다 -
-    // 조회한 것이고 vkDestroySwapchainKHR이 가져간다.
+    // ~Image destroys the view. The image itself has no allocation and is left alone:
+    // it was queried, and vkDestroySwapchainKHR takes it.
     images.clear();
 
     d.table.vkDestroySwapchainKHR(d.handle, handle, nullptr);
@@ -83,12 +85,12 @@ bool SelectSurfaceFormat(const VulkanInstance& inst,
     return true;
 }
 
-// 스펙: 한 surface에 swapchain 둘이 동시에 존재할 수 없다. 그래서 재생성할 때
-// oldSwapchain을 넘겨야 하고, 넘기는 순간 이전 것은 retired가 된다(파괴는 여전히
-// 우리 몫이다).
+// The spec allows one swapchain per surface at a time, which is why recreation hands
+// the old one in as oldSwapchain. That handing over retires it -- destroying it is
+// still ours to do.
 //
-// Table이 둘인 이유: surface 조회는 instance level, swapchain 생성은 device level이라
-// swapchain이 두 층의 경계에 서 있다.
+// Two tables, because a swapchain straddles the levels: the surface queries are
+// instance level and the creation is device level.
 bool CreateSwapchain(const VulkanInstance& inst,
                      const VulkanDevice& dev,
                      VkSurfaceKHR surface,
@@ -104,8 +106,8 @@ bool CreateSwapchain(const VulkanInstance& inst,
         return false;
     }
 
-    // 최소화하면 surface 크기가 0x0이 된다. 오류가 아니라 정상 상황이고 최소화가
-    // 풀릴 때까지 지속되므로 log를 찍지 않는다 - 찍으면 초당 수백 줄이 된다.
+    // Minimized, the surface reports 0x0. Not an error, and it lasts until the window
+    // comes back -- logged, it would be hundreds of lines a second.
     if (caps.currentExtent.width == 0 || caps.currentExtent.height == 0) {
         return false;
     }
@@ -117,8 +119,8 @@ bool CreateSwapchain(const VulkanInstance& inst,
         return false;
     }
 
-    // 요청값을 하드웨어가 허용하는 범위로 clamp한다.
-    // maxImageCount == 0은 "상한 없음"이라 clamp에서 뺀다.
+    // Clamped to what the surface allows. maxImageCount == 0 means no upper bound, so
+    // it is left out of the clamp rather than treated as zero.
     uint32_t imageCount = kDesiredSwapchainImages;
     if (imageCount < caps.minImageCount) { imageCount = caps.minImageCount; }
     if (caps.maxImageCount > 0 && imageCount > caps.maxImageCount) {
@@ -132,16 +134,17 @@ bool CreateSwapchain(const VulkanInstance& inst,
     info.imageColorSpace = surfaceFormat.colorSpace;
     info.imageExtent = caps.currentExtent;
     info.imageArrayLayers = 1;
-    // Post-process pass가 여기에 직접 그리므로 COLOR_ATTACHMENT만 있으면 된다.
-    // 스펙이 supportedUsageFlags에 항상 넣는 유일한 용도라 확인도 필요 없다.
+    // The post-process pass draws straight into these, so COLOR_ATTACHMENT is all
+    // that is needed -- and it is the one usage the spec always puts in
+    // supportedUsageFlags, so there is nothing to check.
     info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-    // 현재 정책: swapchain image는 graphics queue만 만진다. Compute가 여기 직접 써야
-    // 하면 CONCURRENT로 바꾸거나 queue family ownership transfer를 넣는다 - 둘 다
-    // 비용이 있으니 필요해질 때 고른다.
+    // Only the graphics queue touches a swapchain image. Compute writing here
+    // directly would mean CONCURRENT or a queue family ownership transfer, both of
+    // which cost something -- picked when there is a reason to.
     info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
     info.preTransform = caps.currentTransform;
     info.compositeAlpha = compositeAlpha;
-    // FIFO는 스펙이 항상 지원을 보장하는 유일한 mode다. vsync와 같아 tearing이 없다.
+    // FIFO is the one present mode the spec guarantees. It is vsync, so no tearing.
     info.presentMode = VK_PRESENT_MODE_FIFO_KHR;
     info.clipped = VK_TRUE;
     info.oldSwapchain = oldSwapchain;
@@ -155,8 +158,8 @@ bool CreateSwapchain(const VulkanInstance& inst,
 
     sc.extent = caps.currentExtent;
 
-    // 개수는 요청이 아니라 결과다. minImageCount는 최소일 뿐이고 driver가 더 줄 수
-    // 있어서 만든 뒤에 다시 물어야 한다.
+    // The count is a result, not a request: minImageCount is a floor and the driver
+    // may hand back more, so it is asked again after creation.
     uint32_t actualCount = 0;
     if (dev.table.vkGetSwapchainImagesKHR(dev.handle, sc.handle, &actualCount, nullptr)
             != VK_SUCCESS || actualCount == 0) {
@@ -170,20 +173,21 @@ bool CreateSwapchain(const VulkanInstance& inst,
         return false;
     }
 
-    // 중간에 실패하면 통째로 버린다. 반만 만들어진 swapchain을 성공으로 돌려주면
-    // 호출자는 handle이 유효한 것만 보고 null view로 렌더링을 시도한다.
+    // A failure partway through throws the whole thing away. Returning a half-built
+    // swapchain as success would leave the caller looking at a valid handle and
+    // rendering through null views.
     //
-    // 되돌리기는 소멸자가 한다 - vkDestroy~는 VK_NULL_HANDLE에 no-op이라(스펙 보장)
-    // 반쯤 채워진 배열도 그대로 정리된다.
+    // The destructor does the unwinding: vkDestroy* on VK_NULL_HANDLE is a no-op by
+    // spec, so a half-filled array cleans up the same as a full one.
     sc.images.resize(actualCount);
     for (uint32_t i = 0; i < actualCount; ++i) {
-        // 조회한 image에 우리가 만든 view를 붙인다. desc는 이 image가 무엇인지 -
-        // post-process pass의 pipeline이 같은 format으로 만들어져야 한다.
+        // A queried image with a view of ours on it. The desc says what the image is,
+        // and the post-process pipeline has to have been built for that same format.
         Texture& texture = sc.images[i].texture;
         texture.desc = {sc.extent, surfaceFormat.format, VK_SAMPLE_COUNT_1_BIT,
                         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT};
         texture.image.dev = &dev;
-        texture.image.handle = rawImages[i];   // allocation은 비운다 = 우리 것이 아니다
+        texture.image.handle = rawImages[i];   // no allocation: it is not ours
 
         // The one place ownership splits: the image is the swapchain's, the view is
         // ours. Two types now say that, where an empty allocation used to.
@@ -192,17 +196,18 @@ bool CreateSwapchain(const VulkanInstance& inst,
             return false;
         }
 
-        // image당 하나인 이유: 이 semaphore는 present가 기다리는데 present에는 완료를
-        // 알려주는 것이 없다(vkQueuePresentKHR은 fence를 주지 않는다). "다시 signal해도
-        // 된다"는 유일한 단서가 "acquire가 그 image를 다시 줬다"이고 그건 image index로만
-        // 온다.
+        // One per image, and the reason is that present waits on this semaphore while
+        // giving nothing back -- vkQueuePresentKHR hands over no fence. The only
+        // evidence that it is safe to signal again is that acquire handed the same
+        // image back, and that arrives as an image index.
         //
-        // imageAvailable은 반대다 - acquire 전에는 index를 모르므로 image당으로 둘 수
-        // 없다. 이 비대칭이 swapchain에 묶인 자원과 frame에 묶인 자원을 가르는 선이다.
+        // imageAvailable is the opposite: before the acquire there is no index, so it
+        // cannot be per image. That asymmetry is the line between what belongs to the
+        // swapchain and what belongs to a frame.
         //
-        // 완전한 해법은 VK_KHR_swapchain_maintenance1의 VkSwapchainPresentFenceInfoKHR -
-        // present에 fence를 붙일 수 있다. 그 extension이 따로 생겼다는 것 자체가 원래
-        // present에 완료 신호가 없었다는 증거다.
+        // The complete answer is VkSwapchainPresentFenceInfoKHR in
+        // VK_KHR_swapchain_maintenance1, which puts a fence on present. That the
+        // extension had to be written is the evidence there was no signal before.
         VkSemaphoreCreateInfo semInfo{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
         const VkResult semResult =
             dev.table.vkCreateSemaphore(dev.handle, &semInfo, nullptr,
@@ -221,32 +226,34 @@ bool CreateSwapchain(const VulkanInstance& inst,
 }
 
 // ---------------------------------------------------------------------------
-// 창 단위 연산 - 스왑체인이 있어야 성립하므로 여기(5절 끝)에 있다
+// Window-level operations. They are here rather than in Window.cpp because none of
+// them means anything without a swapchain.
 // ---------------------------------------------------------------------------
 
-// 그릴 곳을 보장한다. 낡았거나 없으면 다시 만든다.
-// **false는 실패가 아니라 "지금은 그릴 곳이 없다"** (최소화 중)이다.
+// Guarantees somewhere to draw, remaking it when out of date or absent.
+// **false is not a failure**; it means there is nowhere to draw right now (minimized).
 //
-// 루프의 0단계가 통째로 여기 들어왔다. 재생성 조건 판단, oldSwapchain 넘기기,
-// 이전 것 파괴가 한 덩어리라 흩어져 있을 이유가 없다.
+// Deciding whether to recreate, handing over oldSwapchain and letting go of the
+// previous one are one piece of work, so they are one function.
 bool EnsureSwapchain(const VulkanDevice& dev, Window* window) noexcept {
     if (!window->swapchainOutOfDate && window->swapchain != nullptr) {
         return true;
     }
 
-    // **Format을 다시 묻지 않는다.** window->surfaceFormat은 초기화 때 한 번 정해지고
-    // 그대로 간다 - 언리얼의 FVulkanViewport도 PixelFormat을 들고 재생성할 때 그것을
-    // 다시 넣는다(RecreateSwapchainFromRT).
+    // **The format is not asked again.** window->surfaceFormat is settled once at
+    // startup and fed back in here, the way Unreal's FVulkanViewport carries
+    // PixelFormat into RecreateSwapchainFromRT.
     //
-    // 재조회하던 때는 "format이 언제든 바뀔 수 있다"가 전제가 되고, 그러면 그것을
-    // 감시하는 코드가 렌더링 경로에 붙는다. 실제로 붙어 있었다.
+    // Re-querying makes "this can change at any time" the premise, and then something
+    // has to watch for it in the rendering path.
     //
-    // 전제가 어긋나면 조용히 넘어가지 않는다: 지원하지 않는 format으로
-    // vkCreateSwapchainKHR을 부르는 것은 VUID 위반이라 검증 레이어가 잡는다.
-    // 정말로 바꿔야 할 일(HDR 전환 등)이 생기면 그때는 요청이지 감지가 아니다.
+    // Being wrong about that is not silent: calling vkCreateSwapchainKHR with an
+    // unsupported format is a VUID violation and the validation layer reports it. A
+    // real change (HDR) would be a request rather than a detection.
 
-    // 이전 것을 oldSwapchain으로 넘겨 retire시키고, 새것을 만든 뒤에 놓는다.
-    // 스펙: 생성이 실패해도 retire는 일어난다 - 그래서 실패해도 이전 것은 버려야 한다.
+    // The old handle goes in as oldSwapchain, which retires it, and is released after
+    // the new one exists. Per spec the retirement happens even if creation fails, so
+    // the old one has to be let go either way.
     const VkSwapchainKHR retiring =
         window->swapchain != nullptr ? window->swapchain->handle : VK_NULL_HANDLE;
 
@@ -254,20 +261,20 @@ bool EnsureSwapchain(const VulkanDevice& dev, Window* window) noexcept {
     const bool created = CreateSwapchain(*window->inst, dev, window->surface,
                                          window->surfaceFormat, retiring, fresh.get());
 
-    // **새것을 만든 뒤에** 이전 것을 놓는다. 파괴는 여기서 일어나지 않는다 - present가
-    // 아직 옛 image를 읽고 있을 수 있어서 셈이 끝날 때까지 retired에 둔다.
+    // Released **after** the new one is made, and not destroyed here: present may
+    // still be reading the old images, so it waits in retired until the count runs out.
     //
-    // 셈의 크기는 옛 swapchain의 image 수다: 새것에서 그만큼 present가 더 일어나면
-    // 화면에 남아 있던 옛 image는 전부 교체됐다. 실패해서 새것이 없어도 옛것은 이미
-    // retire됐으므로(스펙) 똑같이 넘긴다.
+    // The count is the old swapchain's image count -- once that many more presents
+    // have happened, everything it left on screen has been replaced. It goes to
+    // retired even when creation failed, because the spec retired it regardless.
     if (window->swapchain != nullptr) {
         const uint32_t frames =
             static_cast<uint32_t>(window->swapchain->images.size()) + 1;
         window->retired.push_back(RetiredSwapchain{std::move(window->swapchain), frames});
     }
 
-    // 실패하면 fresh가 여기서 파괴된다 - 반쯤 만들어진 것도 소멸자가 정리한다.
-    // 그래서 CreateSwapchain의 중간 실패 경로에 되돌리기 코드가 하나도 없다.
+    // On failure fresh is destroyed here, half-built or not, which is why
+    // CreateSwapchain's failure paths contain no unwinding of their own.
     if (created) {
         window->swapchain = std::move(fresh);
     }
@@ -277,7 +284,8 @@ bool EnsureSwapchain(const VulkanDevice& dev, Window* window) noexcept {
 }
 
 void AdvanceRetiredSwapchains(Window* window) noexcept {
-    // 뒤에서부터 지운다 - 앞에서 지우면 남은 것들이 앞으로 밀리면서 인덱스가 어긋난다.
+    // Walked backwards: erasing from the front shifts what is left and the index
+    // would skip an entry.
     for (size_t i = window->retired.size(); i > 0; --i) {
         RetiredSwapchain& item = window->retired[i - 1];
         if (item.framesLeft > 0) {

@@ -1,10 +1,11 @@
 ﻿#pragma once
 
-// Descriptor - shader가 image를 읽게 하는 장치
+// Descriptors - how a shader reaches an image or a buffer
 // ============================================================================
 //
-// Image는 push constant처럼 command buffer에 실려 갈 수 없어서, "shader의 N번
-// 자리에 이 view를 걸어둔다"를 미리 만들어 두고 bind한다.
+// An image cannot ride in the command buffer the way a push constant does. So the
+// binding is built ahead of time -- "slot N of this set names this view" -- and the
+// command buffer carries only which set to use.
 //
 // Two things, kept together because neither changes for the life of the program:
 //   sampler   made once. Every image is read by the same rule
@@ -80,10 +81,10 @@ bool CreateDescriptors(const VulkanDevice& dev,
 bool AllocateSets(const Descriptors& descriptors, const DescriptorLayout& layout,
                   uint32_t count, VkDescriptorSet* out) noexcept;
 
-// Effect: 이미 뽑아둔 set이 무엇을 가리키는지 채운다
+// Effect: fills in what an already-allocated set points at
 //
-// Contract: count가 layout.bindingCount와 같아야 한다. GPU가 그 set을 읽는 중이면
-//           안 된다 - 지금은 초기화 때 한 번뿐이라 그 순간이 없다.
+// Contract: count must equal layout.bindingCount, and the GPU must not be reading the
+//           set -- every call here happens at startup, so that moment never arrives.
 void UpdateSet(const Descriptors& descriptors, const DescriptorLayout& layout,
                VkDescriptorSet set,
                const BindingValue* values, uint32_t count) noexcept;

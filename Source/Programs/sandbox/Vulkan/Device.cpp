@@ -15,13 +15,14 @@ bool SelectQueueFamilies(const VulkanInstance& inst,
     std::vector<VkQueueFamilyProperties> families(count);
     inst.table.vkGetPhysicalDeviceQueueFamilyProperties(gpu, &count, families.data());
 
-    // (1) 그래픽스 + present. **서피스가 아니라 플랫폼에 묻는다** -
-    //     vkGetPhysicalDeviceWin32PresentationSupportKHR은 "이 큐 패밀리가 Win32
-    //     데스크톱에 present 할 수 있는가"를 답하고, 창이 없어도 부를 수 있다.
-    //     VkBool32를 돌려주는 것에 주목 - 실패할 수 있는 조회가 아니라 성질이다.
+    // (1) graphics, and present with it. **The question goes to the platform, not to
+    //     a surface**: vkGetPhysicalDeviceWin32PresentationSupportKHR answers whether
+    //     this queue family can present to the Win32 desktop at all, and needs no
+    //     window. It returns VkBool32 rather than VkResult, which says it is a
+    //     property and not a query that can fail.
     //
-    //     (이 함수는 Win32/Wayland/Xcb/Xlib에만 있다. Android/iOS/macOS엔 없어서
-    //      언리얼은 "서피스가 생긴 뒤 확인"하는 2단계 초기화를 쓴다.)
+    //     (The function exists only for Win32, Wayland, Xcb and Xlib. Android, iOS and
+    //      macOS have none, which is why Unreal checks after a surface exists.)
     for (uint32_t i = 0; i < count; ++i) {
         if ((families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) == 0) { continue; }
         if (inst.table.vkGetPhysicalDeviceWin32PresentationSupportKHR(gpu, i) != VK_TRUE) {
@@ -32,8 +33,8 @@ bool SelectQueueFamilies(const VulkanInstance& inst,
     }
     if (out->graphics == UINT32_MAX) { return false; }
 
-    // (2) 전용 컴퓨트: COMPUTE는 있고 GRAPHICS는 없는 패밀리.
-    //     GRAPHICS가 없다는 조건 하나로 "그래픽스 패밀리와 다르다"가 자동 보장된다.
+    // (2) dedicated compute: COMPUTE set, GRAPHICS clear.
+    //     That one condition also guarantees it is not the graphics family.
     for (uint32_t i = 0; i < count; ++i) {
         const VkQueueFlags flags = families[i].queueFlags;
         if ((flags & VK_QUEUE_COMPUTE_BIT) == 0) { continue; }
@@ -42,9 +43,10 @@ bool SelectQueueFamilies(const VulkanInstance& inst,
         break;
     }
 
-    // (3) 전용 전송: TRANSFER는 있고 GRAPHICS도 COMPUTE도 없는 패밀리.
-    //     **여기서만 TRANSFER 비트를 본다** - "전송을 할 수 있나"가 아니라
-    //     "전송만 하는 전용 엔진인가"를 묻는 것이라서다.
+    // (3) dedicated transfer: TRANSFER set, neither GRAPHICS nor COMPUTE.
+    //     **The only place the TRANSFER bit is read**, because the question is not
+    //     "can this transfer" -- everything can -- but "is this an engine that does
+    //     nothing else".
     for (uint32_t i = 0; i < count; ++i) {
         const VkQueueFlags flags = families[i].queueFlags;
         if ((flags & VK_QUEUE_TRANSFER_BIT) == 0) { continue; }
@@ -56,13 +58,13 @@ bool SelectQueueFamilies(const VulkanInstance& inst,
     return true;
 }
 
-// 고르기의 결과. **수명이 없는 값 타입이다.**
+// The result of choosing. **A value with no lifetime.**
 //
-// vkDestroyPhysicalDevice 같은 함수는 존재하지 않는다 - GPU는 우리가 만든 게 아니라
-// 열거해서 고른 것이라 반납할 게 없다. 그래서 이건 영원히 struct고 클래스가 될 일이 없다.
+// There is no vkDestroyPhysicalDevice: a GPU is enumerated and picked, not created,
+// so there is nothing to hand back. That is why this stays a struct.
 //
-// 지나가는 값이다: PickPhysicalDevice가 만들고, CreateDevice가 소비해서
-// **VulkanDevice 안으로 흡수된다.** 그 뒤로 따로 들고 있지 않는다.
+// It is in transit. PickPhysicalDevice produces it, CreateDevice consumes it and
+// **absorbs it into VulkanDevice**; nobody holds one afterwards.
 PhysicalDeviceSelection PickPhysicalDevice(const VulkanInstance& inst,
                                            VkSurfaceKHR surface) noexcept {
     PhysicalDeviceSelection selection;
@@ -73,8 +75,9 @@ PhysicalDeviceSelection PickPhysicalDevice(const VulkanInstance& inst,
         LOG("[vk] no Vulkan-capable GPU\n");
         return selection;
     }
-    // **개수 조회는 실패해도 gpuCount가 0으로 남아 위에서 걸린다. 채우기는 다르다** -
-    // 실패하면 벡터가 VK_NULL_HANDLE로 남고, 그걸 아래 루프가 진짜 GPU처럼 넘긴다.
+    // **A failed count leaves gpuCount at 0 and is caught above. A failed fill is
+    // different**: the vector stays full of VK_NULL_HANDLE, and the loop below would
+    // hand those to queries as though they were GPUs.
     std::vector<VkPhysicalDevice> gpus(gpuCount);
     if (inst.table.vkEnumeratePhysicalDevices(inst.handle, &gpuCount, gpus.data())
             != VK_SUCCESS) {
@@ -89,10 +92,11 @@ PhysicalDeviceSelection PickPhysicalDevice(const VulkanInstance& inst,
         VkPhysicalDeviceProperties props{};
         inst.table.vkGetPhysicalDeviceProperties(candidate, &props);
 
-        // (a) API 버전
+        // (a) API version
         if (props.apiVersion < kRequiredApiVersion) { continue; }
 
-        // (b) 1.3 기능이 실제로 켜져 있는가 (버전을 지원해도 꺼져 있을 수 있다)
+        // (b) whether the 1.3 features are actually available -- supporting the
+        //     version does not mean they are
         VkPhysicalDeviceVulkan13Features features13{
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
         VkPhysicalDeviceFeatures2 features2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
@@ -101,18 +105,19 @@ PhysicalDeviceSelection PickPhysicalDevice(const VulkanInstance& inst,
         if (features13.dynamicRendering != VK_TRUE || features13.synchronization2 != VK_TRUE) {
             continue;
         }
-        // core 1.0 feature는 지금 요구하는 것이 없어서 features2.features를 안 본다.
-        // 요구가 생기면 여기와 Core.h 양쪽에 넣는다.
+        // features2.features goes unread: no core 1.0 feature is required. Adding one
+        // means editing here and Core.h both.
 
-        // (c) 스왑체인 확장
+        // (c) the swapchain extension
         uint32_t extCount = 0;
         inst.table.vkEnumerateDeviceExtensionProperties(candidate, nullptr, &extCount, nullptr);
         std::vector<VkExtensionProperties> available(extCount);
-        // 채우기가 실패하면 available이 0으로 남아 아래에서 "확장이 없다"로 읽힌다.
-        // 그건 이 후보를 떨어뜨릴 뿐이라 안전한 쪽이지만, 이유를 남긴다.
+        // A failed fill leaves available zeroed, which reads below as "no extensions"
+        // and drops the candidate. That is the safe direction, and said out loud so it
+        // is a decision rather than an accident.
         if (inst.table.vkEnumerateDeviceExtensionProperties(
                 candidate, nullptr, &extCount, available.data()) != VK_SUCCESS) {
-            LOG("[vk] vkEnumerateDeviceExtensionProperties failed - 이 GPU를 건너뛴다\n");
+            LOG("[vk] vkEnumerateDeviceExtensionProperties failed; skipping this GPU\n");
             continue;
         }
 
@@ -126,7 +131,8 @@ PhysicalDeviceSelection PickPhysicalDevice(const VulkanInstance& inst,
         }
         if (!hasAllExtensions) { continue; }
 
-        // (d) 큐 패밀리 - 그래픽스+present가 없으면 탈락. 컴퓨트/전송은 있으면 좋고 없어도 된다.
+        // (d) queue families. No graphics-with-present is disqualifying; compute and
+        //     transfer are taken if dedicated ones exist and skipped otherwise.
         QueueFamilies families;
         if (!SelectQueueFamilies(inst, candidate, &families)) { continue; }
 
@@ -144,14 +150,14 @@ PhysicalDeviceSelection PickPhysicalDevice(const VulkanInstance& inst,
         return selection;
     }
 
-    // 고른 큐 패밀리가 **이 서피스**에도 present 되는지 확인한다.
-    // 위의 Win32 확인은 "플랫폼에 대해"이고 이건 "이 창에 대해"다.
-    // 층이 다르고 서로를 대신하지 않는다.
+    // Whether the chosen family can present to **this surface**. The Win32 check
+    // above was about the platform; this is about the window. Different levels, and
+    // neither answers for the other.
     VkBool32 surfaceSupported = VK_FALSE;
     inst.table.vkGetPhysicalDeviceSurfaceSupportKHR(selection.gpu, selection.families.graphics,
                                                     surface, &surfaceSupported);
     if (surfaceSupported != VK_TRUE) {
-        selection.gpu = VK_NULL_HANDLE;   // 실패는 gpu가 비어 있는 것으로 표현한다
+        selection.gpu = VK_NULL_HANDLE;   // an empty gpu is how failure is spelled
         LOG("[vk] chosen queue family cannot present to this surface\n");
         return selection;
     }
@@ -173,9 +179,10 @@ bool CreateDevice(const VulkanInstance& inst,
     dev.families = selection.families;
     const QueueFamilies& families = dev.families;
 
-    // 스펙: pQueueCreateInfos 안의 queueFamilyIndex는 **서로 달라야 한다.**
-    // SelectQueueFamilies가 "GRAPHICS 없는 것만 compute", "GRAPHICS/COMPUTE 없는 것만
-    // transfer"로 골랐으므로 셋은 자동으로 서로 다르다. 중복 제거가 필요 없다.
+    // The spec requires the queueFamilyIndex values in pQueueCreateInfos to be
+    // **distinct**. SelectQueueFamilies took compute only where GRAPHICS was clear and
+    // transfer only where both were, so the three cannot collide and nothing here has
+    // to deduplicate.
     const float priority = 1.0f;
     VkDeviceQueueCreateInfo queueInfos[3]{};
     uint32_t queueInfoCount = 0;
@@ -184,7 +191,7 @@ bool CreateDevice(const VulkanInstance& inst,
         VkDeviceQueueCreateInfo& q = queueInfos[queueInfoCount++];
         q.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
         q.queueFamilyIndex = family;
-        q.queueCount = 1;              // 패밀리당 하나면 지금은 충분하다
+        q.queueCount = 1;              // one per family is all anything here submits to
         q.pQueuePriorities = &priority;
     };
 
@@ -192,32 +199,34 @@ bool CreateDevice(const VulkanInstance& inst,
     if (families.HasCompute())  { addQueue(families.compute); }
     if (families.HasTransfer()) { addQueue(families.transfer); }
 
-    // 지원 여부를 확인만 하는 게 아니라 **켜달라고 요청**해야 쓸 수 있다.
+    // Checking support is not enough -- a feature has to be **asked for** to be usable.
     VkPhysicalDeviceVulkan13Features enable13 = RequiredFeatures13();
 
     VkDeviceCreateInfo info{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     info.pNext = &enable13;
-    // pEnabledFeatures는 비운다: core 1.0에서 켤 것이 없다. 넣게 되면 pNext에
-    // VkPhysicalDeviceFeatures2를 쓸 수 없다 - 둘 중 하나다.
+    // pEnabledFeatures stays null: nothing in core 1.0 is wanted. Filling it would
+    // rule out VkPhysicalDeviceFeatures2 in pNext -- the spec allows one or the other.
     info.queueCreateInfoCount = queueInfoCount;
     info.pQueueCreateInfos = queueInfos;
     info.enabledExtensionCount = static_cast<uint32_t>(std::size(kRequiredDeviceExtensions));
     info.ppEnabledExtensionNames = kRequiredDeviceExtensions;
 
-    // **inst.table을 거친다.** 여기가 한동안 전역 vkCreateDevice를 부르고 있었다 -
-    // 동작은 했지만(volkLoadInstanceOnly가 전역을 채워둬서) 테이블 규약 위반이었다.
+    // **Through inst.table**, because vkCreateDevice is an instance-level call.
+    // Calling the global works -- volkLoadInstanceOnly filled it in -- and that is
+    // exactly what makes the convention worth stating.
     if (inst.table.vkCreateDevice(dev.gpu, &info, nullptr, &dev.handle) != VK_SUCCESS) {
         LOG("[vk] vkCreateDevice failed\n");
         return false;
     }
 
-    // **전역이 아니라 테이블로 받는다.** 전역(volkLoadDevice)은 마지막으로 로드한
-    // 디바이스로 덮인다. 디바이스가 둘이 되는 순간 조용히 틀린 디바이스를 부르게 되고,
-    // 조용해서 안 잡힌다. 지금 디바이스는 하나지만 **테이블을 쓰면 그 버그가 아예
-    // 표현 불가능해진다.**
+    // **A table, not the globals.** volkLoadDevice overwrites the globals with
+    // whichever device was loaded last, so a second device means calls silently going
+    // to the wrong one. There is one device today; the table is what makes that bug
+    // impossible to write rather than merely absent.
     volkLoadDeviceTable(&dev.table, dev.handle);
 
-    // vkGetDeviceQueue는 **조회**다. vkCreateDevice가 이미 만들었고, 파괴 함수도 없다.
+    // vkGetDeviceQueue is a **query**: vkCreateDevice already made these, and nothing
+    // destroys one.
     dev.table.vkGetDeviceQueue(dev.handle, families.graphics, 0, &dev.queues.graphics);
     if (families.HasCompute()) {
         dev.table.vkGetDeviceQueue(dev.handle, families.compute, 0, &dev.queues.compute);
@@ -226,20 +235,21 @@ bool CreateDevice(const VulkanInstance& inst,
         dev.table.vkGetDeviceQueue(dev.handle, families.transfer, 0, &dev.queues.transfer);
     }
 
-    // present는 새로 만드는 게 아니라 위에서 만든 것 중 하나를 가리킨다.
-    // 그래픽스 패밀리가 present를 지원하는 것은 PickPhysicalDevice가 이미 확인했다.
+    // present is an alias, not another queue. That the graphics family can present was
+    // already established in PickPhysicalDevice.
     dev.queues.present = dev.queues.graphics;
 
-    // 메모리 타입 목록을 여기서 한 번 물어 담는다 (인스턴스 레벨 조회다).
+    // The memory types, asked once and kept. The query is instance level.
     inst.table.vkGetPhysicalDeviceMemoryProperties(dev.gpu, &dev.memoryProperties);
 
-    // ---- VMA 할당자 ----
+    // ---- the VMA allocator ----
     //
-    // **함수 포인터를 손으로 채운다.** volk 때문이다: VK_NO_PROTOTYPES라 전역 vk* 심볼이
-    // 아예 없어서 VMA가 스스로 찾을 수가 없다. 우리가 쓰는 것과 **같은 테이블**을
-    // 넘기는 것이 목적이기도 하다 - VMA가 따로 로드하면 멀티 디바이스에서 어긋난다.
+    // **The function pointers are filled in by hand**, because of volk: under
+    // VK_NO_PROTOTYPES there are no global vk* symbols for VMA to find. It also hands
+    // VMA **the same table** everything else here calls through -- loading its own
+    // would drift apart the moment there are two devices.
     //
-    // 이게 volk + VMA 조합의 유일한 대가다. 한 번 적으면 끝이다.
+    // This is the whole cost of volk plus VMA, and it is paid once.
     VmaVulkanFunctions functions{};
     functions.vkGetInstanceProcAddr = vkGetInstanceProcAddr;
     functions.vkGetDeviceProcAddr = vkGetDeviceProcAddr;
@@ -260,14 +270,15 @@ bool CreateDevice(const VulkanInstance& inst,
     functions.vkCreateImage = dev.table.vkCreateImage;
     functions.vkDestroyImage = dev.table.vkDestroyImage;
     functions.vkCmdCopyBuffer = dev.table.vkCmdCopyBuffer;
-    // 1.1+ 코어로 올라온 것들. VMA가 있으면 더 나은 경로를 쓴다.
+    // Promoted to core in 1.1. VMA takes a better path when they are present.
     functions.vkGetBufferMemoryRequirements2KHR = dev.table.vkGetBufferMemoryRequirements2;
     functions.vkGetImageMemoryRequirements2KHR = dev.table.vkGetImageMemoryRequirements2;
     functions.vkBindBufferMemory2KHR = dev.table.vkBindBufferMemory2;
     functions.vkBindImageMemory2KHR = dev.table.vkBindImageMemory2;
     functions.vkGetPhysicalDeviceMemoryProperties2KHR =
         inst.table.vkGetPhysicalDeviceMemoryProperties2;
-    // 1.3 코어. maintenance4의 "버퍼를 안 만들고도 요구사항을 묻는" 경로.
+    // Core in 1.3: maintenance4's way of asking a buffer's requirements without
+    // creating one.
     functions.vkGetDeviceBufferMemoryRequirements = dev.table.vkGetDeviceBufferMemoryRequirements;
     functions.vkGetDeviceImageMemoryRequirements = dev.table.vkGetDeviceImageMemoryRequirements;
 
@@ -286,15 +297,15 @@ bool CreateDevice(const VulkanInstance& inst,
     return true;
 }
 
-// 인스턴스와 같다 - 자기 테이블로 자기를 지운다.
-// **파괴 전에 GPU를 기다린다**: 스펙상 vkDestroyDevice 전에 이 디바이스의 모든 큐
-// 작업이 끝나 있어야 한다.
+// Like the instance: it destroys itself with its own table.
+// **Waits for the GPU first** -- the spec requires every queue on this device to be
+// idle before vkDestroyDevice.
 VulkanDevice::~VulkanDevice() {
     if (handle == VK_NULL_HANDLE) { return; }
     table.vkDeviceWaitIdle(handle);
 
-    // **디바이스보다 먼저.** 할당자가 이 디바이스로 잡은 메모리를 들고 있다.
-    // (버퍼들은 이보다도 먼저 죽는다 - main()에서 dev보다 뒤에 선언했다.)
+    // **Before the device.** The allocator holds memory taken from it. The buffers go
+    // even earlier -- main declares them after dev, so they are destroyed first.
     if (allocator != VK_NULL_HANDLE) {
         vmaDestroyAllocator(allocator);
     }

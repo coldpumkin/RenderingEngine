@@ -2,12 +2,11 @@
 
 #include <initializer_list>
 
-// ============================================================================
-// 6. 커맨드 풀 (큐 패밀리마다) + 프레임 자원 (frames-in-flight마다)
-// ============================================================================
 
 VkCommandPool CreateCommandPool(const VulkanDevice& dev, uint32_t queueFamily) noexcept {
-    // RESET_COMMAND_BUFFER: 풀 전체가 아니라 버퍼 하나만 개별 리셋할 수 있게 한다.
+    // RESET_COMMAND_BUFFER lets one buffer rewind on its own. Without it the only
+    // way back is resetting the whole pool, which would take every frame's buffer
+    // with it.
     VkCommandPoolCreateInfo info{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     info.queueFamilyIndex = queueFamily;
@@ -39,7 +38,7 @@ bool CreateCommands(const VulkanDevice& dev, Commands* out) noexcept {
 
 Commands::~Commands() {
     if (dev == nullptr) { return; }
-    // 풀을 파괴하면 거기서 나온 커맨드 버퍼도 같이 사라진다.
+    // The buffers go with the pool, so none are freed here.
     for (VkCommandPool pool : {graphics, compute, transfer}) {
         if (pool != VK_NULL_HANDLE) {
             dev->table.vkDestroyCommandPool(dev->handle, pool, nullptr);
@@ -71,8 +70,8 @@ VkCommandBuffer BeginOneShot(const VulkanDevice& dev, const Commands& commands) 
 
 bool EndOneShotAndWait(const VulkanDevice& dev, const Commands& commands,
                        VkCommandBuffer cmd, const char* what) noexcept {
-    // 반환값을 다 본다. 한때 전부 버렸는데 그러면 복사가 한 줄도 실행되지 않아도
-    // "ready" log가 찍히고 true가 나갔다.
+    // Every result is checked. Unchecked, a copy that never reached the GPU still
+    // printed its "ready" line and returned true.
     const auto fail = [&](const char* step) {
         LOG("[vk] %s failed (%s)\n", step, what);
         dev.table.vkFreeCommandBuffers(dev.handle, commands.graphics, 1, &cmd);
@@ -94,8 +93,8 @@ bool EndOneShotAndWait(const VulkanDevice& dev, const Commands& commands,
             != VK_SUCCESS) {
         return fail("vkQueueSubmit2");
     }
-    // 대기가 실패하면 작업이 끝났는지 알 수 없다. Command buffer 반납도 위험하지만
-    // (GPU가 아직 읽을 수 있다) 여기서 할 수 있는 최선이다.
+    // A failed wait leaves the work in an unknown state. Freeing the buffer is unsafe
+    // too -- the GPU may still be reading it -- and is the best available from here.
     if (dev.table.vkQueueWaitIdle(dev.queues.graphics) != VK_SUCCESS) {
         return fail("vkQueueWaitIdle");
     }

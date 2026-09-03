@@ -1,24 +1,27 @@
 ﻿#pragma once
 
-// 모든 Vulkan 파일이 공유하는 것 - log, 요구사항, RAII 규약.
+// What every Vulkan file here shares: the log macro, what we require of a device, and
+// the RAII convention every resource type follows.
 //
-// Vulkan 호출은 예외 없이 두 층으로 갈린다:
-//   Instance level  VkInstance 또는 VkPhysicalDevice로 dispatch
-//   Device level    VkDevice · VkQueue · VkCommandBuffer로 dispatch
+// Every Vulkan call belongs to one of two levels:
+//   instance level   dispatched on VkInstance or VkPhysicalDevice
+//   device level     dispatched on VkDevice, VkQueue or VkCommandBuffer
 //
-// API 자체의 선이고 파일이 이 선을 따라 나뉜다. 각 층이 자기 function table
-// (VolkInstanceTable / VolkDeviceTable)을 들고, handle과 table이 한 객체에서
-// 나와야 섞일 수 없다.
+// That line is the API's, and the files follow it. Each level carries its own function
+// table (VolkInstanceTable / VolkDeviceTable), and the handle comes from the same
+// object as the table so the two cannot be mixed.
 //
-// 전역으로 남는 것은 bootstrap 4개뿐 - volkInitialize, vkEnumerateInstanceVersion,
-// vkEnumerateInstanceLayerProperties, vkCreateInstance. Instance가 없을 때
-// 부르는 함수라 table에 담을 수가 없다.
+// Four functions stay global, and only because they are called before an instance
+// exists: volkInitialize, vkEnumerateInstanceVersion,
+// vkEnumerateInstanceLayerProperties, vkCreateInstance.
 //
-// RAII 규약 (자원 타입 전부에 적용):
-//   1. 기본 생성 = 비어 있음. 그 상태가 합법이다
-//   2. Create가 out 파라미터로 채운다. 값 반환이면 타입마다 move 생성자가 필요해진다
-//   3. 소멸자는 인자를 못 받으므로 파괴에 필요한 것(dev/inst)을 non-owning으로 든다
-//   4. 복사 금지 - handle이 두 번 파괴된다
+// The RAII convention:
+//   1. default construction leaves it empty, and empty is a legal state
+//   2. a Create* function fills an out parameter. Returning by value would mean a
+//      move constructor per type
+//   3. a destructor takes no arguments, so what it needs to destroy with (dev, inst)
+//      is held as a non-owning pointer
+//   4. no copying -- a handle would be destroyed twice
 
 #include <volk.h>
 
@@ -26,33 +29,35 @@
 
 #define LOG(...)  std::fprintf(stderr, __VA_ARGS__)
 
-// 요구사항
+// What we require
 // ============================================================================
 
-// Dynamic rendering이 1.3 core라서 1.3이다.
+// 1.3 because dynamic rendering is core there.
 constexpr uint32_t kRequiredApiVersion = VK_API_VERSION_1_3;
 
-// 화면에 그리려면 있어야 하는 device extension.
-// (VK_KHR_surface는 instance extension이다. 층이 다르다.)
+// The device extension needed to put anything on screen.
+// (VK_KHR_surface is an instance extension -- a different level.)
 constexpr const char* kRequiredDeviceExtensions[] = {
     VK_KHR_SWAPCHAIN_EXTENSION_NAME,
 };
 
-// 버전을 지원해도 feature가 꺼져 있을 수 있어 따로 확인한다.
+// Supporting the version does not mean the features are on, so they are asked for
+// separately.
 //
-// Contract: 확인할 때와 켤 때 같은 값을 봐야 한다. 어긋나면 device는 만들어지고
-//           draw에서 죽는다.
+// Contract: the check and the enable must read the same values. Out of step, the
+//           device is created and the draw is what dies.
 inline VkPhysicalDeviceVulkan13Features RequiredFeatures13() noexcept {
     VkPhysicalDeviceVulkan13Features features{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
-    features.dynamicRendering = VK_TRUE;   // VkRenderPass/VkFramebuffer 없이 그린다
-    features.synchronization2 = VK_TRUE;   // barrier/submit API 개정판
+    features.dynamicRendering = VK_TRUE;   // draw with no VkRenderPass or VkFramebuffer
+    features.synchronization2 = VK_TRUE;   // the revised barrier and submit API
     return features;
 }
 
-// core 1.0 feature는 지금 하나도 요구하지 않는다. 요구하던 fillModeNonSolid는
-// POLYGON_MODE_LINE 때문이었는데 그 값을 쓰는 pipeline이 없어졌고, 안 쓰는 기능
-// 때문에 GPU를 탈락시키고 있었다.
+// No core 1.0 feature is required. fillModeNonSolid was, for POLYGON_MODE_LINE, and
+// no pipeline uses that any more -- a GPU was being turned away over something nothing
+// asked for.
 //
-// 다시 필요해지면 여기와 Device.cpp의 후보 검사 **양쪽**에 넣는다 - 확인할 때와
-// 켤 때 같은 값을 봐야 하고, 어긋나면 device는 만들어지고 draw에서 죽는다.
+// Adding one back means editing here **and** the candidate check in Device.cpp: the
+// check and the enable have to read the same values, and out of step the device is
+// created and the draw is what dies.

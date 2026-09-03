@@ -37,7 +37,8 @@ bool CreateImage2D(const VulkanDevice& dev,
     info.usage = usage;
     info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
-    // GPU만 읽고 쓴다. priority 1.0 - render target이라 쫓겨나면 매 frame 손해다.
+    // GPU-only memory, and priority 1.0: this is a render target, so being evicted
+    // costs every frame rather than once.
     VmaAllocationCreateInfo alloc{};
     alloc.usage = VMA_MEMORY_USAGE_AUTO;
     alloc.priority = 1.0f;
