@@ -25,7 +25,12 @@ layout(set = 0, binding = 0) uniform Scene {
     mat4 viewProj;
 } scene;
 
-// Contract: same block in the fragment stage, field for field.
+// What this stage reads of the push block, and no more. The fragment stage declares
+// its own field at its own offset; the two do not have to look alike, and a program's
+// push range is the span both of them together need.
+//
+// Contract: these fields are the front of PushConstants in Passes.h, in order. Their
+//           offsets follow from that -- truncating is safe, reordering is not.
 layout(push_constant) uniform Push {
     mat4 model;
 
@@ -35,8 +40,6 @@ layout(push_constant) uniform Push {
     vec4 normal0;
     vec4 normal1;
     vec4 normal2;
-
-    float alpha;   // read by the fragment stage only, declared here to match
 } pc;
 
 layout(location = 0) out vec3 fragNormal;

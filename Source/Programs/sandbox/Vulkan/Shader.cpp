@@ -222,9 +222,22 @@ bool CreateShaderProgram(const VulkanDevice& dev,
         }
     }
 
-    // One block, however many stages read it. Each stage reports only itself, so the
-    // flags are or-ed and the size is whichever declared one -- they are the same
-    // block, and glslc rejects a disagreement inside the shaders.
+    // One range, covering what every stage together reaches. Each stage reports only
+    // itself: the flags are or-ed, and the size is the larger of the two.
+    //
+    // The max is the union's end, not a guess between two numbers that ought to match.
+    // A stage declares the fields it reads and reflection reports the block's extent,
+    // which counts from 0 whether or not the stage names a field at offset 0 -- so a
+    // fragment stage reading only "layout(offset = 112) float alpha" reports 116, and
+    // a vertex stage reading the first three fields reports 112. Measured:
+    //
+    //   mesh      vert 112 B  frag 116 B  ->  116 B  VERTEX | FRAGMENT
+    //   shadow    vert  64 B  frag   0 B  ->   64 B  VERTEX
+    //
+    // The two stages do not declare the same block and do not have to. What they owe
+    // each other is that whatever each names sits at the offset the CPU wrote it to,
+    // which is a contract in the shaders and unchecked here -- the .spv reports an
+    // extent, and a field inside it is past what either side can see.
     VkPushConstantRange pushRange{};
     pushRange.stageFlags = out->vertInterface.pushStages | out->fragInterface.pushStages;
     pushRange.size = out->vertInterface.pushSize > out->fragInterface.pushSize
