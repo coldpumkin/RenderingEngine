@@ -898,7 +898,8 @@ int main() {
                           renderer.shadowPipeline, &renderer.shadowPass)) { return 1; }
     if (!CreateScenePass(dev, renderer.descriptors, kRenderExtent,
                          renderer.mesh, renderer.sceneProgram, renderer.scenePipeline,
-                         renderer.shadowPass, &renderer.scenePass)) { return 1; }
+                         renderer.shadowPass, renderer.guiPass,
+                         &renderer.scenePass)) { return 1; }
     if (!CreatePostProcessPass(renderer.descriptors, renderer.scenePass,
                                renderer.presentProgram, renderer.presentPipeline,
                                &renderer.postPass)) {
@@ -952,16 +953,6 @@ int main() {
     const bool fixedTime =
         std::getenv("LAMBDA_FIXED_TIME") != nullptr || capturePath != nullptr;
     constexpr float kFixedTime = 1.0f;   // any constant. 1.0 puts the light off-axis
-
-    // What to leave out. Edited by the panel's checkboxes, read by the uniform.
-    //
-    // Comparing a feature against its own absence used to mean checking out the
-    // commit before it. Now it is one click, with the same camera and the same light
-    // on the same screen -- which is the only way the difference is honest.
-    //
-    // Not in Config.h: a constant would have to be edited and rebuilt, and the point
-    // is to see both within a second of each other.
-    ViewOptions viewOptions;   // 'view' is the matrix below
 
     // Inside the atrium, looking along it. The old value put the camera at the origin
     // facing -z, which is a wall from here -- it was chosen when the scene was five
@@ -1094,10 +1085,7 @@ int main() {
         renderer.shadowPass.frames[slot.index].uniformValue = {lightViewProj};
         renderer.scenePass.frames[slot.index].uniformValue =
             {camera, lightViewProj, glm::vec4{lightDir, 0.0f},
-             glm::vec4{1.0f, 0.95f, 0.9f, 0.15f}, glm::vec4{eye, 48.0f},
-             viewOptions.normalMap ? 1.0f : 0.0f, viewOptions.baseColor ? 1.0f : 0.0f,
-             viewOptions.specular ? 1.0f : 0.0f, viewOptions.alphaMask ? 1.0f : 0.0f,
-             viewOptions.shadow ? 1.0f : 0.0f};
+             glm::vec4{1.0f, 0.95f, 0.9f, 0.15f}, glm::vec4{eye, 48.0f}};
 
         // Draw it
         // --------------------------------------------------------------------
@@ -1143,7 +1131,7 @@ int main() {
         guiInfo.sceneResolve = &renderer.scenePass.frames[slot.index].colorResolve;
         guiInfo.sceneDepth = &renderer.scenePass.frames[slot.index].depth;
         guiInfo.frameTarget = target.texture;
-        BuildGui(&viewOptions, guiInfo);
+        BuildGui(&renderer.guiPass, guiInfo);
 
 
         // Only the texture: recording has no use for the rest of the target.

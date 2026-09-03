@@ -66,6 +66,27 @@ struct ViewOptions {
     bool shadow = true;
 };
 
+// The same switches as the shader reads them.
+//
+// Here rather than in SceneUniform, which is where they used to sit. What they answer
+// to is the panel, not the scene: nothing about a camera or a light decides them, and
+// the pass whose uniform carried them had no say in any of it. Moving them out left
+// SceneUniform with only values the frame actually computes.
+//
+// Floats rather than a bitfield: std140 packs them into whole vec4s either way, and
+// this way each has a name on both sides of the boundary instead of a bit position.
+// 0 or 1, and the shader compares against 0.5 so a half value is not a third state.
+//
+// Contract: field order matches the View block in mesh.frag.
+struct ViewOptionsUniform {
+    float normalMap;
+    float baseColor;
+    float specular;
+    float alphaMask;
+    float shadow;
+    float pad[3];   // std140 rounds the block up to a second vec4
+};
+
 // ImGui keeps its widget state in a global context, so this holds only what we own
 // and must destroy. One instance; a second would fight over that context.
 struct Gui {
@@ -90,8 +111,22 @@ struct Gui {
     struct PerFrame {
         Buffer vertices;
         Buffer indices;
+
+        // What the panel decided, in the form the scene's shaders read. Per frame in
+        // flight like everything else here: the CPU writes this one while the GPU may
+        // still be reading the previous frame's.
+        //
+        // Owned by the panel and read by another pass, which is the one direction
+        // nothing else here runs in -- so the scene pass names it through a function
+        // below rather than reaching into this struct.
+        Buffer options;
     };
     PerFrame frames[kFramesInFlight];
+
+    // Edited by the checkboxes, copied into frames[i].options once a frame. Not the
+    // caller's any more: main used to declare it, hand it to BuildGui and then copy
+    // every field into the scene's uniform by hand.
+    ViewOptions options;
 
     bool started = false;       // whether the context needs destroying
     bool warnedTooBig = false;  // so that message cannot flood
@@ -185,7 +220,23 @@ struct GuiFrameInfo {
 //
 // Separate from the recording below because it runs where the rest of the frame's
 // state is decided, not where commands are written. Nothing here touches the GPU.
-void BuildGui(ViewOptions* options, const GuiFrameInfo& info) noexcept;
+void BuildGui(Gui* gui, const GuiFrameInfo& info) noexcept;
+
+// Output: the buffer the scene pass's set should name for this frame, and its size
+//
+// A function rather than a reachable field: what the scene pass needs is one handle
+// per frame, and this is the whole of what it may know about the panel.
+//
+// Contract: gui must already be created -- CreateScenePass fills its sets once, and
+//           a null handle there is a validation error at bind time.
+VkBuffer GuiOptionsBuffer(const Gui& gui, uint32_t frameIndex) noexcept;
+constexpr VkDeviceSize kGuiOptionsSize = sizeof(ViewOptionsUniform);
+
+// Effect: copies this frame's switches into the buffer the scene pass will read
+//
+// Called where the other passes' uniforms are copied, and before any of them record:
+// the scene pass samples this in the same submission.
+void UploadGuiOptions(const Gui& gui, uint32_t frameIndex) noexcept;
 
 // Effect: copies this frame's vertices into its buffers and appends the panel's draws
 //

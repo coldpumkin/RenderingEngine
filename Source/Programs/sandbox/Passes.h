@@ -81,6 +81,10 @@ constexpr uint32_t kMaterialSet = 1;   // what a surface looks like. One per mat
 //           frame; every draw in the pass reads the same values, so what differs per
 //           draw goes in PushConstants instead.
 //
+// Only values this frame computed. The panel's switches used to be here too, and they
+// answer to nothing in this struct -- they are the panel's, and binding 2 of this set
+// is where they arrive now.
+//
 // vec4 rather than vec3: std140 aligns a vec3 to 16 bytes anyway, so naming the
 // leftover beats hiding it.
 struct SceneUniform {
@@ -95,21 +99,7 @@ struct SceneUniform {
     glm::vec4 lightColor;   // rgb = colour, a = ambient
     glm::vec4 viewPos;      // xyz = camera position, w = specular exponent
 
-    // What to leave out, so a feature can be compared against its own absence
-    // without rebuilding. Floats rather than a bitfield: std140 packs them into whole
-    // vec4s either way, and this way each has a name on both sides of the boundary
-    // instead of a bit position nobody can read.
-    //
-    // 0 or 1. The shader compares against 0.5 so a half value is not a third state.
-    float useNormalMap;
-    float useBaseColor;
-    float useSpecular;
-    float useAlphaMask;
 
-    // The fifth switch starts a second vec4, and std140 rounds the block up to it.
-    // Named rather than left implicit, the way the vec4s above are.
-    float useShadow;
-    float pad[3];
 };
 
 // Rides inside the command buffer: no pool, no set, no lifetime. The spec guarantees
@@ -418,11 +408,13 @@ struct ScenePass {
 // Contract: shadow must already be created -- each frame's set names its depth map,
 //           frame for frame. Taken by value at set-fill time and not stored: the
 //           barrier that makes it readable belongs to the pass that writes it.
+// Contract: gui must already be created, for the same reason: binding 2 of each set
+//           names the buffer its checkboxes write into.
 bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
                      VkExtent2D extent,
                      const Mesh& mesh, const ShaderProgram& program,
                      const Pipeline& pipeline, const ShadowPass& shadow,
-                     ScenePass* out) noexcept;
+                     const Gui& gui, ScenePass* out) noexcept;
 
 
 // PostProcessPass - reads what the scene pass produced, writes the frame's target

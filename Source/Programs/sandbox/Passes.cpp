@@ -79,7 +79,7 @@ bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
                      VkExtent2D extent,
                      const Mesh& mesh, const ShaderProgram& program,
                      const Pipeline& pipeline, const ShadowPass& shadow,
-                     ScenePass* out) noexcept {
+                     const Gui& gui, ScenePass* out) noexcept {
     out->mesh = &mesh;
     out->program = &program;
     out->pipeline = &pipeline;
@@ -152,16 +152,19 @@ bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
         ScenePass::PerFrame& frame = out->frames[i];
         frame.set = sets[i];
 
-        // Two bindings, counted the same way: this frame's camera and light, and the
-        // depth map the shadow pass drew for this same frame. Frame for frame -- a
-        // set naming another slot's map would read what the GPU is still writing.
+        // Three bindings, counted the same way: this frame's camera and light, the
+        // depth map the shadow pass drew for this same frame, and the panel's switches.
+        // Frame for frame -- a set naming another slot's would read what the GPU is
+        // still writing.
         //
-        // The image is here rather than in the material set because how many there are
-        // is decided by frames in flight, and that is the whole rule for which set a
-        // binding belongs in.
+        // The last one comes from a pass that draws after this one, which is the only
+        // edge here that runs that direction. It is in this set for the same reason
+        // the other two are: one per frame in flight, and that is the whole rule for
+        // which set a binding belongs in.
         const BindingValue values[] = {
             {VK_NULL_HANDLE, frame.uniform.handle, sizeof(SceneUniform)},  // 0: scene
             {shadow.frames[i].depth.view.handle, VK_NULL_HANDLE, 0},       // 1: shadow map
+            {VK_NULL_HANDLE, GuiOptionsBuffer(gui, i), kGuiOptionsSize},   // 2: switches
         };
         UpdateSet(descriptors, program.setLayouts[kFrameSet], frame.set,
                   values, static_cast<uint32_t>(std::size(values)));
@@ -611,7 +614,10 @@ bool RecordFrame(const FrameSlot& slot, const ShadowPass& shadow,
 
     // The value and its GPU copy meet here. Safe because BeginFrame waited on this
     // slot's fence, and this runs after it -- an acquired image is its precondition.
-    // Both passes' uniforms, for the same reason and in the order they are read.
+    // Every uniform a frame writes, in the order the passes read them. The panel's
+    // switches are among them even though the gui pass runs last: what reads them is
+    // the scene pass, two passes earlier in the same submission.
+    UploadGuiOptions(gui, slot.index);
     const ShadowPass::PerFrame& shadowFrame = shadow.frames[slot.index];
     std::memcpy(shadowFrame.uniform.mapped, &shadowFrame.uniformValue,
                 sizeof(shadowFrame.uniformValue));

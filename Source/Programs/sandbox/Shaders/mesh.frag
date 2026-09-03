@@ -22,11 +22,6 @@ layout(set = 0, binding = 0) uniform Scene {
     vec4 lightDir;
     vec4 lightColor;
     vec4 viewPos;
-    float useNormalMap;
-    float useBaseColor;
-    float useSpecular;
-    float useAlphaMask;
-    float useShadow;
 } scene;
 
 // Binding 1 of the frame's set: the depth the shadow pass wrote, counted the same way
@@ -36,6 +31,19 @@ layout(set = 0, binding = 0) uniform Scene {
 // comparison sampler would do the test in hardware and give free 2x2 filtering, and
 // that is what the first soft edge will ask for.
 layout(set = 0, binding = 1) uniform sampler2D shadowMap;
+
+// Binding 2: what to leave out, so a feature can be compared against its own absence
+// without rebuilding. Counted per frame in flight like the two above, and owned by the
+// panel -- nothing the scene computes decides any of it.
+//
+// Contract: field order matches ViewOptionsUniform in Gui.h.
+layout(set = 0, binding = 2) uniform View {
+    float useNormalMap;
+    float useBaseColor;
+    float useSpecular;
+    float useAlphaMask;
+    float useShadow;
+} view;
 
 // Set 1 is the material's -- three bindings, not three sets, because all three are
 // counted the same way: one per material. Separate from set 0 because that one is
@@ -122,7 +130,7 @@ void main() {
     // texture's by the factor's, which is why both are here.
     const vec4 sampled = texture(baseColor, fragUV);
     const float coverage = sampled.a * mtl.baseColorFactor.a;
-    if (scene.useAlphaMask > 0.5 && coverage < mtl.alphaCutoff) { discard; }
+    if (view.useAlphaMask > 0.5 && coverage < mtl.alphaCutoff) { discard; }
 
     // Normalized here because interpolation across the triangle shortens it.
     const vec3 geometric = normalize(fragNormal);
@@ -136,7 +144,7 @@ void main() {
     // Stored 0..1, used -1..1. A flat texel is (0.5, 0.5, 1.0), which comes back as
     // +z -- the geometric normal, unchanged.
     const vec3 tangentNormal = texture(normalMap, fragUV).xyz * 2.0 - 1.0;
-    const vec3 normal = scene.useNormalMap > 0.5 ? normalize(tbn * tangentNormal)
+    const vec3 normal = view.useNormalMap > 0.5 ? normalize(tbn * tangentNormal)
                                                  : geometric;
     const vec3 toLight = normalize(scene.lightDir.xyz);
     const float lambert = max(dot(normal, toLight), 0.0);
@@ -148,18 +156,18 @@ void main() {
     const float highlight = pow(max(dot(normal, halfway), 0.0), scene.viewPos.w);
 
     // Gated on lambert: a surface facing away from the light cannot shine.
-    const float specular = highlight * step(0.0001, lambert) * scene.useSpecular;
+    const float specular = highlight * step(0.0001, lambert) * view.useSpecular;
 
     // Skipped where the surface already faces away: it is unlit either way, and the
     // bias is meaningless at a grazing angle.
-    const float shade = (scene.useShadow > 0.5 && lambert > 0.0)
+    const float shade = (view.useShadow > 0.5 && lambert > 0.0)
                       ? ShadowFactor(fragWorldPos, lambert) : 1.0;
 
     // Diffuse takes the surface colour, specular does not -- a highlight is the light
     // itself reflected, not the paint.
     // A flat grey when it is off, so the shape and the lighting stay readable.
     // Texture times factor is what glTF means by base colour -- neither alone is it.
-    const vec3 albedo = scene.useBaseColor > 0.5
+    const vec3 albedo = view.useBaseColor > 0.5
                       ? sampled.rgb * mtl.baseColorFactor.rgb
                       : vec3(0.8);
     // Ambient is outside the shade: a shadowed surface is still lit by the room.

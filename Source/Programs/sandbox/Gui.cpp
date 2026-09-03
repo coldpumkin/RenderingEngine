@@ -187,8 +187,19 @@ bool CreateGui(const VulkanDevice& dev, const Commands& commands,
                           &out->frames[i].indices)) {
             return false;
         }
+        // The panel's switches, in the form the scene's shaders read them. Same
+        // memory choice for the same reason: written once a frame, far too small to
+        // be worth a staging copy.
+        if (!CreateBuffer(dev, kGuiOptionsSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                          VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+                          VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+                              | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                          &out->frames[i].options)) {
+            return false;
+        }
         if (out->frames[i].vertices.mapped == nullptr
-                || out->frames[i].indices.mapped == nullptr) {
+                || out->frames[i].indices.mapped == nullptr
+                || out->frames[i].options.mapped == nullptr) {
             LOG("[gui] gui buffers are not mapped\n");
             return false;
         }
@@ -217,7 +228,22 @@ Gui::~Gui() {
     // the pool, which outlives this because it is declared before it.
 }
 
-void BuildGui(ViewOptions* options, const GuiFrameInfo& info) noexcept {
+VkBuffer GuiOptionsBuffer(const Gui& gui, uint32_t frameIndex) noexcept {
+    return gui.frames[frameIndex].options.handle;
+}
+
+void UploadGuiOptions(const Gui& gui, uint32_t frameIndex) noexcept {
+    const ViewOptions& o = gui.options;
+    const ViewOptionsUniform value{o.normalMap ? 1.0f : 0.0f,
+                                   o.baseColor ? 1.0f : 0.0f,
+                                   o.specular ? 1.0f : 0.0f,
+                                   o.alphaMask ? 1.0f : 0.0f,
+                                   o.shadow ? 1.0f : 0.0f};
+    std::memcpy(gui.frames[frameIndex].options.mapped, &value, sizeof(value));
+}
+
+void BuildGui(Gui* gui, const GuiFrameInfo& info) noexcept {
+    ViewOptions* options = &gui->options;
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
 
@@ -225,7 +251,7 @@ void BuildGui(ViewOptions* options, const GuiFrameInfo& info) noexcept {
     // AlwaysAutoResize, not a size: every one of these is a list whose length is a
     // fact about the program, and a scrollbar would hide the part that changed.
     if (ImGui::Begin("View", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::Checkbox("normal map", &options->normalMap);
+        ImGui::Checkbox("normal map", &options->normalMap);   // gui->options, edited in place
         ImGui::Checkbox("base colour", &options->baseColor);
         ImGui::Checkbox("specular", &options->specular);
         ImGui::Checkbox("alpha mask", &options->alphaMask);
