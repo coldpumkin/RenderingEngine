@@ -134,7 +134,8 @@ bool CreatePostProcessPass(const Descriptors& descriptors, const ScenePass& sour
 // One mesh for every item: the spans in items index into it. A second mesh means
 // another BindVertexBuffers, which is why the bind sits above the loop and not in it.
 static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
-                            const DrawItem* items, uint32_t itemCount) noexcept {
+                            const DrawItem* items, uint32_t itemCount,
+                            DrawStats* stats) noexcept {
     const VolkDeviceTable& vk = slot.dev->table;
     VkCommandBuffer cmd = slot.cmd;
     const Mesh& mesh = *scene.mesh;
@@ -256,6 +257,7 @@ static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
         if (item.material->cullMode != boundCull) {
             vk.vkCmdSetCullMode(cmd, item.material->cullMode);
             boundCull = item.material->cullMode;
+            if (stats != nullptr) { stats->cullChanges += 1; }
         }
 
         if (item.material != boundMaterial) {
@@ -263,6 +265,7 @@ static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
                                        pipeline.layout, kMaterialSet, 1,
                                        &item.material->set, 0, nullptr);
             boundMaterial = item.material;
+            if (stats != nullptr) { stats->materialBinds += 1; }
         }
 
         // viewProj is in the uniform this set already points at; only the item's own
@@ -277,6 +280,7 @@ static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
         // primitive's vertices and indices end to end.
         vk.vkCmdDrawIndexed(cmd, item.range.count, 1, item.range.firstIndex,
                             item.vertexOffset, 0);
+        if (stats != nullptr) { stats->draws += 1; }
     }
 
     vk.vkCmdEndRendering(cmd);
@@ -371,7 +375,8 @@ static void RecordPostProcessPass(const FrameSlot& slot, const PostProcessPass& 
 
 bool RecordFrame(const FrameSlot& slot, const ScenePass& scene,
                  const PostProcessPass& post, Gui& gui, const Texture& target,
-                 const DrawItem* items, uint32_t itemCount) noexcept {
+                 const DrawItem* items, uint32_t itemCount,
+                 DrawStats* stats) noexcept {
     const VolkDeviceTable& vk = slot.dev->table;
 
     // The value and its GPU copy meet here. Safe because BeginFrame waited on this
@@ -395,7 +400,7 @@ bool RecordFrame(const FrameSlot& slot, const ScenePass& scene,
     // The order is here, in these three lines, and nowhere else. post.source points
     // at scene, but that is a dependency -- it would not stop these from being
     // swapped.
-    RecordScenePass(slot, scene, items, itemCount);
+    RecordScenePass(slot, scene, items, itemCount, stats);
     RecordPostProcessPass(slot, post, target);
     RecordGuiPass(slot, gui, target);
 

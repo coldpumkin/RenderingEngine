@@ -297,12 +297,31 @@ bool CreatePostProcessPass(const Descriptors& descriptors, const ScenePass& sour
                            const Pipeline& pipeline, PostProcessPass* out) noexcept;
 
 
+// What recording one scene pass cost in state changes.
+//
+// Counted where it happens rather than worked out from the item list, so the number is
+// what the command buffer actually got. These are what a sort order changes: the draws
+// are fixed, the other two are not.
+//
+// They do not fall together. materialBinds reaches its floor -- the number of distinct
+// materials -- as soon as equal materials are adjacent. cullChanges reaches its floor
+// only if the order groups by cull first, which sorting on the material alone does not
+// do even though cull is a function of it.
+struct DrawStats {
+    uint32_t draws = 0;
+    uint32_t materialBinds = 0;
+    uint32_t cullChanges = 0;
+};
+
 // Effect: resets the slot's command buffer and records both passes from it
 // Output: false means the buffer is invalid and must not be submitted
+//         stats, if given, is what the scene pass cost. Every frame records the same
+//         list, so one frame's numbers are the answer.
 //
 // Takes the slot but never touches its fence or semaphore -- a rule, not a type.
 // A Texture, not the whole FrameTarget: nothing here reads the index or the semaphore,
 // and those belong to getting the frame out, not to drawing it.
 bool RecordFrame(const FrameSlot& slot, const ScenePass& scene,
                  const PostProcessPass& post, Gui& gui, const Texture& target,
-                 const DrawItem* items, uint32_t itemCount) noexcept;
+                 const DrawItem* items, uint32_t itemCount,
+                 DrawStats* stats = nullptr) noexcept;

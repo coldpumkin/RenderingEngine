@@ -33,6 +33,7 @@
 #include <cgltf.h>
 #include <stb_image.h>
 
+#include <algorithm>  // stable_sort, for the draw order
 #include <cmath>      // cos, sin
 #include <cstdio>     // fopen, to test for the asset before loading it
 #include <cstdlib>    // getenv, for the deterministic-capture switch
@@ -666,6 +667,28 @@ int main() {
             &renderer.materials[index == UINT32_MAX ? kNoTexture : index];
     }
 
+    // The draw order, now that both things a bind depends on hang off one pointer.
+    //
+    // Only grouping matters, not which group comes first: a bind happens where two
+    // neighbours differ, so any total order that puts equal materials together reaches
+    // the same count. That is why comparing the pointers is enough -- they are
+    // positions in one vector, and their order carries no meaning beyond "not equal".
+    //
+    // Cull first, even though it is a function of the material and so adds no
+    // information. It adds an ordering: sorting on the material alone leaves the cull
+    // groups interleaved, and grouping by the coarser value first costs nothing,
+    // because a material never straddles two cull modes.
+    //
+    // Stable, so items that tie keep the order the file gave them. Nothing depends on
+    // it yet -- blending is off, so no draw has to come after another.
+    std::stable_sort(items.begin(), items.end(),
+                     [](const DrawItem& a, const DrawItem& b) noexcept {
+                         if (a.material->cullMode != b.material->cullMode) {
+                             return a.material->cullMode < b.material->cullMode;
+                         }
+                         return a.material < b.material;
+                     });
+
     // Frames
     // ------------------------------------------------------------------------
     //
@@ -694,6 +717,10 @@ int main() {
     // else reads them -- frustum culling, a light's viewpoint, a shadow pass.
     uint32_t slotIndex = 0;       // which slot this frame borrows
     double lastTime = glfwGetTime();
+
+    // What the item order costs in state changes, reported once. Here rather than in
+    // the panel because it is a number to compare between runs, not to watch.
+    bool loggedDrawStats = false;
 
     // Deterministic capture.
     //
@@ -860,10 +887,20 @@ int main() {
 
 
         // Only the texture: recording has no use for the rest of the target.
+        DrawStats drawStats;
         if (!RecordFrame(slot, renderer.scenePass, renderer.postPass,
                          renderer.guiPass, *target.texture,
-                         items.data(), static_cast<uint32_t>(items.size()))) {
+                         items.data(), static_cast<uint32_t>(items.size()),
+                         &drawStats)) {
             break;
+        }
+
+        // Once. The list does not change between frames, so neither do these -- and a
+        // line per frame would bury the one number that matters.
+        if (!loggedDrawStats) {
+            LOG("[draw] %u draws, %u material binds, %u cull changes\n",
+                drawStats.draws, drawStats.materialBinds, drawStats.cullChanges);
+            loggedDrawStats = true;
         }
 
         // Frame.h holds the reason submit and present are separate.
