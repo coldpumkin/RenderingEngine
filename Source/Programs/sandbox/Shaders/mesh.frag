@@ -95,6 +95,11 @@ float ShadowFactor(vec3 worldPos, float ndotl) {
     // anyway -- this line is what would have to change for a spot light, and it should
     // be visible rather than assumed.
     const vec3 ndc = clip.xyz / clip.w;
+
+    // Contract: this maps ndc to uv the way the shadow pipeline's viewport lays the
+    //           map out -- v grows downward, which is ViewportY::Down and the default
+    //           it is left at. Flip one and the shadows land mirrored about the
+    //           horizontal; nothing reports it, because both sides are legal alone.
     const vec2 uv = ndc.xy * 0.5 + 0.5;
 
     // Outside the map is not "in shadow": the light's ortho box covers the scene we

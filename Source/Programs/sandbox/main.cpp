@@ -487,13 +487,13 @@ int main() {
     const AttachmentFormats shadowFormats{.depth = sceneFormats.depth};
     constexpr VkExtent2D kShadowExtent{kShadowResolution, kShadowResolution};
 
+    // viewportY is left at Down, and here that is not a choice deferred but the
+    // absence of one: this pass culls nothing, so frontFace has no effect, and the
+    // sign only decides which way the map's v axis runs. What reads it back is
+    // mesh.frag, and the pairing is written where that happens.
     GraphicsPipelineDesc shadowDesc;
     shadowDesc.vertexLayout = VertexInput();
     shadowDesc.formats = shadowFormats;
-    // Down, and it decides one thing only: which way the map's v axis runs. mesh.frag
-    // reads it back as ndc * 0.5 + 0.5, which is this sign. frontFace comes along and
-    // does not matter -- the pass culls nothing.
-    shadowDesc.viewportY = ViewportY::Down;
     if (!CreateGraphicsPipeline(dev, renderer.shadowProgram, shadowDesc,
                                 &renderer.shadowPipeline)) { return 1; }
 
@@ -503,12 +503,13 @@ int main() {
     if (!CreateShaderProgram(dev, "Shaders/mesh.vert.spv", "Shaders/mesh.frag.spv",
                              &renderer.sceneProgram)) { return 1; }
 
+    // Three lines and one of them is the difference from the pass above: fill and
+    // opaque are the defaults, and writing them again would say a preference where
+    // there is none.
     GraphicsPipelineDesc opaqueDesc;
     opaqueDesc.vertexLayout = VertexInput();
     opaqueDesc.formats = sceneFormats;
     opaqueDesc.viewportY = ViewportY::Up;            // our world is y-up
-    opaqueDesc.polygonMode = VK_POLYGON_MODE_FILL;
-    opaqueDesc.blending = Blending::Opaque;
     if (!CreateGraphicsPipeline(dev, renderer.sceneProgram, opaqueDesc,
                                 &renderer.scenePipeline)) { return 1; }
 
