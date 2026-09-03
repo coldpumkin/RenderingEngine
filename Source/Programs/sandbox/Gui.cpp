@@ -45,6 +45,51 @@ const char* TypeName(VkDescriptorType type) noexcept {
     }
 }
 
+// The formats we actually ask for. Anything else prints its number, which is a
+// louder way of saying "we did not expect this" than a wrong name would be.
+const char* FormatName(VkFormat format) noexcept {
+    switch (format) {
+    case VK_FORMAT_R8G8B8A8_SRGB:  return "RGBA8 srgb";
+    case VK_FORMAT_R8G8B8A8_UNORM: return "RGBA8 unorm";
+    case VK_FORMAT_B8G8R8A8_SRGB:  return "BGRA8 srgb";
+    case VK_FORMAT_B8G8R8A8_UNORM: return "BGRA8 unorm";
+    case VK_FORMAT_D32_SFLOAT:     return "D32 float";
+    case VK_FORMAT_D24_UNORM_S8_UINT: return "D24S8";
+    case VK_FORMAT_UNDEFINED:      return "-";
+    default:                       return "?";
+    }
+}
+
+// One line about an image: what it is, how big, how many samples.
+//
+// The sample count is the interesting column. Three of these are 4x and the two that
+// leave the frame are 1x, which is the whole shape of the resolve.
+void ShowTexture(const char* name, const Texture* texture) noexcept {
+    if (texture == nullptr) {
+        ImGui::Text("%-9s -", name);
+        return;
+    }
+    const TextureDesc& d = texture->desc;
+    ImGui::Text("%-9s %-12s %4ux%-4u  %ux",
+                name, FormatName(d.format), d.extent.width, d.extent.height,
+                static_cast<uint32_t>(d.samples));
+}
+
+// The values a pipeline was built from. Everything here is baked in at creation --
+// that is what a Vulkan pipeline is -- so this is the only place to see what was
+// baked without reading the call that made it.
+void ShowPipeline(const char* name, const Pipeline* pipeline) noexcept {
+    if (pipeline == nullptr) { return; }
+    const GraphicsPipelineDesc& d = pipeline->desc;
+    ImGui::Text("%-8s cull %-5s  %-11s  %ux  %s",
+                name,
+                d.cullMode == VK_CULL_MODE_NONE ? "none" : "back",
+                d.blending == Blending::Opaque ? "opaque" : "translucent",
+                static_cast<uint32_t>(d.formats.samples),
+                d.viewportY == ViewportY::Up ? "y-up" : "y-down");
+    ImGui::Text("         %s", d.fragPath != nullptr ? d.fragPath : "-");
+}
+
 // One row per set a pipeline declares, and one line per binding in it.
 //
 // An empty set is printed too. Vulkan numbers sets by position, so set 1 cannot exist
@@ -205,9 +250,16 @@ void BuildGui(ViewOptions* options, const GuiFrameInfo& info) noexcept {
     // Every number here was decided somewhere else and then became unreadable: a set
     // layout is opaque once created, a pool forgets its sizes, and a push range lives
     // in the .spv. This is the only place they are all visible at once.
+    // Four sections, one window, collapsed by default. Five windows did not fit at
+    // 1280x720 and the one you wanted was always the one off screen.
     ImGui::SetNextWindowPos(ImVec2(12.0f, 300.0f), ImGuiCond_FirstUseEver);
-    if (ImGui::Begin("Descriptors", nullptr, ImGuiWindowFlags_AlwaysAutoResize)
-            && info.descriptors != nullptr) {
+    if (!ImGui::Begin("Inspect", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::End();
+        ImGui::Render();
+        return;
+    }
+
+    if (ImGui::CollapsingHeader("descriptors") && info.descriptors != nullptr) {
         const Descriptors& d = *info.descriptors;
 
         // Two numbers because the pool takes two: how many sets may be drawn, and how
@@ -221,10 +273,8 @@ void BuildGui(ViewOptions* options, const GuiFrameInfo& info) noexcept {
         if (info.scenePipeline != nullptr) { ShowSetLayouts("scene", *info.scenePipeline); }
         if (info.presentPipeline != nullptr) { ShowSetLayouts("present", *info.presentPipeline); }
     }
-    ImGui::End();
 
-    ImGui::SetNextWindowPos(ImVec2(12.0f, 580.0f), ImGuiCond_FirstUseEver);
-    if (ImGui::Begin("Shader data", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    if (ImGui::CollapsingHeader("shader data")) {
         // Three ways to get bytes to a shader, and the reason there are three is how
         // often each changes and how big it is allowed to be.
         ImGui::Text("uniform  %3u B   x%u    per frame, host visible + mapped",
@@ -233,7 +283,45 @@ void BuildGui(ViewOptions* options, const GuiFrameInfo& info) noexcept {
                     info.pushBytes);
         ImGui::Text("vertex   %3u B   x%u attrs   per vertex, in the buffer",
                     info.vertexStride, info.vertexAttributes);
+
+        if (info.mesh != nullptr) {
+            ImGui::Separator();
+            const MeshDesc& m = info.mesh->desc;
+            // One buffer each for the whole scene. Every DrawItem is a span inside
+            // these, which is why 103 draws need no rebinding between them.
+            ImGui::Text("mesh     %u verts  %u indices  %s",
+                        m.vertexCount, m.indexCount,
+                        m.indexType == VK_INDEX_TYPE_UINT16 ? "uint16" : "uint32");
+            ImGui::Text("         %u KB + %u KB in two buffers",
+                        (m.vertexCount * m.vertexStride) / 1024,
+                        (m.indexCount * (m.indexType == VK_INDEX_TYPE_UINT16 ? 2u : 4u)) / 1024);
+        }
     }
+
+    // What this frame draws through, in the order it happens. The sample counts say
+    // where MSAA starts and stops, and the two extents say why the render resolution
+    // is not the window's.
+    if (ImGui::CollapsingHeader("frame")) {
+        ImGui::Text("slot %u of %u", info.slotIndex, info.framesInFlight);
+        ImGui::Separator();
+        ShowTexture("color", info.sceneColor);
+        ShowTexture("resolve", info.sceneResolve);
+        ShowTexture("depth", info.sceneDepth);
+        ShowTexture("target", info.frameTarget);
+        ImGui::Separator();
+        // The order is three lines in RecordFrame and nothing else enforces it.
+        ImGui::TextUnformatted("scene  -> color+depth, resolving into resolve");
+        ImGui::TextUnformatted("post   -> samples resolve, draws into target");
+        ImGui::TextUnformatted("gui    -> draws on target, loadOp LOAD");
+        ImGui::TextUnformatted("then   target -> PRESENT_SRC");
+    }
+
+    if (ImGui::CollapsingHeader("pipelines")) {
+        ShowPipeline("scene", info.scenePipeline);
+        ShowPipeline("masked", info.maskedPipeline);
+        ShowPipeline("present", info.presentPipeline);
+    }
+
     ImGui::End();
 
     // Here, not in the pass: this is the last point where the panel is data. After it

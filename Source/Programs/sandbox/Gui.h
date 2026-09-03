@@ -18,6 +18,7 @@
 #include "Vulkan/Device.h"
 #include "Vulkan/Frame.h"
 #include "Vulkan/Instance.h"
+#include "Vulkan/Mesh.h"
 #include "Vulkan/Pipeline.h"
 #include "Vulkan/Texture.h"
 
@@ -86,6 +87,18 @@ struct GuiFrameInfo {
     uint32_t vertexStride = 0;
     uint32_t vertexAttributes = 0;
     uint32_t framesInFlight = 0;
+
+    // This frame's slot, and the images it draws through in order. Textures rather
+    // than the pass they belong to: a Texture is a Vulkan/ type, and keeping the
+    // panel on that side of the line means it still knows nothing about a pass.
+    uint32_t slotIndex = 0;
+    const Texture* sceneColor = nullptr;     // multisample, discarded
+    const Texture* sceneResolve = nullptr;   // 1 sample, what leaves the scene pass
+    const Texture* sceneDepth = nullptr;     // multisample, never leaves the frame
+    const Texture* frameTarget = nullptr;    // the acquired swapchain image
+
+    const Mesh* mesh = nullptr;
+    const Pipeline* maskedPipeline = nullptr;
 };
 
 // Effect: builds this frame's widgets and leaves them ready to record

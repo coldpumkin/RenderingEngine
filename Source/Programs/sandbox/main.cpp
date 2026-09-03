@@ -794,23 +794,6 @@ int main() {
              viewOptions.normalMap ? 1.0f : 0.0f, viewOptions.baseColor ? 1.0f : 0.0f,
              viewOptions.specular ? 1.0f : 0.0f, viewOptions.alphaMask ? 1.0f : 0.0f};
 
-        // The panel is state, like the camera above it, so it is built here and not
-        // where commands are written. dt is last frame's, which is what a frame time
-        // reading means anyway.
-        GuiFrameInfo guiInfo;
-        guiInfo.frameSeconds = dt;
-        guiInfo.drawCount = static_cast<uint32_t>(items.size());
-        guiInfo.materialCount = materialCount;
-        guiInfo.descriptors = &descriptors;
-        guiInfo.scenePipeline = &opaque;
-        guiInfo.presentPipeline = &present;
-        guiInfo.uniformBytes = static_cast<uint32_t>(sizeof(SceneUniform));
-        guiInfo.pushBytes = static_cast<uint32_t>(sizeof(PushConstants));
-        guiInfo.vertexStride = static_cast<uint32_t>(sizeof(Vertex));
-        guiInfo.vertexAttributes = VertexInput().vertexAttributeDescriptionCount;
-        guiInfo.framesInFlight = kFramesInFlight;
-        BuildGui(&viewOptions, guiInfo);
-
         // Draw it
         // --------------------------------------------------------------------
 
@@ -825,6 +808,32 @@ int main() {
         // Everything from here breaks instead of continuing. The acquire already
         // happened, and skipping the submit would leave a signalled semaphore and a
         // reset fence with nobody left to wait on them.
+
+        // The panel, after the acquire because it reports the image this frame got.
+        // Nothing here touches the GPU -- it only fills a draw list that
+        // RecordGuiPass reads. Below the Skip return on purpose: a frame that is not
+        // recorded would leave that list stale.
+        GuiFrameInfo guiInfo;
+        guiInfo.frameSeconds = dt;
+        guiInfo.drawCount = static_cast<uint32_t>(items.size());
+        guiInfo.materialCount = materialCount;
+        guiInfo.descriptors = &descriptors;
+        guiInfo.scenePipeline = &opaque;
+        guiInfo.presentPipeline = &present;
+        guiInfo.uniformBytes = static_cast<uint32_t>(sizeof(SceneUniform));
+        guiInfo.pushBytes = static_cast<uint32_t>(sizeof(PushConstants));
+        guiInfo.vertexStride = static_cast<uint32_t>(sizeof(Vertex));
+        guiInfo.vertexAttributes = VertexInput().vertexAttributeDescriptionCount;
+        guiInfo.framesInFlight = kFramesInFlight;
+        guiInfo.maskedPipeline = &masked;
+        guiInfo.mesh = &mesh;
+        guiInfo.slotIndex = slot.index;
+        guiInfo.sceneColor = &scene.frames[slot.index].color;
+        guiInfo.sceneResolve = &scene.frames[slot.index].colorResolve;
+        guiInfo.sceneDepth = &scene.frames[slot.index].depth;
+        guiInfo.frameTarget = target.texture;
+        BuildGui(&viewOptions, guiInfo);
+
 
         // Only the texture: recording has no use for the rest of the target.
         if (!RecordFrame(slot, scene, post, *target.texture,
