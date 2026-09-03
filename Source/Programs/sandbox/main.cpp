@@ -35,7 +35,7 @@
 
 #include <algorithm>  // stable_sort, for the draw order
 #include <cmath>      // cos, sin
-#include <cstdio>     // fopen, to test for the asset before loading it
+#include <cstdio>     // fopen, for the capture's own file
 #include <cstdlib>    // getenv, for the deterministic-capture switch
 #include <iterator>   // std::size
 #include <string>     // the texture path the glTF names
@@ -52,57 +52,14 @@
 // ============================================================================
 //
 // None of this is about Vulkan: everything here hands back plain arrays, which is what
-// CreateMesh and CreateTextureFromPixels take. The glTF loader fills the same ones the
-// generated sphere does -- that is the whole reason MakeSphere stays.
-
-// A UV sphere. On a unit sphere the position is also the normal, which is the whole
-// reason this shape shows lighting.
+// CreateMesh and CreateTextureFromPixels take.
 //
-// Output: vertices[(stacks+1) * (slices+1)], indices[stacks * slices * 6]
-static void MakeSphere(uint32_t stacks, uint32_t slices, float radius,
-                       Vertex* vertices, uint16_t* indices) noexcept {
-    for (uint32_t stack = 0; stack <= stacks; ++stack) {
-        // phi from the +y pole down to -y; theta all the way around.
-        const float phi = 3.14159265f * static_cast<float>(stack) / stacks;
-        for (uint32_t slice = 0; slice <= slices; ++slice) {
-            const float theta = 6.28318531f * static_cast<float>(slice) / slices;
-            const float sinPhi = std::sin(phi);
-            const float nx = sinPhi * std::cos(theta);
-            const float ny = std::cos(phi);
-            const float nz = sinPhi * std::sin(theta);
-
-            Vertex& v = vertices[stack * (slices + 1) + slice];
-            v.position[0] = nx * radius;
-            v.position[1] = ny * radius;
-            v.position[2] = nz * radius;
-            v.normal[0] = nx; v.normal[1] = ny; v.normal[2] = nz;
-            v.uv[0] = static_cast<float>(slice) / slices;
-            v.uv[1] = static_cast<float>(stack) / stacks;
-
-            // Along increasing theta -- the direction u grows in, which is what a
-            // normal map will expect.
-            v.tangent[0] = -std::sin(theta);
-            v.tangent[1] = 0.0f;
-            v.tangent[2] =  std::cos(theta);
-            v.tangent[3] = 1.0f;
-        }
-    }
-
-    // Two triangles per quad. CCW seen from outside, which is what BACK culling wants.
-    uint32_t written = 0;
-    for (uint32_t stack = 0; stack < stacks; ++stack) {
-        for (uint32_t slice = 0; slice < slices; ++slice) {
-            const uint16_t top = static_cast<uint16_t>(stack * (slices + 1) + slice);
-            const uint16_t bottom = static_cast<uint16_t>(top + slices + 1);
-            indices[written++] = top;
-            indices[written++] = bottom;
-            indices[written++] = static_cast<uint16_t>(top + 1);
-            indices[written++] = static_cast<uint16_t>(top + 1);
-            indices[written++] = bottom;
-            indices[written++] = static_cast<uint16_t>(bottom + 1);
-        }
-    }
-}
+// Nothing here writes a Vertex by hand, and the loader is the only thing that fills
+// the array. Vertex answers to mesh.vert -- the shader declares the locations,
+// spirv-reflect reports them, CheckVertexInterface compares the two -- and that check
+// sees whether a field is supplied, never whether it holds the right numbers. A
+// hand-written tangent is trigonometry nothing can verify; a loaded one is a field in
+// the file, and a shader that asks for one more is one more accessor to read.
 
 // What the loader found for one material, and the key two of them are compared on.
 //
@@ -200,10 +157,9 @@ static bool WriteBmp(const char* path, uint32_t width, uint32_t height,
 //         which of those each item wants (UINT32_MAX means the primitive named
 //         neither), and whether each item is double sided -- which the caller turns
 //         into a pipeline.
-//         false means the file could not be turned into a scene. What was appended
-//         before that point is undefined, and the caller exits rather than drawing
-//         it: a file that exists and does not load is not the same as no file, and
-//         only the second one has something else worth drawing.
+//         false means the file could not be turned into a scene, and says in the log
+//         which way. What was appended before that point is undefined: the caller
+//         exits, because there is nothing else here to draw.
 //
 // The DrawItem cannot carry the material itself: a set does not exist until the pool
 // does, and the pool cannot be sized until this has counted the materials. So the
@@ -225,8 +181,14 @@ static bool LoadGltf(const char* path,
     cgltf_options options{};
     cgltf_data* data = nullptr;
 
-    if (cgltf_parse_file(&options, path, &data) != cgltf_result_success) {
-        LOG("[gltf] cannot parse %s\n", path);
+    // Two failures worth telling apart in the log, and cgltf already tells them
+    // apart: the asset is gitignored, so a machine that never had it is the ordinary
+    // case, and a file that is there and unreadable is not.
+    const cgltf_result parsed = cgltf_parse_file(&options, path, &data);
+    if (parsed != cgltf_result_success) {
+        LOG(parsed == cgltf_result_file_not_found ? "[gltf] no %s\n"
+                                                  : "[gltf] cannot parse %s\n",
+            path);
         return false;
     }
 
@@ -382,7 +344,7 @@ static bool LoadGltf(const char* path,
 }
 
 // Small cells on purpose: one texel per cell makes a wrong uv obvious, and the
-// LINEAR sampler softens the edges. The fallback when the scene names no texture.
+// LINEAR sampler softens the edges. What a material that names no base colour gets.
 //
 // Output: pixels[size * size * 4], RGBA8
 static void MakeChecker(uint32_t size, uint8_t* pixels) noexcept {
@@ -561,83 +523,23 @@ int main() {
     std::vector<uint16_t> indices;
     std::vector<DrawItem> items;
 
-    // Two ways there is no scene here, and they are not the same failure.
-    //
-    // No file is normal: the asset is gitignored, so a machine without it is expected,
-    // and the generated sphere is what says whether a blank screen is the loader's
-    // fault or the renderer's.
-    //
-    // A file that will not load is not that. Drawing the sphere there would put a
-    // picture on screen for a run that failed, which is the one outcome that cannot be
-    // told from success by looking. So it exits -- and that is also why nothing below
-    // has to undo what a half-finished load appended.
+    // No scene, no run. LoadGltf logs which way it failed; there is no second thing
+    // to draw and putting one on screen would make a failed run look like a working
+    // one. This is also why nothing below has to undo what a half-finished load
+    // appended -- that path ends here.
     const char* const kScenePath = LAMBDA_ASSET_ROOT "/Sponza/Sponza.gltf";
     std::vector<uint32_t> itemMaterial;      // one per item, indexing materialSources
     std::vector<MaterialSource> materialSources;
-    bool loaded = false;
-    if (std::FILE* probe = std::fopen(kScenePath, "rb")) {
-        std::fclose(probe);
-        if (!LoadGltf(kScenePath, &vertices, &indices, &items,
-                      &itemMaterial, &materialSources)) {
-            LOG("[scene] %s exists but did not load\n", kScenePath);
-            return 1;
-        }
-        loaded = true;
-    } else {
-        LOG("[scene] no %s -- drawing the generated sphere instead\n", kScenePath);
+    if (!LoadGltf(kScenePath, &vertices, &indices, &items,
+                  &itemMaterial, &materialSources)) {
+        return 1;
     }
 
     // glTF gives Sponza in centimetres and puts the scale on its one node. Applied
     // here rather than baked into the positions so the file stays the source of truth.
     constexpr float kSponzaScale = 0.008f;
-    if (loaded) {
-        const glm::mat4 model = glm::scale(glm::mat4(1.0f), glm::vec3{kSponzaScale});
-        for (DrawItem& item : items) { SetDrawModel(&item, model); }
-    }
-
-    if (!loaded) {
-        constexpr uint32_t kStacks = 16;
-        constexpr uint32_t kSlices = 32;
-        constexpr float kRadius = 0.7f;
-        constexpr uint32_t kVertexCount = (kStacks + 1) * (kSlices + 1);
-        constexpr uint32_t kIndexCount = kStacks * kSlices * 6;
-        static_assert(kVertexCount <= 0xFFFF, "index type is uint16");
-
-        vertices.resize(kVertexCount);
-        indices.resize(kIndexCount);
-        MakeSphere(kStacks, kSlices, kRadius, vertices.data(), indices.data());
-
-        constexpr IndexRange kSphereIndices{0, kIndexCount};
-        static_assert(kSphereIndices.End() == kIndexCount,
-                      "spans do not cover the index array");
-
-        // Five of them, so depth and the lighting have something to work on. One mesh
-        // and one span for all five -- only the matrix differs, which is what a
-        // DrawItem is for.
-        const glm::mat4 half = glm::scale(glm::mat4(1.0f), glm::vec3{0.5f});
-        const glm::mat4 kPlacements[] = {
-            glm::mat4(1.0f),
-            glm::translate(glm::mat4(1.0f), glm::vec3{-1.5f, 0.0f, 0.0f}) * half,
-            glm::translate(glm::mat4(1.0f), glm::vec3{ 1.5f, 0.0f, 0.0f}) * half,
-            glm::translate(glm::mat4(1.0f), glm::vec3{ 0.0f, 1.1f, -1.2f}) * half,
-            glm::translate(glm::mat4(1.0f), glm::vec3{ 0.0f, -1.0f, 0.9f}) * half,
-        };
-        // No material of their own: they take the checker, like a glTF primitive
-        // that names no texture.
-        // No material of their own: they take the checker, like a glTF primitive
-        // that names no texture. Closed shapes, so they cull like the opaque ones.
-        for (const glm::mat4& m : kPlacements) {
-            // material is filled in below, once the Material array exists -- it stays
-            // kNoMaterial until then, which is a value the recorder skips rather than
-            // a wrong one it draws. The model goes through SetDrawModel rather than the
-            // initializer, so the normal matrix cannot be left at identity.
-            DrawItem item{};
-            SetDrawModel(&item, m);
-            item.range = kSphereIndices;
-            items.push_back(item);
-            itemMaterial.push_back(UINT32_MAX);
-        }
-    }
+    const glm::mat4 sceneModel = glm::scale(glm::mat4(1.0f), glm::vec3{kSponzaScale});
+    for (DrawItem& item : items) { SetDrawModel(&item, sceneModel); }
 
     // The same layout the scene pipeline was built with, said once here and compared
     // in CreateScenePass. It used to be sizeof(Vertex) alone, which agreed with the
@@ -653,19 +555,16 @@ int main() {
     // Textures
     // ------------------------------------------------------------------------
     //
-    // One per image the scene named, and the checker last. The checker is not a
-    // leftover: a primitive can name no texture, and the sphere fallback names none
-    // at all, so every item still needs something to point at.
-    //
-    // URIs are relative to the .gltf, per the spec, and Sponza keeps its images
-    // beside it.
-    // Two per material, laid out in pairs, plus one extra material at the end for an
-    // item that named neither -- a primitive with no textures, or the sphere fallback.
+    // Two per material, laid out in pairs, plus one extra material at the end for a
+    // primitive that named no texture at all.
     //
     // A material missing one gets a stand-in rather than a null. The set has two
     // bindings and every one of them has to point somewhere; a null would be a
     // validation error at bind time, and a branch in the shader would be a third way
     // to say the same thing.
+    //
+    // URIs are relative to the .gltf, per the spec, and Sponza keeps its images
+    // beside it.
     const uint32_t materialCount = static_cast<uint32_t>(materialSources.size()) + 1;
     renderer.textures.resize(static_cast<size_t>(materialCount) * 2);
 
