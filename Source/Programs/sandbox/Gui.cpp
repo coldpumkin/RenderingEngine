@@ -63,13 +63,21 @@ void ShowTexture(const char* name, const Texture* texture) noexcept {
                 static_cast<uint32_t>(d.samples));
 }
 
-// One row per set a pipeline declares, and one line per binding in it.
+// One row per set a program declares, and one line per binding in it.
 //
-// An empty set is printed too. Vulkan numbers sets by position, so set 1 cannot exist
-// without a set 0 in front of it, and a layout with no bindings is how that is said.
+// Up to the last set that has bindings, not up to kMaxSets. Vulkan numbers sets by
+// position, so a set 0 with nothing in it is real when a set 1 is used -- that hole
+// still gets a line. Past the last used one there is no set at all, and printing
+// "(empty)" there said the present and gui shaders declare two.
 void ShowSetLayouts(const char* name, const ShaderProgram* program) noexcept {
     if (program == nullptr) { return; }
+
+    uint32_t declared = 0;
     for (uint32_t set = 0; set < kMaxSets; ++set) {
+        if (program->setLayouts[set].bindingCount != 0) { declared = set + 1; }
+    }
+
+    for (uint32_t set = 0; set < declared; ++set) {
         const DescriptorLayout& layout = program->setLayouts[set];
         if (layout.bindingCount == 0) {
             ImGui::Text("%-8s set %u   (empty)", set == 0 ? name : "", set);
@@ -227,14 +235,28 @@ void BuildGui(ViewOptions* options, const GuiFrameInfo& info) noexcept {
         // first frame, where the gap is zero.
         const float fps = info.frameSeconds > 0.0f ? 1.0f / info.frameSeconds : 0.0f;
         ImGui::Text("fps    %.0f  (%.2f ms)", fps, info.frameSeconds * 1000.0f);
-        ImGui::Text("draws  %u", info.drawCount);
-        ImGui::Text("mats   %u", info.materialCount);
+
+        // Both numbers, because they answer to different things: the second is the
+        // list we hold, the first is how much of it reached the command buffer.
+        ImGui::Text("draws  %u of %u items", info.recordedDraws, info.itemCount);
+
+        // What the item order costs. Their floors are the two numbers on the line
+        // above and below: binds cannot go under the number of distinct materials
+        // drawn, and cull changes cannot go under the number of distinct cull modes.
+        ImGui::Text("binds  %u material   %u cull", info.materialBinds,
+                    info.cullChanges);
+
+        // One less than the array, which is the stand-in at the end. Said this way so
+        // the panel and the loader's log report the same number.
+        ImGui::Text("mats   %u  + 1 stand-in", info.materialCount - 1);
     }
     ImGui::End();
 
     // Four sections, one window, collapsed by default. Five windows did not fit at
     // 1280x720 and the one you wanted was always the one off screen.
-    ImGui::SetNextWindowPos(ImVec2(12.0f, 300.0f), ImGuiCond_FirstUseEver);
+    // Below View, which is a fixed height: four checkboxes and four lines. FirstUseEver,
+    // so dragging it wins and this is only where it starts.
+    ImGui::SetNextWindowPos(ImVec2(12.0f, 330.0f), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Inspect", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::End();
         ImGui::Render();

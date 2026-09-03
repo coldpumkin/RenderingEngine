@@ -828,8 +828,13 @@ int main() {
     uint32_t slotIndex = 0;       // which slot this frame borrows
     double lastTime = glfwGetTime();
 
-    // What the item order costs in state changes, reported once. Here rather than in
-    // the panel because it is a number to compare between runs, not to watch.
+    // What the item order costs in state changes. Logged once, because it is a number
+    // to compare between runs -- and kept, because the panel shows it every frame.
+    //
+    // Outside the loop for that second reason: the panel is built before RecordFrame
+    // fills this, so what it displays is the last frame's. The list does not change
+    // between frames, which is what makes that honest rather than merely stale.
+    DrawStats drawStats;
     bool loggedDrawStats = false;
 
     // Set it to a path and the first frame is written there and the program exits.
@@ -984,8 +989,11 @@ int main() {
         // recorded would leave that list stale.
         GuiFrameInfo guiInfo;
         guiInfo.frameSeconds = dt;
-        guiInfo.drawCount = static_cast<uint32_t>(items.size());
+        guiInfo.itemCount = static_cast<uint32_t>(items.size());
         guiInfo.materialCount = materialCount;
+        guiInfo.recordedDraws = drawStats.draws;
+        guiInfo.materialBinds = drawStats.materialBinds;
+        guiInfo.cullChanges = drawStats.cullChanges;
         guiInfo.descriptors = &renderer.descriptors;
         guiInfo.sceneProgram = &renderer.sceneProgram;
         guiInfo.presentProgram = &renderer.presentProgram;
@@ -1008,7 +1016,10 @@ int main() {
 
 
         // Only the texture: recording has no use for the rest of the target.
-        DrawStats drawStats;
+        //
+        // Reset rather than declared here: the counters add up, and the panel above
+        // read last frame's values before this line overwrites them.
+        drawStats = DrawStats{};
         if (!RecordFrame(slot, renderer.scenePass, renderer.postPass,
                          renderer.guiPass, *target.texture, drawList, &drawStats)) {
             break;

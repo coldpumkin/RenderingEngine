@@ -129,8 +129,23 @@ bool CreateGuiSet(const Descriptors& descriptors, const ShaderProgram& program,
 // pool's sizes, which is why Descriptors keeps them.
 struct GuiFrameInfo {
     float frameSeconds = 0.0f;
-    uint32_t drawCount = 0;
+
+    // The list's length, and the array's. Neither is a count of what happened: an
+    // item whose material index is out of range is skipped, and the last material is
+    // the stand-in for a primitive that named no texture.
+    uint32_t itemCount = 0;
     uint32_t materialCount = 0;
+
+    // What recording that list actually cost, from the last frame that recorded one --
+    // the panel is built before RecordFrame runs, and the list does not change between
+    // frames. Zero until the first frame is through.
+    //
+    // Three numbers rather than the DrawStats they were copied from, for the reason
+    // the textures below are not the pass they belong to: this header names Vulkan
+    // types and nothing of ours above it.
+    uint32_t recordedDraws = 0;
+    uint32_t materialBinds = 0;
+    uint32_t cullChanges = 0;
 
     const Descriptors* descriptors = nullptr;
 
