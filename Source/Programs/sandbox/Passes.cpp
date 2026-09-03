@@ -8,6 +8,8 @@
 #include <vector>     // one handle per material, counted at load time
 #include <iterator>   // std::size
 
+#include <glm/matrix.hpp>   // inverse, transpose
+
 // Built without looking at the window, so this works while minimized - there may be
 // no swapchain yet, and nothing here depends on one.
 bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
@@ -90,6 +92,19 @@ bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
                   values, static_cast<uint32_t>(std::size(values)));
     }
     return true;
+}
+
+void SetDrawModel(DrawItem* item, const glm::mat4& model) noexcept {
+    item->model = model;
+
+    // The inverse-transpose of the upper 3x3. For a rotation it is the same matrix,
+    // and for a uniform scale it differs only in length -- which the fragment stage
+    // normalizes away. It earns its place the moment a scale is not uniform, and
+    // nothing here would have said so.
+    const glm::mat3 normal = glm::transpose(glm::inverse(glm::mat3(model)));
+    item->normal[0] = glm::vec4{normal[0], 0.0f};
+    item->normal[1] = glm::vec4{normal[1], 0.0f};
+    item->normal[2] = glm::vec4{normal[2], 0.0f};
 }
 
 bool CreateMaterials(const VulkanDevice& dev,
@@ -311,7 +326,9 @@ static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
 
         // viewProj is in the uniform this set already points at; only the item's own
         // values ride the command buffer.
-        const PushConstants push{item.model, item.alpha};
+        const PushConstants push{item.model,
+                                 {item.normal[0], item.normal[1], item.normal[2]},
+                                 item.alpha};
         vk.vkCmdPushConstants(cmd, layout,
                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                               0, sizeof(push), &push);

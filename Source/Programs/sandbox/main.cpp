@@ -580,7 +580,7 @@ int main() {
     constexpr float kSponzaScale = 0.008f;
     if (loaded) {
         const glm::mat4 model = glm::scale(glm::mat4(1.0f), glm::vec3{kSponzaScale});
-        for (DrawItem& item : items) { item.model = model; }
+        for (DrawItem& item : items) { SetDrawModel(&item, model); }
     }
 
     if (!loaded) {
@@ -615,8 +615,13 @@ int main() {
         // No material of their own: they take the checker, like a glTF primitive
         // that names no texture. Closed shapes, so they cull like the opaque ones.
         for (const glm::mat4& m : kPlacements) {
-            // material is filled in below, once the Material array exists.
-            items.push_back(DrawItem{m, 1.0f, kSphereIndices, nullptr, 0});
+            // material is filled in below, once the Material array exists. The model
+            // goes through SetDrawModel rather than the initializer, so the normal
+            // matrix cannot be left at identity.
+            DrawItem item{};
+            SetDrawModel(&item, m);
+            item.range = kSphereIndices;
+            items.push_back(item);
             itemMaterial.push_back(UINT32_MAX);
         }
     }

@@ -114,8 +114,25 @@ struct SceneUniform {
 //           reads alpha, so VERTEX alone is not enough.
 struct PushConstants {
     glm::mat4 model;   // object -> world. viewProj is in SceneUniform
+
+    // transpose(inverse(mat3(model))), one column per vec4. A normal is a covector:
+    // it does not transform by the model matrix, and under non-uniform scale the two
+    // answers differ. Computed on the CPU because a 3x3 inverse per vertex would pay
+    // 192,496 times a frame for a value that changes when the object moves.
+    //
+    // vec4 rather than a mat3: GLSL pads a mat3's columns to 16 bytes and glm::mat3
+    // does not, so the two would disagree by 12 bytes with nothing to say so.
+    // Naming the leftover is the same choice SceneUniform makes.
+    //
+    // The tangent does not use this. It is a direction along the surface, so it takes
+    // the model matrix -- the two rules only coincide while the scale is uniform.
+    glm::vec4 normal[3];
+
     float alpha;       // 1.0 is opaque. Opaque pipelines ignore it: blending is off
 };
+// 116 of the 128 bytes the spec guarantees. Splitting model out is the trigger written
+// in CLAUDE.md, and this is most of why there is one.
+static_assert(sizeof(PushConstants) == 116, "push constant block grew past its layout");
 
 // The material's numbers, as the shader reads them. One per material, in set 1
 // beside its images.
@@ -126,7 +143,7 @@ struct PushConstants {
 // Contract: field order and types match the shader's MaterialBlock. std140 rounds a
 //           block up to 16 bytes, so the leftover is named rather than hidden.
 struct MaterialParams {
-    glm::vec4 baseColorFactor{1.0f};   // rgb multiplies the texture. a unused
+    glm::vec4 baseColorFactor{1.0f};   // rgb multiplies the texture, a its alpha
     float alphaCutoff = 0.0f;          // 0 keeps every texel
     float pad[3]{};
 };
@@ -206,7 +223,11 @@ struct IndexRange {
 // The material arrived here the day a second texture did. The camera has not: there
 // is still one, and it moves in the same way when there are two.
 struct DrawItem {
+    // Set together through SetDrawModel: normal is derived from model and the two must
+    // not be written apart.
     glm::mat4 model{1.0f};
+    glm::vec4 normal[3]{{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}};
+
     float alpha = 1.0f;
     IndexRange range{};
 
@@ -226,6 +247,13 @@ struct DrawItem {
     // would have to be rewritten into uint32 while merging.
     int32_t vertexOffset = 0;
 };
+
+// Effect: sets a draw's model matrix and the normal matrix that goes with it.
+//
+// One call because the two are one fact. Setting model alone leaves normals answering
+// to the previous transform, which is invisible until a scale is not uniform and
+// silently wrong after that.
+void SetDrawModel(DrawItem* item, const glm::mat4& model) noexcept;
 
 
 // ScenePass - the off-screen pass, and what it draws into

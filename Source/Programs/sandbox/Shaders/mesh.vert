@@ -25,6 +25,14 @@ layout(set = 0, binding = 0) uniform Scene {
 // Contract: same block in the fragment stage, field for field.
 layout(push_constant) uniform Push {
     mat4 model;
+
+    // transpose(inverse(mat3(model))), a column in each xyz. Three vec4 rather than a
+    // mat3 because that is what the C++ side can lay out to match: GLSL pads a mat3's
+    // columns to 16 bytes and glm::mat3 does not.
+    vec4 normal0;
+    vec4 normal1;
+    vec4 normal2;
+
     float alpha;   // read by the fragment stage only, declared here to match
 } pc;
 
@@ -40,15 +48,18 @@ void main() {
     gl_Position = scene.viewProj * world;
     fragWorldPos = world.xyz;
 
-    // mat3 is enough while model is rotation and uniform scale only; non-uniform
-    // scale needs a normal matrix.
-    fragNormal = mat3(pc.model) * inNormal;
+    // The normal matrix, not the model matrix. A normal is a covector: it stays
+    // perpendicular to the surface only under the inverse transpose, and under a
+    // non-uniform scale the two answers differ. Computed once per draw on the CPU.
+    fragNormal = mat3(pc.normal0.xyz, pc.normal1.xyz, pc.normal2.xyz) * inNormal;
 
-    // The same matrix as the normal: a tangent is a direction along the surface, so
-    // it rotates with the model. w is a sign, not a direction -- it must not be
-    // transformed, which is why the two travel as one vec4 rather than a mat3 built
-    // here. Building TBN in the fragment stage also keeps it right after
-    // interpolation, which a matrix would not survive.
+    // The model matrix, not the normal matrix. A tangent is a direction along the
+    // surface, so it transforms like a position does -- the opposite rule to the
+    // normal above, and the two only give the same answer while the scale is uniform.
+    //
+    // w is a sign, not a direction: it must not be transformed, which is why the two
+    // travel as one vec4 rather than a mat3 built here. Building TBN in the fragment
+    // stage also keeps it right after interpolation, which a matrix would not survive.
     fragTangent = vec4(mat3(pc.model) * inTangent.xyz, inTangent.w);
     fragUV = inUV;
 }
