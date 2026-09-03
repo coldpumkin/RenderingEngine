@@ -18,7 +18,14 @@
 // Here rather than in VulkanDevice because the candidate list and its priority
 // are our render target's policy. The GPU only answers "is this supported".
 struct AttachmentFormats {
+    // UNDEFINED means this pass draws no colour, and it is not a value a caller
+    // chooses freely: the fragment stage decides by declaring an output or not, and
+    // CreateGraphicsPipeline refuses the pair that disagrees. A depth-only pass leaves
+    // it at the default rather than spelling out an absence the .spv already states.
     VkFormat color = VK_FORMAT_UNDEFINED;
+
+    // UNDEFINED means no depth. No shader says so -- depth is fixed-function -- so
+    // unlike the field above, this one really is the pass's to choose.
     VkFormat depth = VK_FORMAT_UNDEFINED;
     // Highest count both color and depth support, capped by kDesiredSampleCount.
     // 1 would mean no MSAA, which the resolve path does not handle (Config.h).

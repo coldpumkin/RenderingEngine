@@ -433,8 +433,16 @@ int main() {
     // Two questions the picked GPU answers alone -- no device, nothing to destroy.
     // Formats, not images: the pipelines below need the answer, and securing a place
     // to draw happens again on every resize, which makes it the loop's business.
-    AttachmentFormats formats;
-    if (!ChooseAttachmentFormats(inst, selection.gpu, &formats)) { return 1; }
+    // The scene pass's, and named for it. There are four attachment configurations
+    // in this file and this is one of them -- calling it "formats" read as though a
+    // program had one, which is what let the shadow pass reach into it below.
+    //
+    // Of the three fields, only depth is an answer about the GPU rather than a choice
+    // about this pass: colour is our constant and the sample count is the scene's
+    // alone. That is why the shadow pass takes .depth out of here and nothing else,
+    // and why a second reader of it would be the reason to ask the device separately.
+    AttachmentFormats sceneFormats;
+    if (!ChooseAttachmentFormats(inst, selection.gpu, &sceneFormats)) { return 1; }
     if (!SelectSurfaceFormat(inst, selection.gpu, &window)) { return 1; }
 
     // selection is absorbed here and not kept -- nothing below this line reads it.
@@ -465,10 +473,18 @@ int main() {
     // shadow.vert reads one location out of it. Which ones a pipeline consumes is the
     // vertex stage's answer, and CheckVertexInterface reads it from the .spv.
     //
-    // formats as a value, for the reason AttachmentFormats exists: CreateShadowPass
-    // makes its image from this same one, so the two cannot be edited apart.
-    const AttachmentFormats shadowFormats{VK_FORMAT_UNDEFINED, formats.depth,
-                                          VK_SAMPLE_COUNT_1_BIT};
+    // One field, because one is all this pass decides.
+    //
+    // No colour: shadow.frag declares no output, and CreateGraphicsPipeline refuses
+    // the pair where one side says colour and the other does not -- so writing
+    // UNDEFINED here would be saying a second time what the .spv already settles.
+    // One sample: the default, and averaging a visibility test would produce a depth
+    // no surface was ever at.
+    //
+    // A value rather than two arguments, for the reason AttachmentFormats exists:
+    // CreateShadowPass makes its image from this same one, so the two cannot be
+    // edited apart.
+    const AttachmentFormats shadowFormats{.depth = sceneFormats.depth};
     constexpr VkExtent2D kShadowExtent{kShadowResolution, kShadowResolution};
 
     GraphicsPipelineDesc shadowDesc;
@@ -489,7 +505,7 @@ int main() {
 
     GraphicsPipelineDesc opaqueDesc;
     opaqueDesc.vertexLayout = VertexInput();
-    opaqueDesc.formats = formats;
+    opaqueDesc.formats = sceneFormats;
     opaqueDesc.viewportY = ViewportY::Up;            // our world is y-up
     opaqueDesc.polygonMode = VK_POLYGON_MODE_FILL;
     opaqueDesc.blending = Blending::Opaque;
@@ -504,8 +520,17 @@ int main() {
                              "Shaders/fullscreen.frag.spv",
                              &renderer.presentProgram)) { return 1; }
 
+    // What both swapchain passes draw into. One value because it is one target: the
+    // gui pass draws on top of what this one leaves, in the same image. Built here
+    // rather than twice, so a change to the surface format cannot reach one and miss
+    // the other.
+    //
+    // No depth and one sample, both by default. Neither shader declares a depth test,
+    // and MSAA ended at the scene pass's resolve.
+    const AttachmentFormats swapchainFormats{window.surfaceFormat.format};
+
     GraphicsPipelineDesc presentDesc;
-    presentDesc.formats = AttachmentFormats{window.surfaceFormat.format};
+    presentDesc.formats = swapchainFormats;
     presentDesc.viewportY = ViewportY::Down;   // the shader makes its own uv
     if (!CreateGraphicsPipeline(dev, renderer.presentProgram, presentDesc,
                                 &renderer.presentPipeline)) { return 1; }
@@ -520,7 +545,7 @@ int main() {
 
     GraphicsPipelineDesc guiDesc;
     guiDesc.vertexLayout = GuiVertexInput();
-    guiDesc.formats = AttachmentFormats{window.surfaceFormat.format};
+    guiDesc.formats = swapchainFormats;
     guiDesc.viewportY = ViewportY::Down;
     guiDesc.blending = Blending::Translucent;
     if (!CreateGraphicsPipeline(dev, renderer.guiProgram, guiDesc,
@@ -529,7 +554,7 @@ int main() {
     // Render resolution
     // ------------------------------------------------------------------------
     //
-    // The other half of what a render target looks like; formats is the first.
+    // The other half of what a render target looks like; sceneFormats is the first.
     // Constant, so aspect cannot change while the targets live.
     constexpr VkExtent2D kRenderExtent{kRenderWidth, kRenderHeight};
     const float aspect = static_cast<float>(kRenderExtent.width)
@@ -746,7 +771,7 @@ int main() {
     if (!CreateShadowPass(dev, renderer.descriptors, shadowFormats, kShadowExtent,
                           renderer.mesh, renderer.shadowProgram,
                           renderer.shadowPipeline, &renderer.shadowPass)) { return 1; }
-    if (!CreateScenePass(dev, renderer.descriptors, formats, kRenderExtent,
+    if (!CreateScenePass(dev, renderer.descriptors, sceneFormats, kRenderExtent,
                          renderer.mesh, renderer.sceneProgram, renderer.scenePipeline,
                          renderer.shadowPass, &renderer.scenePass)) { return 1; }
     if (!CreatePostProcessPass(renderer.descriptors, renderer.scenePass,
