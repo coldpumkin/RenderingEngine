@@ -103,8 +103,14 @@ static void MakeSphere(uint32_t stacks, uint32_t slices, float radius,
 // A glTF file, flattened into the one mesh and the one item list this pass draws.
 //
 // Input:  path to a .gltf. Its .bin is opened from beside it
-// Output: vertices and indices appended end to end, one DrawItem per primitive
+// Output: vertices and indices appended end to end, one DrawItem per primitive,
+//         the base colour image each material names, and which of those each item
+//         wants. UINT32_MAX means the primitive named none.
 //         false means nothing was appended -- the caller falls back to MakeSphere
+//
+// The DrawItem cannot carry the material itself: a set does not exist until the pool
+// does, and the pool cannot be sized until this has counted the materials. So the
+// index comes out beside the items and the caller joins the two.
 //
 // Every primitive keeps its own indices, numbered from its own first vertex, and the
 // DrawItem carries that first vertex as vertexOffset. So the indices stay uint16 even
@@ -117,7 +123,8 @@ static bool LoadGltf(const char* path,
                      std::vector<Vertex>* vertices,
                      std::vector<uint16_t>* indices,
                      std::vector<DrawItem>* items,
-                     std::string* baseColorUri) noexcept {
+                     std::vector<uint32_t>* itemMaterial,
+                     std::vector<std::string>* baseColorUris) noexcept {
     cgltf_options options{};
     cgltf_data* data = nullptr;
 
@@ -196,17 +203,29 @@ static bool LoadGltf(const char* path,
                     static_cast<uint16_t>(cgltf_accessor_read_index(prim.indices, i)));
             }
 
-            // The first base colour this file names, and only the first: one texture
-            // is all a DrawItem can point at today. Sponza has 25 materials, and the
-            // second one is where a material has to become data.
-            if (baseColorUri->empty() && prim.material != nullptr
-                    && prim.material->has_pbr_metallic_roughness) {
+            // Which image this primitive's material names, as a position in a list
+            // built as we go. Deduplicated by uri rather than by cgltf_material
+            // pointer: two materials naming one image should be one texture, and
+            // Sponza has 25 materials over 69 images.
+            uint32_t material = UINT32_MAX;
+            if (prim.material != nullptr && prim.material->has_pbr_metallic_roughness) {
                 const cgltf_texture* tex =
                     prim.material->pbr_metallic_roughness.base_color_texture.texture;
                 if (tex != nullptr && tex->image != nullptr && tex->image->uri != nullptr) {
-                    *baseColorUri = tex->image->uri;
+                    const char* uri = tex->image->uri;
+                    for (size_t m = 0; m < baseColorUris->size(); ++m) {
+                        if ((*baseColorUris)[m] == uri) {
+                            material = static_cast<uint32_t>(m);
+                            break;
+                        }
+                    }
+                    if (material == UINT32_MAX) {
+                        material = static_cast<uint32_t>(baseColorUris->size());
+                        baseColorUris->push_back(uri);
+                    }
                 }
             }
+            itemMaterial->push_back(material);
 
             DrawItem item{};
             item.range = {static_cast<uint32_t>(firstIndex),
@@ -216,8 +235,8 @@ static bool LoadGltf(const char* path,
         }
     }
 
-    LOG("[gltf] %s: %zu primitives, %zu vertices, %zu indices\n",
-        path, items->size(), vertices->size(), indices->size());
+    LOG("[gltf] %s: %zu primitives, %zu vertices, %zu indices, %zu base colours\n",
+        path, items->size(), vertices->size(), indices->size(), baseColorUris->size());
 
     cgltf_free(data);
     return !items->empty();
@@ -285,8 +304,9 @@ int main() {
     Pipeline       opaque;        // each owns the set layout its shaders declare
     Pipeline       present;
     Descriptors    descriptors;   // the pool, so it outlives the sets drawn from it
-    Texture        baseColor;       // before scene: the pass points at both of these,
-    Mesh           mesh;          // so they must not die first
+    std::vector<Texture>  textures;    // one per material the scene names, checker last
+    std::vector<Material> materials;   // their sets. Freed with the pool, not by these
+    Mesh           mesh;          // before scene: the pass points at it
     ScenePass      scene;         // attachments, and the sets naming them
     PostProcessPass post;         // reads scene, writes the swapchain
     FrameSlot      slots[kFramesInFlight];   // command buffer and its two signals
@@ -354,20 +374,6 @@ int main() {
     presentDesc.cullMode = VK_CULL_MODE_BACK_BIT;
     if (!CreateGraphicsPipeline(dev, presentDesc, &present)) { return 1; }
 
-    // After the pipelines: the layouts are theirs, read out of the same .spv the
-    // passes were compiled from. Both counts are per frame in flight -- a set names
-    // one frame's resources, so it cannot be shared any more than those can.
-    //
-    // Only the sizing happens here. Each pass draws its own sets later, once the
-    // resources they name exist.
-    const SetRequest setRequests[] = {
-        {&opaque.setLayout, kFramesInFlight},
-        {&present.setLayout, kFramesInFlight},
-    };
-    if (!CreateDescriptors(dev, setRequests,
-                           static_cast<uint32_t>(std::size(setRequests)),
-                           &descriptors)) { return 1; }
-
     // Render resolution
     // ------------------------------------------------------------------------
     //
@@ -396,11 +402,13 @@ int main() {
     // is the fallback, and it is also what says whether a blank screen is the loader's
     // fault or the renderer's.
     const char* const kScenePath = LAMBDA_ASSET_ROOT "/Sponza/Sponza.gltf";
-    std::string baseColorUri;
+    std::vector<uint32_t> itemMaterial;      // one per item, indexing baseColorUris
+    std::vector<std::string> baseColorUris;
     bool loaded = false;
     if (std::FILE* probe = std::fopen(kScenePath, "rb")) {
         std::fclose(probe);
-        loaded = LoadGltf(kScenePath, &vertices, &indices, &items, &baseColorUri);
+        loaded = LoadGltf(kScenePath, &vertices, &indices, &items,
+                          &itemMaterial, &baseColorUris);
     } else {
         LOG("[scene] no %s -- drawing the generated sphere instead\n", kScenePath);
     }
@@ -440,8 +448,11 @@ int main() {
             glm::translate(glm::mat4(1.0f), glm::vec3{ 0.0f, 1.1f, -1.2f}) * half,
             glm::translate(glm::mat4(1.0f), glm::vec3{ 0.0f, -1.0f, 0.9f}) * half,
         };
+        // No material of their own: they take the checker, like a glTF primitive
+        // that names no texture.
         for (const glm::mat4& m : kPlacements) {
-            items.push_back(DrawItem{m, 1.0f, kSphereIndices, 0});
+            items.push_back(DrawItem{m, 1.0f, kSphereIndices, VK_NULL_HANDLE, 0});
+            itemMaterial.push_back(UINT32_MAX);
         }
     }
 
@@ -454,26 +465,28 @@ int main() {
         return 1;
     }
 
-    // One texture, on every draw. The scene names 25 materials and this takes the
-    // first -- which is wrong, and visibly so: it is the same wall on every surface.
+    // Textures
+    // ------------------------------------------------------------------------
     //
-    // That is the point of stopping here. Making it right means a draw pointing at its
-    // own texture, and the DrawItem cannot do that until a set is a material's rather
-    // than a pass's. The second texture is what forces that, not an argument about it.
+    // One per image the scene named, and the checker last. The checker is not a
+    // leftover: a primitive can name no texture, and the sphere fallback names none
+    // at all, so every item still needs something to point at.
     //
-    // URI is relative to the .gltf, per the spec, and Sponza keeps its images beside it.
-    bool textured = false;
-    if (!baseColorUri.empty()) {
-        const std::string path = LAMBDA_ASSET_ROOT "/Sponza/" + baseColorUri;
-        textured = LoadTextureFile(dev, commands, path.c_str(), &baseColor);
+    // URIs are relative to the .gltf, per the spec, and Sponza keeps its images
+    // beside it.
+    textures.resize(baseColorUris.size() + 1);
+    for (size_t i = 0; i < baseColorUris.size(); ++i) {
+        const std::string path = std::string(LAMBDA_ASSET_ROOT "/Sponza/")
+                               + baseColorUris[i];
+        if (!LoadTextureFile(dev, commands, path.c_str(), &textures[i])) { return 1; }
     }
 
-    // The fallback is code, not a file, so a machine without the asset still draws
-    // something that shows whether uv and the sampler are right.
+    // Code, not a file, so a machine without the asset still draws something that
+    // shows whether uv and the sampler are right.
     //
     // SRGB: this is multiplied with the shader's output, so it must be in the same
     // space as the render target. UNORM here would brighten the result.
-    if (!textured) {
+    {
         constexpr uint32_t kCheckerSize = 8;
         uint8_t checkerPixels[kCheckerSize * kCheckerSize * 4]{};
         MakeChecker(kCheckerSize, checkerPixels);
@@ -483,7 +496,40 @@ int main() {
                                       VK_IMAGE_USAGE_TRANSFER_DST_BIT
                                           | VK_IMAGE_USAGE_SAMPLED_BIT};
         if (!CreateTextureFromPixels(dev, commands, checkerDesc, checkerPixels,
-                                     sizeof(checkerPixels), &baseColor)) { return 1; }
+                                     sizeof(checkerPixels), &textures.back())) {
+            return 1;
+        }
+    }
+
+    // Descriptors
+    // ------------------------------------------------------------------------
+    //
+    // Here, not up with the pipelines, because the pool cannot be sized until the
+    // scene has been counted. That is what a material being data means: the number
+    // of sets is no longer something this file knows in advance.
+    //
+    // Three claims, and the counts come from three different places -- frames in
+    // flight for the two frame sets, textures for the material set.
+    const SetRequest setRequests[] = {
+        {&opaque.setLayouts[kFrameSet], kFramesInFlight},
+        {&opaque.setLayouts[kMaterialSet], static_cast<uint32_t>(textures.size())},
+        {&present.setLayouts[kFrameSet], kFramesInFlight},
+    };
+    if (!CreateDescriptors(dev, setRequests,
+                           static_cast<uint32_t>(std::size(setRequests)),
+                           &descriptors)) { return 1; }
+
+    materials.resize(textures.size());
+    if (!CreateMaterials(descriptors, opaque, textures.data(),
+                         static_cast<uint32_t>(textures.size()),
+                         materials.data())) { return 1; }
+
+    // Join the two halves the loader had to hand back separately. The checker is last,
+    // so it is what UINT32_MAX resolves to.
+    const uint32_t kNoTexture = static_cast<uint32_t>(materials.size()) - 1;
+    for (size_t i = 0; i < items.size(); ++i) {
+        const uint32_t index = itemMaterial[i];
+        items[i].material = materials[index == UINT32_MAX ? kNoTexture : index].set;
     }
 
     // Frames
@@ -492,7 +538,7 @@ int main() {
     // Passes first, in dependency order: the post pass's sets name what the scene
     // pass made. A slot owns none of that -- it only knows which frame it is.
     if (!CreateScenePass(dev, descriptors, formats, kRenderExtent,
-                         mesh, baseColor, opaque, &scene)) { return 1; }
+                         mesh, opaque, &scene)) { return 1; }
     if (!CreatePostProcessPass(descriptors, scene, present, &post)) { return 1; }
 
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {

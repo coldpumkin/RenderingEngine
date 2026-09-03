@@ -79,11 +79,13 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
 
     // A rebuild reaches here with the layout already made. Remaking it would strand
     // every set allocated from the old one.
-    if (pipeline.setLayout.handle == VK_NULL_HANDLE
-            && !BuildSetLayout(dev, vsIface, fsIface, &pipeline.setLayout)) {
-        dev.table.vkDestroyShaderModule(dev.handle, vs, nullptr);
-        dev.table.vkDestroyShaderModule(dev.handle, fs, nullptr);
-        return false;
+    for (uint32_t set = 0; set < kMaxSets; ++set) {
+        if (pipeline.setLayouts[set].handle != VK_NULL_HANDLE) { continue; }
+        if (!BuildSetLayout(dev, vsIface, fsIface, set, &pipeline.setLayouts[set])) {
+            dev.table.vkDestroyShaderModule(dev.handle, vs, nullptr);
+            dev.table.vkDestroyShaderModule(dev.handle, fs, nullptr);
+            return false;
+        }
     }
 
     // One block, however many stages read it. Each stage reports only itself, so the
@@ -188,10 +190,15 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
         layoutInfo.pushConstantRangeCount = 1;
         layoutInfo.pPushConstantRanges = &pushRange;
     }
-    if (pipeline.setLayout.handle != VK_NULL_HANDLE) {
-        layoutInfo.setLayoutCount = 1;
-        layoutInfo.pSetLayouts = &pipeline.setLayout.handle;
+    // Every set, including ones no shader declared: their layouts are empty, and the
+    // position is what matters. A shader reading only set 1 still needs set 0 in
+    // front of it, and an empty layout costs nothing.
+    VkDescriptorSetLayout setHandles[kMaxSets]{};
+    for (uint32_t set = 0; set < kMaxSets; ++set) {
+        setHandles[set] = pipeline.setLayouts[set].handle;
     }
+    layoutInfo.setLayoutCount = kMaxSets;
+    layoutInfo.pSetLayouts = setHandles;
     // A layout is required even when both are empty.
     if (dev.table.vkCreatePipelineLayout(dev.handle, &layoutInfo, nullptr, &pipeline.layout)
             != VK_SUCCESS) {
@@ -260,5 +267,7 @@ void DestroyPipeline(const VulkanDevice& dev, Pipeline* pipeline) noexcept {
 Pipeline::~Pipeline() {
     if (dev == nullptr) { return; }
     DestroyPipeline(*dev, this);
-    dev->table.vkDestroyDescriptorSetLayout(dev->handle, setLayout.handle, nullptr);
+    for (DescriptorLayout& set : setLayouts) {
+        dev->table.vkDestroyDescriptorSetLayout(dev->handle, set.handle, nullptr);
+    }
 }

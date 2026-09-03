@@ -18,7 +18,6 @@
 // The set layouts are not here either: a shader declares them and the pipeline built
 // from that shader owns them. This only borrows them to size the pool.
 
-#include "Config.h"   // kFramesInFlight is the ceiling on one layout's sets
 #include "Vulkan/Device.h"
 #include "Vulkan/Shader.h"
 
@@ -42,10 +41,11 @@ struct Descriptors {
     Descriptors& operator=(const Descriptors&) = delete;
 };
 
-// One pass's claim on the pool, made before any set exists.
+// One claim on the pool, made before any set exists.
 //
-// count is that pass's frames in flight -- a set names one frame's resources, so it
-// cannot be shared any more than those resources can.
+// count is whatever that layout is counted by, and our two differ: a frame's set is
+// one per frame in flight, a material's is one per material. That difference is the
+// reason they are two layouts and not two bindings in one.
 struct SetRequest {
     const DescriptorLayout* layout = nullptr;
     uint32_t count = 0;
@@ -64,9 +64,8 @@ bool CreateDescriptors(const VulkanDevice& dev,
 
 // Effect: draws count sets of one layout out of the pool
 //
-// Contract: count must not exceed kFramesInFlight, and the total across all calls
-//           must match what CreateDescriptors was told -- the pool does not grow, so
-//           overshooting fails here rather than being caught earlier.
+// Contract: the total across all calls must match what CreateDescriptors was told --
+//           the pool does not grow, so overshooting fails here rather than earlier.
 bool AllocateSets(const Descriptors& descriptors, const DescriptorLayout& layout,
                   uint32_t count, VkDescriptorSet* out) noexcept;
 

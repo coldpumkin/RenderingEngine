@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 // Passes - what we draw, and in what order
 // ============================================================================
@@ -50,6 +50,17 @@
 struct Mesh;
 
 
+// Which set is which
+// ============================================================================
+//
+// The shaders declare positions and Vulkan/ reports them; the names are here because
+// what a set holds is this layer's decision. Set numbers are also a binding cost:
+// vkCmdBindDescriptorSets rebinds from the first changed set upward, so the one that
+// changes least often goes first.
+constexpr uint32_t kFrameSet = 0;      // camera and light. One per frame in flight
+constexpr uint32_t kMaterialSet = 1;   // what a surface looks like. One per material
+
+
 // What the shaders read
 // ============================================================================
 //
@@ -84,6 +95,28 @@ struct PushConstants {
 };
 
 
+// Material - what a surface looks like, apart from where it is
+// ============================================================================
+//
+// One set, drawn from the pool and filled once. The texture is not owned here: how
+// many textures a scene has is the scene's business, and two materials naming the
+// same image is normal.
+//
+// One texture today. A second field (roughness, a normal map) is another binding in
+// the same set, not another set -- they are counted the same way.
+struct Material {
+    VkDescriptorSet set = VK_NULL_HANDLE;
+};
+
+// Effect: draws one set per texture and points each at its texture
+//
+// Contract: pipeline must be the one these will be bound with -- the set is drawn
+//           from its material layout.
+bool CreateMaterials(const Descriptors& descriptors, const Pipeline& pipeline,
+                     const Texture* textures, uint32_t count,
+                     Material* out) noexcept;
+
+
 // What one draw is
 // ============================================================================
 
@@ -100,12 +133,17 @@ struct IndexRange {
 
 // What differs between draws, once the pass has fixed everything else.
 //
-// No pipeline, texture or camera: the pass holds one of each. Each moves in here the
-// day one pass needs two of it, and the bind then moves into the loop with it.
+// The material arrived here the day a second texture did. Pipeline and camera have
+// not: there is still one of each, and they move in the same way when there are two.
 struct DrawItem {
     glm::mat4 model{1.0f};
     float alpha = 1.0f;
     IndexRange range{};
+
+    // The set, not an index into a list the recorder would also have to be handed.
+    // Bound only when it differs from the last one, so the order items are written in
+    // decides how many binds happen -- that is what a sort key would be sorting.
+    VkDescriptorSet material = VK_NULL_HANDLE;
 
     // Added to every index this draw reads, so a primitive's indices can stay
     // relative to its own vertices. glTF numbers each primitive from zero, and
@@ -123,15 +161,14 @@ struct DrawItem {
 // finished -- the first barrier in recording is srcStage TOP_OF_PIPE, which waits
 // for nothing.
 //
-// What the pass reads sits beside frames[], not inside it: nothing writes a mesh or
-// a sampled texture after creation, so every frame reads the same one. Pointers
-// because the scene owns them -- how many there are is not this pass's business.
+// The mesh sits beside frames[], not inside it: nothing writes it after creation, so
+// every frame reads the same one. A pointer because the scene owns it.
 //
-// They become arrays the day one pass needs two of either, and a DrawItem then picks
-// by index. The bind moves into the draw loop with them.
+// No texture here any more. It was one because there was one, and the moment a second
+// arrived it stopped being a property of the pass -- it is a Material now, and the
+// DrawItem says which.
 struct ScenePass {
     const Mesh* mesh = nullptr;
-    const Texture* input = nullptr;
 
     // Non-owning, and a pointer rather than a value: a pass is a render-target
     // configuration with draws in it, and how many pipelines those draws use is not
@@ -167,7 +204,7 @@ struct ScenePass {
 //           the mismatch is at least in one call, but nothing checks it.
 bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
                      AttachmentFormats formats, VkExtent2D extent,
-                     const Mesh& mesh, const Texture& input,
+                     const Mesh& mesh,
                      const Pipeline& pipeline, ScenePass* out) noexcept;
 
 

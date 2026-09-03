@@ -4,11 +4,15 @@ layout(location = 0) in vec3 fragNormal;
 layout(location = 1) in vec2 fragUV;
 layout(location = 2) in vec3 fragWorldPos;
 
-// Contract: one sampler2D here, one binding in the scene layout. Nothing reads both.
-layout(set = 0, binding = 0) uniform sampler2D tex;
+// Set 1 is the material's. Separate from set 0 because the two are counted
+// differently -- one set per frame, one per material -- and in one set the sets
+// needed would be their product, each carrying a copy of the same camera.
+//
+// Contract: one sampler2D here, one binding in the material layout.
+layout(set = 1, binding = 0) uniform sampler2D baseColor;
 
-// Contract: same fields as SceneUniform in Pipeline.h.
-layout(set = 0, binding = 1) uniform Scene {
+// Contract: same fields as SceneUniform in Passes.h.
+layout(set = 0, binding = 0) uniform Scene {
     mat4 viewProj;
     vec4 lightDir;
     vec4 lightColor;
@@ -39,7 +43,7 @@ void main() {
 
     // Diffuse takes the surface colour, specular does not -- a highlight is the light
     // itself reflected, not the paint.
-    const vec3 albedo = texture(tex, fragUV).rgb;
+    const vec3 albedo = texture(baseColor, fragUV).rgb;
     const vec3 lit = (scene.lightColor.rgb * lambert + scene.lightColor.a) * albedo
                    + scene.lightColor.rgb * specular;
 

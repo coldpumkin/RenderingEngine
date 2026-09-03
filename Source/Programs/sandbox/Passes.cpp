@@ -1,19 +1,19 @@
-#include "Passes.h"
+﻿#include "Passes.h"
 
 #include "Vulkan/Barrier.h"
 #include "Vulkan/Mesh.h"
 
 #include <cstring>    // memcpy
+#include <vector>     // one handle per material, counted at load time
 #include <iterator>   // std::size
 
 // Built without looking at the window, so this works while minimized - there may be
 // no swapchain yet, and nothing here depends on one.
 bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
                      AttachmentFormats formats, VkExtent2D extent,
-                     const Mesh& mesh, const Texture& input,
+                     const Mesh& mesh,
                      const Pipeline& pipeline, ScenePass* out) noexcept {
     out->mesh = &mesh;
-    out->input = &input;
     out->pipeline = &pipeline;
 
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
@@ -58,7 +58,7 @@ bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
     // Drawn in one call, then handed out: vkAllocateDescriptorSets writes a flat
     // array and PerFrame is not one.
     VkDescriptorSet sets[kFramesInFlight]{};
-    if (!AllocateSets(descriptors, pipeline.setLayout, kFramesInFlight, sets)) {
+    if (!AllocateSets(descriptors, pipeline.setLayouts[kFrameSet], kFramesInFlight, sets)) {
         return false;
     }
 
@@ -66,14 +66,33 @@ bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
         ScenePass::PerFrame& frame = out->frames[i];
         frame.set = sets[i];
 
-        // Filled here because this is where its two halves are known: the texture the
-        // pass samples, and this frame's uniform.
+        // One binding now. The texture that used to sit beside it is a material's,
+        // and a material's set is counted by materials rather than by frames.
         const BindingValue values[] = {
-            {input.image.view},                                            // 0: texture
-            {VK_NULL_HANDLE, frame.uniform.handle, sizeof(SceneUniform)},  // 1: scene
+            {VK_NULL_HANDLE, frame.uniform.handle, sizeof(SceneUniform)},  // 0: scene
         };
-        UpdateSet(descriptors, pipeline.setLayout, frame.set,
+        UpdateSet(descriptors, pipeline.setLayouts[kFrameSet], frame.set,
                   values, static_cast<uint32_t>(std::size(values)));
+    }
+    return true;
+}
+
+bool CreateMaterials(const Descriptors& descriptors, const Pipeline& pipeline,
+                     const Texture* textures, uint32_t count,
+                     Material* out) noexcept {
+    if (count == 0) { return true; }
+
+    // One call, because the pool hands sets out in batches and a per-material call
+    // would ask it 25 times for the same layout.
+    std::vector<VkDescriptorSet> sets(count);
+    if (!AllocateSets(descriptors, pipeline.setLayouts[kMaterialSet], count, sets.data())) {
+        return false;
+    }
+
+    for (uint32_t i = 0; i < count; ++i) {
+        out[i].set = sets[i];
+        const BindingValue values[] = {{textures[i].image.view}};
+        UpdateSet(descriptors, pipeline.setLayouts[kMaterialSet], out[i].set, values, 1);
     }
     return true;
 }
@@ -83,14 +102,15 @@ bool CreatePostProcessPass(const Descriptors& descriptors, const ScenePass& sour
     out->source = &source;
     out->pipeline = &pipeline;
 
-    if (!AllocateSets(descriptors, pipeline.setLayout, kFramesInFlight, out->sets)) {
+    if (!AllocateSets(descriptors, pipeline.setLayouts[kFrameSet], kFramesInFlight,
+                      out->sets)) {
         return false;
     }
 
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
         // The resolve, not color: a multisample image cannot be sampled.
         const BindingValue values[] = {{source.frames[i].colorResolve.image.view}};
-        UpdateSet(descriptors, pipeline.setLayout, out->sets[i], values, 1);
+        UpdateSet(descriptors, pipeline.setLayouts[kFrameSet], out->sets[i], values, 1);
     }
     return true;
 }
@@ -192,8 +212,10 @@ static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
     vk.vkCmdSetScissor(cmd, 0, 1, &scissor);
 
     vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.handle);
+
+    // Once, above the loop: it is this frame's, and every draw in the pass reads it.
     vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.layout,
-                               0, 1, &targets.set, 0, nullptr);
+                               kFrameSet, 1, &targets.set, 0, nullptr);
 
     // binding 0 matches the pipeline's binding 0. offset changes once several meshes
     // share one buffer.
@@ -204,10 +226,19 @@ static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
     // Contract: this type must match the element type of indices.
     vk.vkCmdBindIndexBuffer(cmd, mesh.indices.handle, 0, mesh.desc.indexType);
 
-    // Order is whatever the caller wrote into the array. This layer does not sort.
-    // Nothing is bound in here, so the order only decides blending.
+    // Order is whatever the caller wrote into the array. This layer does not sort --
+    // and now the order costs something: a material bind happens wherever two
+    // neighbours differ, so the same items in another order bind more times.
+    VkDescriptorSet boundMaterial = VK_NULL_HANDLE;
     for (uint32_t i = 0; i < itemCount; ++i) {
         const DrawItem& item = items[i];
+
+        if (item.material != boundMaterial) {
+            vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                       pipeline.layout, kMaterialSet, 1,
+                                       &item.material, 0, nullptr);
+            boundMaterial = item.material;
+        }
 
         // viewProj is in the uniform this set already points at; only the item's own
         // values ride the command buffer.

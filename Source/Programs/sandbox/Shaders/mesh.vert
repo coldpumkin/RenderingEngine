@@ -6,8 +6,9 @@ layout(location = 0) in vec3 inPosition;   // world space
 layout(location = 1) in vec3 inNormal;
 layout(location = 2) in vec2 inUV;
 
-// Contract: same fields as SceneUniform in Pipeline.h. Written once per frame.
-layout(set = 0, binding = 1) uniform Scene {
+// Set 0 is the frame's: one camera and one light for every draw in the pass.
+// Contract: same fields as SceneUniform in Passes.h. Written once per frame.
+layout(set = 0, binding = 0) uniform Scene {
     mat4 viewProj;
     vec4 lightDir;
     vec4 lightColor;

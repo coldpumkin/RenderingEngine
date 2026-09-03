@@ -83,7 +83,13 @@ struct Pipeline {
 
     // Read out of the shaders, like the push range. It outlives a rebuild: the sets
     // already allocated from it stay valid only while it does.
-    DescriptorLayout setLayout;
+    // One per set the shaders may declare, in set order. A set nothing declares
+    // still has an entry with no bindings: Vulkan numbers sets by position, so set 1
+    // cannot be handed to vkCreatePipelineLayout without a set 0 in front of it.
+    //
+    // Which set means what is not decided here. The shaders declare positions; the
+    // layer that wrote those shaders is where the positions get names.
+    DescriptorLayout setLayouts[kMaxSets];
 
     // What it was built from. Recording reads viewportY out of it, and a rebuild
     // needs the rest -- without this the caller would have to keep the desc alive.
@@ -95,7 +101,7 @@ struct Pipeline {
     Pipeline& operator=(const Pipeline&) = delete;
 };
 
-// Effect: destroys pipeline and layout, leaves the struct empty. setLayout is not
+// Effect: destroys pipeline and layout, leaves the struct empty. setLayouts are not
 //         touched -- only the destructor frees that. The destructor calls this; main
 //         calls it directly to rebuild in place when the surface format changes.
 //

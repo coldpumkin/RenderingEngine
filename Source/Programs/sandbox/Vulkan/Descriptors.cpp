@@ -3,6 +3,7 @@
 #include "Vulkan/Shader.h"
 
 #include <iterator>   // std::size
+#include <vector>     // one layout handle per set asked for
 
 // Effect: builds a layout shaped exactly like the fragment shader's set 0, and
 //         reports how many bindings that turned out to be.
@@ -20,23 +21,26 @@ static uint32_t CountOfType(const DescriptorLayout& layout, VkDescriptorType typ
     return n;
 }
 
-// One layout, count sets in one call. The ceiling is kFramesInFlight because that is
-// what "a set per frame" means -- not a second number to keep in step with the first.
+// One layout, count sets in one call.
+//
+// No ceiling of its own any more. It used to be kFramesInFlight, on the reading that
+// a set is per frame -- but that is only true of one of our layouts. A material's is
+// counted by materials, and the pool is the only limit both answer to. Overshooting
+// fails at vkAllocateDescriptorSets, which names the pool; a number checked here
+// would just be a second copy to keep in step.
+//
+// The array is heap for the same reason: no stack size fits both counts, and this
+// runs at init where the heap is free.
 bool AllocateSets(const Descriptors& descriptors, const DescriptorLayout& layout,
                   uint32_t count, VkDescriptorSet* out) noexcept {
     if (count == 0) { return true; }
-    if (count > kFramesInFlight) {
-        LOG("[vk] %u sets asked for, %u is the ceiling\n", count, kFramesInFlight);
-        return false;
-    }
 
-    VkDescriptorSetLayout layouts[kFramesInFlight]{};
-    for (uint32_t i = 0; i < count; ++i) { layouts[i] = layout.handle; }
+    const std::vector<VkDescriptorSetLayout> layouts(count, layout.handle);
 
     VkDescriptorSetAllocateInfo allocInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
     allocInfo.descriptorPool = descriptors.pool;
     allocInfo.descriptorSetCount = count;
-    allocInfo.pSetLayouts = layouts;
+    allocInfo.pSetLayouts = layouts.data();
 
     const VulkanDevice& dev = *descriptors.dev;
     if (dev.table.vkAllocateDescriptorSets(dev.handle, &allocInfo, out) != VK_SUCCESS) {

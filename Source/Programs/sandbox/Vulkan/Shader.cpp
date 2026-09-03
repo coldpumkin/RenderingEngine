@@ -77,7 +77,11 @@ bool Reflect(const std::vector<uint32_t>& code, const char* path,
         spvReflectEnumerateDescriptorBindings(&module, &bindingCount, bindings.data());
     }
     for (const SpvReflectDescriptorBinding* b : bindings) {
-        if (b->set != 0) { continue; }
+        if (b->set >= kMaxSets) {
+            LOG("[vk] %s uses set %u, over the %u we allow\n", path, b->set, kMaxSets);
+            spvReflectDestroyShaderModule(&module);
+            return false;
+        }
         if (b->binding >= kMaxBindingsPerSet) {
             LOG("[vk] %s uses binding %u, over the %u we allow\n",
                 path, b->binding, kMaxBindingsPerSet);
@@ -85,8 +89,9 @@ bool Reflect(const std::vector<uint32_t>& code, const char* path,
             return false;
         }
         // Indexed by binding number, not by order, so a gap stays a gap.
-        out->bindingTypes[b->binding] = static_cast<VkDescriptorType>(b->descriptor_type);
-        if (b->binding + 1 > out->bindingCount) { out->bindingCount = b->binding + 1; }
+        SetInterface& set = out->sets[b->set];
+        set.bindingTypes[b->binding] = static_cast<VkDescriptorType>(b->descriptor_type);
+        if (b->binding + 1 > set.bindingCount) { set.bindingCount = b->binding + 1; }
     }
 
     spvReflectDestroyShaderModule(&module);
@@ -121,16 +126,19 @@ VkShaderModule LoadShader(const VulkanDevice& dev, const char* path,
 
 bool BuildSetLayout(const VulkanDevice& dev,
                     const ShaderInterface& vert, const ShaderInterface& frag,
-                    DescriptorLayout* out) noexcept {
-    const uint32_t count = vert.bindingCount > frag.bindingCount ? vert.bindingCount
-                                                                 : frag.bindingCount;
+                    uint32_t set, DescriptorLayout* out) noexcept {
+    const SetInterface& vertSet = vert.sets[set];
+    const SetInterface& fragSet = frag.sets[set];
+
+    const uint32_t count = vertSet.bindingCount > fragSet.bindingCount
+                         ? vertSet.bindingCount : fragSet.bindingCount;
     VkDescriptorSetLayoutBinding bindings[kMaxBindingsPerSet]{};
     uint32_t used = 0;
     for (uint32_t i = 0; i < count; ++i) {
         // 0 reads as "this stage does not use it". A lone SAMPLER is also 0, and we
         // never declare one, so the two need not be told apart.
-        const VkDescriptorType inVert = vert.bindingTypes[i];
-        const VkDescriptorType inFrag = frag.bindingTypes[i];
+        const VkDescriptorType inVert = vertSet.bindingTypes[i];
+        const VkDescriptorType inFrag = fragSet.bindingTypes[i];
         if (inVert == 0 && inFrag == 0) { continue; }   // a hole in the numbering
 
         bindings[used].binding = i;
