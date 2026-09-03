@@ -55,6 +55,30 @@ bool Reflect(const std::vector<uint32_t>& code, const char* path,
     for (const SpvReflectInterfaceVariable* v : inputs) {
         // gl_VertexIndex and friends carry no location and are not vertex attributes.
         if (v->built_in != -1) { continue; }
+        if (out->inputCount >= kMaxVertexAttributes) {
+            LOG("[vk] %s declares more than %u vertex inputs\n", path, kMaxVertexAttributes);
+            spvReflectDestroyShaderModule(&module);
+            return false;
+        }
+
+        // The kind, not the format. A vec3 is three floats however the buffer stores
+        // them, and that is the whole reason a layout can differ from the shader's own
+        // idea of the type.
+        NumericKind kind = NumericKind::Unknown;
+        if (v->type_description != nullptr) {
+            const uint32_t flags = v->type_description->type_flags;
+            if ((flags & SPV_REFLECT_TYPE_FLAG_FLOAT) != 0) {
+                kind = NumericKind::Float;
+            } else if ((flags & SPV_REFLECT_TYPE_FLAG_INT) != 0) {
+                kind = v->numeric.scalar.signedness != 0 ? NumericKind::Sint
+                                                         : NumericKind::Uint;
+            }
+        }
+        // A scalar reports no vector width; it is one component.
+        const uint32_t components = v->numeric.vector.component_count != 0
+                                  ? v->numeric.vector.component_count : 1;
+
+        out->inputs[out->inputCount] = {v->location, kind, components};
         out->inputCount += 1;
         if (v->location + 1 > out->maxInputLocation) { out->maxInputLocation = v->location + 1; }
     }
@@ -241,4 +265,49 @@ ShaderProgram::~ShaderProgram() {
     }
     vk.vkDestroyShaderModule(dev->handle, vert, nullptr);
     vk.vkDestroyShaderModule(dev->handle, frag, nullptr);
+}
+
+// Every format anything here puts in a VertexLayout, and nothing else. Unknown is a
+// refusal rather than a guess: a format nobody classified would otherwise pass the
+// check by accident.
+//
+// UNORM and SRGB are Float. What the bytes are is not what the shader reads -- the
+// conversion belongs to the format, which is exactly why the shader's own type cannot
+// stand in for this.
+NumericKind KindOfFormat(VkFormat format) noexcept {
+    switch (format) {
+        case VK_FORMAT_R8_UNORM:
+        case VK_FORMAT_R8G8_UNORM:
+        case VK_FORMAT_R8G8B8A8_UNORM:
+        case VK_FORMAT_R8G8B8A8_SNORM:
+        case VK_FORMAT_R8G8B8A8_SRGB:
+        case VK_FORMAT_B8G8R8A8_UNORM:
+        case VK_FORMAT_B8G8R8A8_SRGB:
+        case VK_FORMAT_R16G16_SFLOAT:
+        case VK_FORMAT_R16G16B16A16_SFLOAT:
+        case VK_FORMAT_R32_SFLOAT:
+        case VK_FORMAT_R32G32_SFLOAT:
+        case VK_FORMAT_R32G32B32_SFLOAT:
+        case VK_FORMAT_R32G32B32A32_SFLOAT:
+            return NumericKind::Float;
+
+        case VK_FORMAT_R8G8B8A8_UINT:
+        case VK_FORMAT_R16G16B16A16_UINT:
+        case VK_FORMAT_R32_UINT:
+        case VK_FORMAT_R32G32_UINT:
+        case VK_FORMAT_R32G32B32_UINT:
+        case VK_FORMAT_R32G32B32A32_UINT:
+            return NumericKind::Uint;
+
+        case VK_FORMAT_R8G8B8A8_SINT:
+        case VK_FORMAT_R16G16B16A16_SINT:
+        case VK_FORMAT_R32_SINT:
+        case VK_FORMAT_R32G32_SINT:
+        case VK_FORMAT_R32G32B32_SINT:
+        case VK_FORMAT_R32G32B32A32_SINT:
+            return NumericKind::Sint;
+
+        default:
+            return NumericKind::Unknown;
+    }
 }

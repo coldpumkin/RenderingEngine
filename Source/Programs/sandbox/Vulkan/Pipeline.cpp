@@ -20,10 +20,23 @@ VkViewport MakeViewport(VkExtent2D extent, ViewportY y) noexcept {
     return viewport;
 }
 
-// Effect: checks what the shaders declare against the one thing they cannot know --
-//         the vertex layout's offsets, which live in Vertex.
+static const char* KindName(NumericKind kind) noexcept {
+    switch (kind) {
+        case NumericKind::Float: return "float";
+        case NumericKind::Sint:  return "sint";
+        case NumericKind::Uint:  return "uint";
+        default:                 return "unknown";
+    }
+}
+
+// Effect: checks what the shaders declare against what the resource actually supplies.
 //
-// Push ranges and set layouts are no longer compared: they are built from the same
+// The layout belongs to the vertex buffer, not to the shader: its stride, offsets and
+// formats are the buffer's own, and one shader can be fed by several. So this is not
+// an equality test -- it asks whether each location exists on both sides and delivers
+// the kind of number the shader reads.
+//
+// Push ranges and set layouts are not compared: they are built from the same
 // reflection, so there are no two sides left to disagree.
 static bool CheckVertexInterface(const GraphicsPipelineDesc& desc,
                                  const ShaderInterface& vs,
@@ -34,33 +47,52 @@ static bool CheckVertexInterface(const GraphicsPipelineDesc& desc,
             vertPath, vs.inputCount, layout.attributeCount);
         return false;
     }
-    // A gap means a location is declared but never read. The layer catches it later;
-    // catching it here names the shader.
+    // Vulkan is fine with a shader reading locations 0 and 2 and a layout supplying
+    // both. We are not: in these shaders a gap means a location was removed and the
+    // layout not followed. Ours to relax if a real one ever turns up.
     if (vs.inputCount != vs.maxInputLocation) {
         LOG("[vk] %s has gaps in its input locations (%u inputs, highest is %u)\n",
             vertPath, vs.inputCount, vs.maxInputLocation);
         return false;
     }
 
-    // The two tests above together say the shader's locations are exactly
-    // 0..inputCount-1. So the sides agree exactly when the layout's locations are a
-    // permutation of that range, which this checks without needing the shader's list.
-    //
-    // This is what the pointer could not do: the count matched and the locations were
-    // never looked at.
-    uint32_t seen = 0;
+    // Location by location, because a count is not an agreement. The layout is the
+    // buffer's -- its stride, offsets and formats are free to differ from anything the
+    // shader says -- so the only thing the two sides owe each other is that each
+    // location exists on both and delivers the kind of number the shader reads.
+    uint32_t matched = 0;
     for (uint32_t i = 0; i < layout.attributeCount; ++i) {
-        const uint32_t location = layout.attributes[i].location;
-        if (location >= vs.inputCount) {
-            LOG("[vk] %s: layout feeds location %u, the shader reads only 0..%u\n",
-                vertPath, location, vs.inputCount - 1);
+        const VertexAttribute& attribute = layout.attributes[i];
+
+        const VertexInputSlot* slot = nullptr;
+        for (uint32_t j = 0; j < vs.inputCount; ++j) {
+            if (vs.inputs[j].location == attribute.location) { slot = &vs.inputs[j]; break; }
+        }
+        if (slot == nullptr) {
+            LOG("[vk] %s: the layout feeds location %u, which the shader does not read\n",
+                vertPath, attribute.location);
             return false;
         }
-        if ((seen & (1u << location)) != 0) {
-            LOG("[vk] %s: layout feeds location %u twice\n", vertPath, location);
+        if ((matched & (1u << attribute.location)) != 0) {
+            LOG("[vk] %s: the layout feeds location %u twice\n", vertPath, attribute.location);
             return false;
         }
-        seen |= 1u << location;
+        matched |= 1u << attribute.location;
+
+        // Vulkan converts inside a kind and not across one, so this is the line that
+        // actually matters. R8G8B8A8_UNORM feeding a vec4 passes; R32G32B32A32_UINT
+        // feeding one does not, and nothing else would have said so.
+        const NumericKind supplied = KindOfFormat(attribute.format);
+        if (supplied == NumericKind::Unknown) {
+            LOG("[vk] %s: location %u uses format %d, which KindOfFormat does not know\n",
+                vertPath, attribute.location, attribute.format);
+            return false;
+        }
+        if (supplied != slot->kind) {
+            LOG("[vk] %s: location %u is supplied as %s and read as %s\n",
+                vertPath, attribute.location, KindName(supplied), KindName(slot->kind));
+            return false;
+        }
     }
     return true;
 }

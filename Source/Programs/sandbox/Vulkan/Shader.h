@@ -23,6 +23,32 @@ constexpr uint32_t kMaxSets = 2;
 // shader writes more than one colour.
 constexpr uint32_t kMaxVertexAttributes = 8;
 
+// What kind of number a shader variable is made of, and what a resource format
+// converts to. Vulkan converts freely inside a kind -- R8G8B8A8_UNORM feeds a vec4 --
+// and not at all across one: an integer attribute cannot feed a float input.
+//
+// So this, not the format, is what the two sides have to agree on. A shader is never
+// UNORM; that word belongs to the resource.
+enum class NumericKind {
+    Unknown,
+    Float,
+    Sint,
+    Uint,
+};
+
+// One vertex input the .spv declares: where it is and what it wants. Not a VkFormat --
+// a shader has no format, it has a kind and a width in components.
+struct VertexInputSlot {
+    uint32_t location = 0;
+    NumericKind kind = NumericKind::Unknown;
+    uint32_t componentCount = 0;
+};
+
+// Output: what a resource format delivers to a shader. Unknown for anything not
+//         listed, which is a refusal rather than a guess -- add the format here when
+//         one is used.
+NumericKind KindOfFormat(VkFormat format) noexcept;
+
 // What one set declares. types is indexed by binding number, so a gap stays a gap.
 struct SetInterface {
     uint32_t bindingCount = 0;
@@ -32,6 +58,10 @@ struct SetInterface {
 struct ShaderInterface {
     uint32_t inputCount = 0;         // vertex attributes, built-ins excluded
     uint32_t maxInputLocation = 0;   // highest location + 1, so gaps show up
+
+    // In declaration order, not indexed by location -- the caller looks a location up
+    // rather than assuming the two coincide.
+    VertexInputSlot inputs[kMaxVertexAttributes]{};
 
     // The other end of the same boundary, read the same way. A fragment stage's
     // outputs answer to the colour attachments the way its inputs answer to the vertex
