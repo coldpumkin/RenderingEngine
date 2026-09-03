@@ -309,23 +309,18 @@ static void RecordShadowPass(const FrameSlot& slot, const ShadowPass& shadow,
 
     vk.vkCmdBeginRendering(cmd, &rendering);
 
-    // Down, and here it settles one thing only: which way the map's v axis runs.
-    // scene.frag reads it back as ndc * 0.5 + 0.5, which is this sign. The winding goes
-    // out with it and has no effect, because the pass culls nothing.
-    SetViewportAndWinding(vk, cmd, extent, ViewportY::Down);
-
-    VkRect2D scissor{};
-    scissor.extent = extent;
-    vk.vkCmdSetScissor(cmd, 0, 1, &scissor);
-
-    // NONE, once for the pass. Culling here would be a choice about which face writes
-    // the depth, and with none of it culled the value is the nearest surface either
-    // way -- which is what the comparison wants.
-    vk.vkCmdSetCullMode(cmd, VK_CULL_MODE_NONE);
-
-    // Every dynamic state has to be set before every draw, whichever pass. This pass
-    // writes the depth that is its whole product, so the test is on.
-    vk.vkCmdSetDepthTestEnable(cmd, VK_TRUE);
+    // Depth is this pass's whole product, so both halves of it are on. Culling stays
+    // off: it would be a choice about which face writes the depth, and unculled the
+    // value is the nearest surface either way -- which is what the comparison wants.
+    //
+    // ViewportY::Down settles one thing here, the direction the map's v axis runs.
+    // scene.frag reads it back as ndc * 0.5 + 0.5, which is this sign; the winding
+    // rides along and has no effect on a pass that culls nothing.
+    RasterState raster;
+    raster.viewportY = ViewportY::Down;
+    raster.depthTest = VK_TRUE;
+    raster.depthWrite = VK_TRUE;
+    SetRasterState(vk, cmd, extent, raster);
 
     vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadow.pipeline->handle);
     vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -368,7 +363,10 @@ static void RecordShadowPass(const FrameSlot& slot, const ShadowPass& shadow,
 struct SceneRasterOptions {
     bool wireframe = false;
     bool depthTest = true;
+    bool depthWrite = true;
+    bool rasterizerDiscard = false;
     VkCullModeFlags cull = kCullFromMaterial;
+    VkCompareOp depthCompare = VK_COMPARE_OP_LESS;
 };
 
 static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
@@ -458,23 +456,20 @@ static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
     // Up, because our world is y-up, and the pass is where that belongs: every draw in
     // here shares one viewport, and no pipeline had to be compiled knowing it.
     //
-    // Both halves in one call. The winding test follows the sign, and this is the pass
-    // that actually culls -- set them apart and a wrong frontFace turns the scene
-    // inside out with nothing reporting it.
-    SetViewportAndWinding(vk, cmd, extent, ViewportY::Up);
-
-    // Dynamic, so turning the depth test off costs a command and not a pipeline. With
-    // it off nothing is hidden and what survives is whatever was drawn last, which is
-    // the order this list was sorted into.
+    // Five of these come from the panel. None of them is compiled in, so the whole
+    // set costs one call per pass -- which is the difference between this and the
+    // wireframe switch beside them, where polygonMode forced a second pipeline.
     //
-    // The write goes with it: the spec makes depthWriteEnable irrelevant while the
-    // test is disabled, so there is nothing to turn off separately.
-    vk.vkCmdSetDepthTestEnable(cmd, raster.depthTest ? VK_TRUE : VK_FALSE);
-
-    // Pixels outside this rect are discarded. Whole screen for now.
-    VkRect2D scissor{};
-    scissor.extent = extent;
-    vk.vkCmdSetScissor(cmd, 0, 1, &scissor);
+    // cull is the starting value; the loop below changes it per draw unless the panel
+    // overrode it.
+    RasterState state;
+    state.viewportY = ViewportY::Up;
+    state.cull = raster.cull == kCullFromMaterial ? VK_CULL_MODE_NONE : raster.cull;
+    state.depthTest = raster.depthTest ? VK_TRUE : VK_FALSE;
+    state.depthWrite = raster.depthWrite ? VK_TRUE : VK_FALSE;
+    state.depthCompare = raster.depthCompare;
+    state.rasterizerDiscard = raster.rasterizerDiscard ? VK_TRUE : VK_FALSE;
+    SetRasterState(vk, cmd, extent, state);
 
     vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.handle);
 
@@ -618,22 +613,13 @@ static void RecordPostProcessPass(const FrameSlot& slot, const PostProcessPass& 
     vk.vkCmdBeginRendering(cmd, &rendering);
 
     // Down, the opposite of the scene pass: fullscreen.vert builds its own uv from
-    // gl_VertexIndex and expects the default orientation.
-    SetViewportAndWinding(vk, cmd, destExtent, ViewportY::Down);
-
-    VkRect2D scissor{};
-    scissor.extent = destExtent;
-    vk.vkCmdSetScissor(cmd, 0, 1, &scissor);
+    // gl_VertexIndex and expects the default orientation. One triangle, wound to face
+    // us, and nothing to hide behind anything -- so everything else is the default.
+    RasterState raster;
+    raster.cull = VK_CULL_MODE_BACK_BIT;
+    SetRasterState(vk, cmd, destExtent, raster);
 
     vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.handle);
-
-    // Dynamic now, so it has to be said even though it never changes here. One
-    // fullscreen triangle, wound to face us.
-    vk.vkCmdSetCullMode(cmd, VK_CULL_MODE_BACK_BIT);
-
-    // No depth attachment in this pass, so the test has nothing to read -- and the
-    // state still has to be set, because it is dynamic for every pipeline.
-    vk.vkCmdSetDepthTestEnable(cmd, VK_FALSE);
 
     vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout,
                                0, 1, &post.sets[slot.index], 0, nullptr);
@@ -688,7 +674,8 @@ bool RecordFrame(const FrameSlot& slot, const ShadowPass& shadow,
     RecordShadowPass(slot, shadow, draws);
     RecordScenePass(slot, scene, draws,
                     SceneRasterOptions{GuiWireframe(gui), GuiDepthTest(gui),
-                                       GuiCullMode(gui)},
+                                       GuiDepthWrite(gui), GuiRasterizerDiscard(gui),
+                                       GuiCullMode(gui), GuiDepthCompare(gui)},
                     stats);
     RecordPostProcessPass(slot, post, target);
     RecordGuiPass(slot, gui, target);

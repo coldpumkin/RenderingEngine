@@ -34,23 +34,82 @@ constexpr VkFrontFace FrontFaceFor(ViewportY y) noexcept {
 // Output: a viewport with the sign applied
 VkViewport MakeViewport(VkExtent2D extent, ViewportY y) noexcept;
 
-// Effect: sets both halves of the sign on the command buffer
-//
-// One call because they are one decision. Apart, a pass could set a viewport and leave
-// the winding from whatever ran before it -- and that is invisible until something is
-// culled, which is why the two were derived from one value while both were baked.
-void SetViewportAndWinding(const VolkDeviceTable& vk, VkCommandBuffer cmd,
-                           VkExtent2D extent, ViewportY y) noexcept;
-
-// Blending - one value, because blend and depth write cannot disagree
+// RasterState - what a pass settles before its first draw
 // ============================================================================
 //
-// A translucent surface with depth write on hides what is drawn behind it later.
-// Two flags would make that state expressible. The cost: ordering moves to the
-// recording side. Depth test stays on either way.
+// Every one of these is dynamic state, which means two things. It is not compiled in,
+// so changing it costs a command rather than a pipeline. And **Vulkan remembers none
+// of it across a command buffer**, so every pass has to set every one before it draws
+// -- not only the ones it cares about.
+//
+// That second half is why this is a struct. Listed by hand, each pass names seven
+// values and a new one means editing four passes; missed, the validation layer says
+// so but only at run time. As a value, a pass names what it wants and the defaults
+// answer for the rest.
+//
+// The defaults are what a pass that draws one flat thing wants: no culling, no depth,
+// triangles. The scene pass overrides most of them and the shadow pass two.
+//
+// What is *not* here is the other half of the same question. polygonMode, blending,
+// sample count and the attachment formats are compiled into a pipeline, so they live
+// in GraphicsPipelineDesc and a second value means a second pipeline. The split is
+// not how often something changes -- it is whether the driver has to compile
+// something different.
+//
+// Primitive topology looked like it belonged here and does not. There is a
+// VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY, but without extendedDynamicState3 it only
+// moves inside a class -- list to strip, not triangles to lines. Tried, and the
+// validation layer said so at the first draw:
+//
+//   the last primitive topology POINT_LIST set by vkCmdSetPrimitiveTopology is not
+//   compatible with the pipeline topology TRIANGLE_LIST
+//
+// So being in the dynamic-state enum is not the same as being free to change. Drawing
+// this mesh as points would take a second pipeline, and a vertex shader that writes
+// gl_PointSize, which the layer also asked for.
+struct RasterState {
+    // Decides the viewport's sign and the winding test together. Their pairing is the
+    // reason it is one field: apart, a pass could set a viewport and inherit whatever
+    // winding ran before it, which is invisible until something is culled.
+    ViewportY viewportY = ViewportY::Down;
+
+    // The starting value. The scene pass changes it per draw, from the material.
+    VkCullModeFlags cull = VK_CULL_MODE_NONE;
+
+    // Off means nothing is hidden and the draw order is what survives. depthWrite is
+    // independent, but the spec makes it irrelevant while the test is off.
+    VkBool32 depthTest = VK_FALSE;
+    VkBool32 depthWrite = VK_FALSE;
+    VkCompareOp depthCompare = VK_COMPARE_OP_LESS;   // clear is 1.0, so nearer wins
+
+
+    // Everything up to the rasterizer still runs; nothing after it does. What that
+    // leaves is a pass that costs its vertex work and writes nothing.
+    VkBool32 rasterizerDiscard = VK_FALSE;
+};
+
+// Effect: issues every dynamic state this program declares, in one call
+//
+// One call and not seven, so a pass cannot set some and inherit the rest. extent is
+// separate because it is the frame's rather than the pass's preference -- the same
+// RasterState is right at any size.
+void SetRasterState(const VolkDeviceTable& vk, VkCommandBuffer cmd,
+                    VkExtent2D extent, const RasterState& raster) noexcept;
+
+// Blending - whether the fragment is mixed with what is already there
+// ============================================================================
+//
+// It used to carry depth write with it, on the grounds that a translucent surface
+// writing depth hides what is drawn behind it later and one value cannot disagree
+// with itself. Depth write is dynamic state now, so the two are apart again and
+// keeping them in step is the recording side's -- a pass that binds a translucent
+// pipeline is the one that has to leave depthWrite off.
+//
+// Not made dynamic itself: blending changes what the driver compiles into the
+// fragment output stage, which is the line everything in GraphicsPipelineDesc is on.
 enum class Blending {
-    Opaque,        // blend off - depth write on
-    Translucent,   // blend on  - depth write off
+    Opaque,
+    Translucent,
 };
 
 // One pipeline's worth of decisions. Everything not here is the same in both of

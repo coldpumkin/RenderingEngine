@@ -236,6 +236,23 @@ bool GuiDepthTest(const Gui& gui) noexcept {
     return gui.options.depthTest;
 }
 
+bool GuiDepthWrite(const Gui& gui) noexcept {
+    return gui.options.depthWrite;
+}
+
+bool GuiRasterizerDiscard(const Gui& gui) noexcept {
+    return gui.options.rasterizerDiscard;
+}
+
+VkCompareOp GuiDepthCompare(const Gui& gui) noexcept {
+    switch (gui.options.depthCompare) {
+    case ViewOptions::DepthCompare::Greater: return VK_COMPARE_OP_GREATER;
+    case ViewOptions::DepthCompare::Always:  return VK_COMPARE_OP_ALWAYS;
+    default:                                 return VK_COMPARE_OP_LESS;
+    }
+}
+
+
 VkCullModeFlags GuiCullMode(const Gui& gui) noexcept {
     switch (gui.options.cull) {
     case ViewOptions::CullChoice::None:  return VK_CULL_MODE_NONE;
@@ -277,8 +294,13 @@ void BuildGui(Gui* gui, const GuiFrameInfo& info) noexcept {
         // Separated because these are a different kind of switch: the five above turn
         // a term of the lighting off, these change how the same draws are rasterized.
         ImGui::Separator();
+        // wireframe is the odd one here: polygonMode is compiled in, so it selects
+        // between two pipelines. Everything else on this list is dynamic state and
+        // costs one command in the pass that sets it.
         ImGui::Checkbox("wireframe", &options->wireframe);
         ImGui::Checkbox("depth test", &options->depthTest);
+        ImGui::Checkbox("depth write", &options->depthWrite);
+        ImGui::Checkbox("discard raster", &options->rasterizerDiscard);
 
         // Four choices, and the first is not an override: it leaves each draw with the
         // cull mode its material asked for, which is what the sort key groups by. The
@@ -290,6 +312,14 @@ void BuildGui(Gui* gui, const GuiFrameInfo& info) noexcept {
                          static_cast<int>(std::size(kCullNames)))) {
             options->cull = static_cast<ViewOptions::CullChoice>(cull);
         }
+
+        const char* const kCompareNames[] = {"less", "greater", "always"};
+        int compare = static_cast<int>(options->depthCompare);
+        if (ImGui::Combo("depth op", &compare, kCompareNames,
+                         static_cast<int>(std::size(kCompareNames)))) {
+            options->depthCompare = static_cast<ViewOptions::DepthCompare>(compare);
+        }
+
 
         ImGui::Separator();
         // Both numbers, because they answer different questions: the rate is what a
@@ -467,14 +497,10 @@ void RecordGuiPass(const FrameSlot& slot, Gui& gui, const Texture& target) noexc
 
     vk.vkCmdBeginRendering(cmd, &rendering);
 
-    // Down: ImGui works in window pixels with the origin at the top left.
-    SetViewportAndWinding(vk, cmd, target.desc.extent, ViewportY::Down);
-    // Nothing is culled: the panel's triangles have no consistent winding, and a
-    // rectangle has no back to hide.
-    vk.vkCmdSetCullMode(cmd, VK_CULL_MODE_NONE);
-
-    // No depth attachment here either, and the state is dynamic for every pipeline.
-    vk.vkCmdSetDepthTestEnable(cmd, VK_FALSE);
+    // Every default: ImGui works in window pixels with the origin at the top left,
+    // its triangles have no consistent winding so nothing is culled, and there is no
+    // depth attachment to test against.
+    SetRasterState(vk, cmd, target.desc.extent, RasterState{});
 
     vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.handle);
     vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout,

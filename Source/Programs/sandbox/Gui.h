@@ -82,6 +82,28 @@ struct ViewOptions {
     // into, made looking at it possible.
     bool depthTest = true;
 
+    // The other half of the depth question, and independent of the test. Off, a
+    // surface is compared against what is already there and never becomes what the
+    // next one is compared against -- so everything behind the nearest thing still
+    // draws, over it.
+    bool depthWrite = true;
+
+    // What "passes" means, and it is half of a pair: the other half is the value the
+    // depth attachment is cleared to, which is 1.0. LESS against that is nearest-wins.
+    // GREATER against it passes nothing at all -- measured, the frame comes out 100%
+    // black -- because no depth is above the clear. A reverse-Z setup is GREATER with
+    // a 0.0 clear, and changing one without the other is what this switch shows.
+    // ALWAYS is the test doing nothing while the write continues, which is not the
+    // same as turning the test off.
+    enum class DepthCompare { Less, Greater, Always };
+    DepthCompare depthCompare = DepthCompare::Less;
+
+
+    // Everything up to the rasterizer runs and nothing after it does. The scene pass
+    // costs its vertex work, its bindings and its 103 draws, and produces no pixels --
+    // which is what a depth prepass would look like without the depth.
+    bool rasterizerDiscard = false;
+
     // Material means each draw keeps the cull mode its glTF material asked for, which
     // is what the sort key groups by. The other three override every draw, and Front
     // is the one worth having -- it shows the inside of a closed surface.
@@ -259,6 +281,9 @@ constexpr VkDeviceSize kGuiOptionsSize = sizeof(ViewOptionsUniform);
 // of what it may know about the panel.
 bool GuiWireframe(const Gui& gui) noexcept;
 bool GuiDepthTest(const Gui& gui) noexcept;
+bool GuiDepthWrite(const Gui& gui) noexcept;
+bool GuiRasterizerDiscard(const Gui& gui) noexcept;
+VkCompareOp GuiDepthCompare(const Gui& gui) noexcept;
 
 // Output: the cull mode to use for every draw, or UINT32_MAX to leave it to each
 //         material. The sentinel is outside VkCullModeFlagBits, so no real value

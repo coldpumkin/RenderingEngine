@@ -20,13 +20,26 @@ VkViewport MakeViewport(VkExtent2D extent, ViewportY y) noexcept {
     return viewport;
 }
 
-// Both halves, from one value. The caller never writes the sign twice, which is what
-// keeps the winding from drifting away from the viewport it belongs to.
-void SetViewportAndWinding(const VolkDeviceTable& vk, VkCommandBuffer cmd,
-                           VkExtent2D extent, ViewportY y) noexcept {
-    const VkViewport viewport = MakeViewport(extent, y);
+// Every dynamic state, in one place. The list here and kDynamicStates below have to
+// agree: one missing from this function is a validation error at the first draw, one
+// missing from that array is a value silently taken from the pipeline instead.
+void SetRasterState(const VolkDeviceTable& vk, VkCommandBuffer cmd,
+                    VkExtent2D extent, const RasterState& raster) noexcept {
+    const VkViewport viewport = MakeViewport(extent, raster.viewportY);
     vk.vkCmdSetViewport(cmd, 0, 1, &viewport);
-    vk.vkCmdSetFrontFace(cmd, FrontFaceFor(y));
+    vk.vkCmdSetFrontFace(cmd, FrontFaceFor(raster.viewportY));
+
+    // Pixels outside this are discarded. The whole target, always -- we have no use
+    // for a partial one yet, and it is dynamic because the viewport is.
+    VkRect2D scissor{};
+    scissor.extent = extent;
+    vk.vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+    vk.vkCmdSetCullMode(cmd, raster.cull);
+    vk.vkCmdSetDepthTestEnable(cmd, raster.depthTest);
+    vk.vkCmdSetDepthWriteEnable(cmd, raster.depthWrite);
+    vk.vkCmdSetDepthCompareOp(cmd, raster.depthCompare);
+    vk.vkCmdSetRasterizerDiscardEnable(cmd, raster.rasterizerDiscard);
 }
 
 static const char* KindName(NumericKind kind) noexcept {
@@ -270,6 +283,8 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
 
     VkPipelineInputAssemblyStateCreateInfo inputAssembly{
         VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+    // Compiled in, unlike the depth state below. See the note in Pipeline.h: the
+    // dynamic version of this only moves within a topology class.
     inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;   // 3 vertices = 1 triangle
 
     // --- Raster: where the primitive lands and which side faces us ----------
@@ -298,12 +313,21 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     //
     // Contract: a dynamic state must be set before every draw with this pipeline.
     //           Vulkan does not remember one across a command buffer.
+    // All of them core in Vulkan 1.3, which we require. Every one is a register the
+    // hardware reads per draw, so making it dynamic costs nothing at compile time and
+    // saves a pipeline per value.
+    //
+    // Contract: SetRasterState issues exactly this list. One here without a command
+    //           there is a validation error at the first draw.
     constexpr VkDynamicState kDynamicStates[] = {
         VK_DYNAMIC_STATE_VIEWPORT,
         VK_DYNAMIC_STATE_SCISSOR,
-        VK_DYNAMIC_STATE_CULL_MODE,    // core in Vulkan 1.3, which we require
-        VK_DYNAMIC_STATE_FRONT_FACE,   // same, and the other half of the viewport sign
-        VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE,   // same again
+        VK_DYNAMIC_STATE_CULL_MODE,
+        VK_DYNAMIC_STATE_FRONT_FACE,
+        VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE,
+        VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE,
+        VK_DYNAMIC_STATE_DEPTH_COMPARE_OP,
+        VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE,
     };
 
     // Which of these is dynamic and which is baked is not about how often a value
@@ -361,11 +385,12 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     const bool useDepth = desc.formats.depth != VK_FORMAT_UNDEFINED;
     VkPipelineDepthStencilStateCreateInfo depthStencil{
         VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-    // Ignored: VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE is in the list above. Set anyway,
-    // because a pipeline created with a state it never uses reads as an oversight.
+    // All three ignored: they are dynamic, and SetRasterState issues them. Filled in
+    // anyway, because a create-info left at zero reads as forgotten rather than as
+    // overridden.
     depthStencil.depthTestEnable = VK_TRUE;
-    depthStencil.depthWriteEnable = translucent ? VK_FALSE : VK_TRUE;
-    depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;   // clear is 1.0, so nearer wins
+    depthStencil.depthWriteEnable = VK_TRUE;
+    depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
 
     // --- What it draws into: attachment formats -----------------------------
     // Dynamic rendering writes the formats here instead of into a VkRenderPass.
