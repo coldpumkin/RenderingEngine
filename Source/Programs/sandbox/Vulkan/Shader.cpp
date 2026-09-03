@@ -37,6 +37,26 @@ bool ReadSpirv(const char* path, std::vector<uint32_t>* out) noexcept {
     return true;
 }
 
+// What one interface variable is, at either end. The kind is what the two sides have
+// to agree on: Vulkan converts inside one and not across it.
+//
+// A scalar reports no vector width; it is one component.
+InterfaceSlot SlotOf(const SpvReflectInterfaceVariable& v) noexcept {
+    NumericKind kind = NumericKind::Unknown;
+    if (v.type_description != nullptr) {
+        const uint32_t flags = v.type_description->type_flags;
+        if ((flags & SPV_REFLECT_TYPE_FLAG_FLOAT) != 0) {
+            kind = NumericKind::Float;
+        } else if ((flags & SPV_REFLECT_TYPE_FLAG_INT) != 0) {
+            kind = v.numeric.scalar.signedness != 0 ? NumericKind::Sint
+                                                    : NumericKind::Uint;
+        }
+    }
+    const uint32_t components = v.numeric.vector.component_count != 0
+                              ? v.numeric.vector.component_count : 1;
+    return {v.location, kind, components};
+}
+
 bool Reflect(const std::vector<uint32_t>& code, const char* path,
              ShaderInterface* out) noexcept {
     SpvReflectShaderModule module{};
@@ -64,29 +84,26 @@ bool Reflect(const std::vector<uint32_t>& code, const char* path,
         // The kind, not the format. A vec3 is three floats however the buffer stores
         // them, and that is the whole reason a layout can differ from the shader's own
         // idea of the type.
-        NumericKind kind = NumericKind::Unknown;
-        if (v->type_description != nullptr) {
-            const uint32_t flags = v->type_description->type_flags;
-            if ((flags & SPV_REFLECT_TYPE_FLAG_FLOAT) != 0) {
-                kind = NumericKind::Float;
-            } else if ((flags & SPV_REFLECT_TYPE_FLAG_INT) != 0) {
-                kind = v->numeric.scalar.signedness != 0 ? NumericKind::Sint
-                                                         : NumericKind::Uint;
-            }
-        }
-        // A scalar reports no vector width; it is one component.
-        const uint32_t components = v->numeric.vector.component_count != 0
-                                  ? v->numeric.vector.component_count : 1;
-
-        out->inputs[out->inputCount] = {v->location, kind, components};
+        out->inputs[out->inputCount] = SlotOf(*v);
         out->inputCount += 1;
         if (v->location + 1 > out->maxInputLocation) { out->maxInputLocation = v->location + 1; }
     }
 
-    // Same enumeration on the other end of the boundary. A vertex stage reports none,
-    // which is right: only the fragment stage writes attachments.
+    // Same enumeration on the other end of the boundary, and only for the stage where
+    // that end is an attachment.
+    //
+    // A vertex stage has outputs too -- mesh.vert declares four -- but they are
+    // varyings bound for the next stage, the same SPIR-V storage class at a different
+    // boundary. The comment here used to say a vertex stage reports none, which was
+    // simply wrong; nothing read the number, so nothing said so. Checking those
+    // against the fragment stage inputs is a real question and a different one.
+    const bool writesAttachments =
+        module.shader_stage == SPV_REFLECT_SHADER_STAGE_FRAGMENT_BIT;
+
     uint32_t outputCount = 0;
-    spvReflectEnumerateOutputVariables(&module, &outputCount, nullptr);
+    if (writesAttachments) {
+        spvReflectEnumerateOutputVariables(&module, &outputCount, nullptr);
+    }
     std::vector<SpvReflectInterfaceVariable*> outputs(outputCount);
     if (outputCount != 0) {
         spvReflectEnumerateOutputVariables(&module, &outputCount, outputs.data());
@@ -94,6 +111,12 @@ bool Reflect(const std::vector<uint32_t>& code, const char* path,
     for (const SpvReflectInterfaceVariable* v : outputs) {
         // gl_FragDepth and friends carry no location and are not attachments.
         if (v->built_in != -1) { continue; }
+        if (out->outputCount >= kMaxColorOutputs) {
+            LOG("[vk] %s writes more than %u colour outputs\n", path, kMaxColorOutputs);
+            spvReflectDestroyShaderModule(&module);
+            return false;
+        }
+        out->outputs[out->outputCount] = SlotOf(*v);
         out->outputCount += 1;
         if (v->location + 1 > out->maxOutputLocation) { out->maxOutputLocation = v->location + 1; }
     }

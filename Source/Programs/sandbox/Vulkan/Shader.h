@@ -19,9 +19,12 @@ constexpr uint32_t kMaxBindingsPerSet = 8;   // ceiling we impose, not a counted
 // the caller's business -- this layer only reports which sets a shader declared.
 constexpr uint32_t kMaxSets = 2;
 
-// Ceilings we impose. Our two vertex types declare four and three attributes; no
-// shader writes more than one colour.
+// Ceilings we impose. Our two vertex types declare four and three attributes.
 constexpr uint32_t kMaxVertexAttributes = 8;
+
+// Fragment outputs. One today, and the number a G-buffer would need is the reason
+// this is not 1.
+constexpr uint32_t kMaxColorOutputs = 4;
 
 // What kind of number a shader variable is made of, and what a resource format
 // converts to. Vulkan converts freely inside a kind -- R8G8B8A8_UNORM feeds a vec4 --
@@ -36,9 +39,14 @@ enum class NumericKind {
     Uint,
 };
 
-// One vertex input the .spv declares: where it is and what it wants. Not a VkFormat --
-// a shader has no format, it has a kind and a width in components.
-struct VertexInputSlot {
+// One end of one location, as the .spv declares it. Not a VkFormat -- a shader has no
+// format, it has a kind and a width in components.
+//
+// The same type at both ends, because both ends are the same question: a vertex input
+// asks what the buffer delivers at a location, a fragment output says what it writes
+// at one. What differs is on the resource side, not here -- a buffer adds an offset
+// and a stride, an image adds a sample count.
+struct InterfaceSlot {
     uint32_t location = 0;
     NumericKind kind = NumericKind::Unknown;
     uint32_t componentCount = 0;
@@ -61,13 +69,15 @@ struct ShaderInterface {
 
     // In declaration order, not indexed by location -- the caller looks a location up
     // rather than assuming the two coincide.
-    VertexInputSlot inputs[kMaxVertexAttributes]{};
+    InterfaceSlot inputs[kMaxVertexAttributes]{};
 
-    // The other end of the same boundary, read the same way. A fragment stage's
-    // outputs answer to the colour attachments the way its inputs answer to the vertex
-    // buffer, and until now only one side of that was ever looked at.
+    // The other end of the same boundary, read the same way and kept the same way.
+    // The counts alone were enough while "how many colour attachments" was the only
+    // question anyone asked of a fragment stage; what each output is made of is the
+    // half that lets the check here be the mirror of the one on the inputs.
     uint32_t outputCount = 0;
     uint32_t maxOutputLocation = 0;
+    InterfaceSlot outputs[kMaxColorOutputs]{};
 
     uint32_t pushSize = 0;                    // 0 when the stage declares no block
     VkShaderStageFlags pushStages = 0;        // the stage itself, if it reads one

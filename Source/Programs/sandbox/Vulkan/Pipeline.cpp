@@ -61,7 +61,7 @@ static bool CheckVertexInterface(const GraphicsPipelineDesc& desc,
     // ignores the surplus. What it may not do is leave out something the shader reads,
     // or supply it as the wrong kind of number.
     for (uint32_t i = 0; i < vs.inputCount; ++i) {
-        const VertexInputSlot& slot = vs.inputs[i];
+        const InterfaceSlot& slot = vs.inputs[i];
 
         const VertexAttribute* attribute = nullptr;
         for (uint32_t j = 0; j < layout.attributeCount; ++j) {
@@ -140,6 +140,34 @@ static bool CheckOutputInterface(const GraphicsPipelineDesc& desc,
         return false;
     }
 
+    // Location by location, the way the vertex end does it. One colour format means
+    // one attachment at location 0; a second would be indexed here rather than named,
+    // which is the shape this loop is already in.
+    for (uint32_t i = 0; i < fs.outputCount; ++i) {
+        const InterfaceSlot& slot = fs.outputs[i];
+
+        const NumericKind written = KindOfFormat(desc.formats.color);
+        if (written == NumericKind::Unknown) {
+            LOG("[vk] %s: the colour format %d is one KindOfFormat does not know\n",
+                fragPath, desc.formats.color);
+            return false;
+        }
+        if (written != slot.kind) {
+            LOG("[vk] %s: location %u writes %s into an attachment that stores %s\n",
+                fragPath, slot.location, KindName(slot.kind), KindName(written));
+            return false;
+        }
+
+        // Four channels in the attachment and three written leaves alpha undefined,
+        // which is not an error to Vulkan and is one here: every format we use has
+        // four, and a shader writing fewer is a shader that forgot one.
+        if (slot.componentCount != 4) {
+            LOG("[vk] %s: location %u writes %u components; the attachment has 4\n",
+                fragPath, slot.location, slot.componentCount);
+            return false;
+        }
+    }
+
     // Neither colour nor depth is a pipeline that draws nowhere. Vulkan permits it --
     // it is how a shader that only writes storage images is built -- and we have no
     // such thing, so it is a mistake here.
@@ -195,17 +223,39 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     // counts at zero, which is what "no vertex buffer" is in Vulkan's terms.
     const VertexLayout& layout = desc.vertexLayout;
     VkVertexInputBindingDescription binding{0, layout.stride, VK_VERTEX_INPUT_RATE_VERTEX};
+
+    // What this stage reads, not everything the buffer holds. The layout describes one
+    // buffer and several shaders read it: mesh.vert takes all four of our attributes,
+    // shadow.vert takes position. Declaring the rest here draws correctly and the
+    // validation layer warns once per pipeline that the attribute is not consumed --
+    // so the surplus is dropped rather than passed on.
+    //
+    // The same shape as the fragment end, where colorAttachmentCount comes from the
+    // .spv rather than from a number written here.
     VkVertexInputAttributeDescription attributes[kMaxVertexAttributes]{};
+    uint32_t attributeCount = 0;
     for (uint32_t i = 0; i < layout.attributeCount; ++i) {
-        attributes[i] = {layout.attributes[i].location, 0,
-                         layout.attributes[i].format, layout.attributes[i].offset};
+        const VertexAttribute& supplied = layout.attributes[i];
+
+        bool read = false;
+        for (uint32_t j = 0; j < program.vertInterface.inputCount; ++j) {
+            if (program.vertInterface.inputs[j].location == supplied.location) {
+                read = true;
+                break;
+            }
+        }
+        if (!read) { continue; }
+
+        attributes[attributeCount] = {supplied.location, 0, supplied.format,
+                                      supplied.offset};
+        attributeCount += 1;
     }
     VkPipelineVertexInputStateCreateInfo vertexInput{
         VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
     if (layout.stride != 0) {
         vertexInput.vertexBindingDescriptionCount = 1;
         vertexInput.pVertexBindingDescriptions = &binding;
-        vertexInput.vertexAttributeDescriptionCount = layout.attributeCount;
+        vertexInput.vertexAttributeDescriptionCount = attributeCount;
         vertexInput.pVertexAttributeDescriptions = attributes;
     }
 
