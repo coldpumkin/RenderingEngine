@@ -5,20 +5,12 @@ layout(location = 1) in vec2 fragUV;
 layout(location = 2) in vec3 fragWorldPos;
 layout(location = 3) in vec4 fragTangent;
 
-// Set 1 is the material's. Separate from set 0 because the two are counted
-// differently -- one set per frame, one per material -- and in one set the sets
-// needed would be their product, each carrying a copy of the same camera.
-//
-// Contract: one sampler2D here, one binding in the material layout.
-layout(set = 1, binding = 0) uniform sampler2D baseColor;
+// Declared in the order the values are decided: the frame's, then the material's,
+// then this draw's. A set is a set because of how its contents are counted, so that
+// order is also the reason there are two of them.
 
-// A second binding in the same set, not a second set: it is counted the same way --
-// one per material. glTF stores it tangent space, so it needs the TBN below.
+// Set 0 is the frame's: one camera and one light for every draw in the pass.
 //
-// Contract: this image must be UNORM. It is a direction, not a colour, and reading it
-//           as SRGB would bend every normal toward the flat one.
-layout(set = 1, binding = 1) uniform sampler2D normalMap;
-
 // Contract: same fields as SceneUniform in Passes.h.
 layout(set = 0, binding = 0) uniform Scene {
     mat4 viewProj;
@@ -31,31 +23,49 @@ layout(set = 0, binding = 0) uniform Scene {
     float useAlphaMask;
 } scene;
 
-layout(location = 0) out vec4 outColor;
+// Set 1 is the material's -- three bindings, not three sets, because all three are
+// counted the same way: one per material. Separate from set 0 because that one is
+// counted per frame in flight, and putting both in one set would need their product,
+// each copy carrying the same camera.
+//
+// Contract: three bindings here, three in the material layout, in this order.
+layout(set = 1, binding = 0) uniform sampler2D baseColor;
 
+// glTF stores it tangent space, so it needs the TBN below.
+//
+// Contract: this image must be UNORM. It is a direction, not a colour, and reading it
+//           as SRGB would bend every normal toward the flat one.
+layout(set = 1, binding = 1) uniform sampler2D normalMap;
+
+// What the material is apart from its images. In the set rather than the push block
+// because it is counted by materials: the push block goes out once per draw, so a
+// value that is one per material would ride along four times too often.
+//
+// Contract: field order and std140 padding match MaterialParams in Passes.h.
+layout(set = 1, binding = 2) uniform MaterialBlock {
+    vec4 baseColorFactor;   // rgb multiplies the texture, a multiplies its alpha
+    float alphaCutoff;      // 0 keeps every texel. glTF MASK sets it, OPAQUE does not
+} mtl;
+
+// This draw's, and nothing else: the push block is the one thing sent for every draw
+// whatever the order.
 layout(push_constant) uniform Push {
     mat4 model;
     float alpha;
 } pc;
 
-// What the material is, apart from its images. One per material, like the samplers
-// above -- alphaCutoff used to ride the push constant, which sent a per-material value
-// once per draw.
-//
-// Contract: field order and std140 padding match MaterialParams in Passes.h.
-layout(set = 1, binding = 2) uniform MaterialBlock {
-    vec4 baseColorFactor;   // rgb multiplies the texture. a unused
-    float alphaCutoff;      // 0 keeps every texel. glTF MASK sets it, OPAQUE does not
-} mtl;
+layout(location = 0) out vec4 outColor;
 
 void main() {
     // Before the lighting: a thrown-away fragment should cost nothing after this
     // point, and discard is what glTF alphaMode MASK means.
     //
-    // The alpha is the base colour texture's, not the push constant's -- one says
-    // which texels exist, the other how see-through the whole surface is.
+    // The alpha is the material's, not the push constant's -- one says which texels
+    // exist, the other how see-through the whole surface is. glTF multiplies the
+    // texture's by the factor's, which is why both are here.
     const vec4 sampled = texture(baseColor, fragUV);
-    if (scene.useAlphaMask > 0.5 && sampled.a < mtl.alphaCutoff) { discard; }
+    const float coverage = sampled.a * mtl.baseColorFactor.a;
+    if (scene.useAlphaMask > 0.5 && coverage < mtl.alphaCutoff) { discard; }
 
     // Normalized here because interpolation across the triangle shortens it.
     const vec3 geometric = normalize(fragNormal);
@@ -86,9 +96,7 @@ void main() {
     // Diffuse takes the surface colour, specular does not -- a highlight is the light
     // itself reflected, not the paint.
     // A flat grey when it is off, so the shape and the lighting stay readable.
-    // The factor is the material's, not the texture's: glTF multiplies one by the
-    // other, and every one of Sponza's 25 materials sets it (0.588 grey). Ignoring it
-    // was why this looked brighter than the asset asks for.
+    // Texture times factor is what glTF means by base colour -- neither alone is it.
     const vec3 albedo = scene.useBaseColor > 0.5
                       ? sampled.rgb * mtl.baseColorFactor.rgb
                       : vec3(0.8);

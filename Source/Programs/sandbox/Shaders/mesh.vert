@@ -1,7 +1,9 @@
 #version 450
 
-// Contract: locations and formats match Vertex and the attribute list in Pipeline.h.
-// No compiler reads both sides.
+// Contract: offsets and stride match Vertex, whose VertexInput() in Vertex.cpp is the
+//           other side. That half is unchecked -- no compiler reads both.
+//           The locations and the kind of number each carries are checked, at pipeline
+//           creation, against this file's own SPIR-V.
 layout(location = 0) in vec3 inPosition;   // object space. pc.model puts it in world
 layout(location = 1) in vec3 inNormal;
 layout(location = 2) in vec2 inUV;

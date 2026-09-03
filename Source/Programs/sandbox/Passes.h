@@ -111,7 +111,7 @@ struct SceneUniform {
 // Contract: field order and types match the shader's push_constant block. The layer
 //           checks the size, not the order.
 // Contract: every stage that reads it must be in pushRange.stageFlags - fragment
-//           reads alpha and alphaCutoff, so VERTEX alone is not enough.
+//           reads alpha, so VERTEX alone is not enough.
 struct PushConstants {
     glm::mat4 model;   // object -> world. viewProj is in SceneUniform
     float alpha;       // 1.0 is opaque. Opaque pipelines ignore it: blending is off
@@ -120,9 +120,8 @@ struct PushConstants {
 // The material's numbers, as the shader reads them. One per material, in set 1
 // beside its images.
 //
-// alphaCutoff was in PushConstants, which made that block span two domains: a value
-// counted by materials went out once per draw. It is counted here the way the samplers
-// are.
+// Here rather than in PushConstants because it is counted by materials and that block
+// is counted by draws -- one block, one rate, and the faster of the two wins.
 //
 // Contract: field order and types match the shader's MaterialBlock. std140 rounds a
 //           block up to 16 bytes, so the leftover is named rather than hidden.
@@ -140,12 +139,12 @@ struct MaterialParams {
 // many textures a scene has is the scene's business, and two materials naming the
 // same image is normal.
 //
-// Two bindings now, in the one set. The prediction written here held: a second thing
-// a material owns is another binding, not another set, because it is counted the same
-// way -- one per material. Roughness would be the third.
+// Three bindings, in the one set. The prediction written here held twice: a second and
+// a third thing a material owns are more bindings, not more sets, because they are
+// counted the same way -- one per material.
 //
 // The set is not all of it. What a surface looks like also decides one thing no shader
-// can be handed, and that is the line the second field is on.
+// can be handed, and that is the line the last field is on.
 struct Material {
     VkDescriptorSet set = VK_NULL_HANDLE;
 

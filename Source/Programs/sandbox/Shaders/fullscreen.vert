@@ -1,9 +1,11 @@
 #version 450
 
-// 전체화면 삼각형. **정점 버퍼가 없다** - gl_VertexIndex로 세 점을 만들어낸다.
+// A full-screen triangle. **No vertex buffer**: gl_VertexIndex makes the three points,
+// which is why this pipeline's vertex layout has stride 0.
 //
-// 사각형(정점 4개) 대신 화면보다 큰 삼각형 하나를 쓴다. 시저가 잘라주니 결과는 같고,
-// 사각형은 두 삼각형이 만나는 대각선의 픽셀이 두 번 계산된다.
+// One triangle larger than the screen rather than a quad of two. The scissor clips the
+// overhang so the result is the same, and a quad shades the pixels along the diagonal
+// where its two triangles meet twice.
 //
 //   index 0 -> uv(0,0) -> pos(-1,-1)
 //   index 1 -> uv(2,0) -> pos( 3,-1)
