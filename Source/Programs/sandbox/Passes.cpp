@@ -234,6 +234,7 @@ bool CreateMaterials(const VulkanDevice& dev,
             {sources[i].baseColor->view.handle},                              // 0
             {sources[i].normal->view.handle},                                 // 1
             {VK_NULL_HANDLE, out[i].params.handle, sizeof(MaterialParams)},   // 2
+            {sources[i].metallicRoughness->view.handle},                      // 3
         };
         UpdateSet(descriptors, layout, out[i].set,
                   values, static_cast<uint32_t>(std::size(values)));

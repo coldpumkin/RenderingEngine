@@ -79,6 +79,7 @@
 struct MaterialSource {
     std::string baseColor;
     std::string normal;
+    std::string metallicRoughness;
     bool doubleSided = false;
 
     // The numbers, in the key for the reason doubleSided is: two glTF materials naming
@@ -399,9 +400,12 @@ static bool LoadGltf(const char* path,
                     params.alphaCutoff = prim.material->alpha_cutoff;
                 }
                 if (prim.material->has_pbr_metallic_roughness) {
-                    const cgltf_float* f =
-                        prim.material->pbr_metallic_roughness.base_color_factor;
+                    const cgltf_pbr_metallic_roughness& pbr =
+                        prim.material->pbr_metallic_roughness;
+                    const cgltf_float* f = pbr.base_color_factor;
                     params.baseColorFactor = glm::vec4{f[0], f[1], f[2], f[3]};
+                    params.metallic = pbr.metallic_factor;
+                    params.roughness = pbr.roughness_factor;
                 }
                 doubleSided = prim.material->double_sided != 0;
             }
@@ -439,6 +443,14 @@ static bool LoadGltf(const char* path,
                         && nrm2->image->uri != nullptr) {
                     named.normal = nrm2->image->uri;
                 }
+                if (prim.material->has_pbr_metallic_roughness) {
+                    const cgltf_texture* mr = prim.material->pbr_metallic_roughness
+                                                  .metallic_roughness_texture.texture;
+                    if (mr != nullptr && mr->image != nullptr
+                            && mr->image->uri != nullptr) {
+                        named.metallicRoughness = mr->image->uri;
+                    }
+                }
 
                 // Every material the file names gets an entry, images or not. The
                 // test that used to be here -- at least one texture named -- sent a
@@ -452,13 +464,16 @@ static bool LoadGltf(const char* path,
                 // at all, which is the one case with nothing to carry.
                 {
                     for (size_t m = 0; m < materialSources->size(); ++m) {
-                        if ((*materialSources)[m].baseColor == named.baseColor
-                                && (*materialSources)[m].normal == named.normal
-                                && (*materialSources)[m].doubleSided == named.doubleSided
-                                && (*materialSources)[m].params.baseColorFactor
+                        const MaterialSource& seen = (*materialSources)[m];
+                        if (seen.baseColor == named.baseColor
+                                && seen.normal == named.normal
+                                && seen.metallicRoughness == named.metallicRoughness
+                                && seen.doubleSided == named.doubleSided
+                                && seen.params.baseColorFactor
                                        == named.params.baseColorFactor
-                                && (*materialSources)[m].params.alphaCutoff
-                                       == named.params.alphaCutoff) {
+                                && seen.params.alphaCutoff == named.params.alphaCutoff
+                                && seen.params.metallic == named.params.metallic
+                                && seen.params.roughness == named.params.roughness) {
                             material = static_cast<uint32_t>(m);
                             break;
                         }
@@ -747,8 +762,13 @@ int main() {
     //
     // URIs are relative to the .gltf, per the spec, and Sponza keeps its images
     // beside it.
+    //
+    // Three per material, laid out in runs: base colour, normal, metallic-roughness.
+    // The count is here rather than spelled out at each index, because the day a
+    // fourth arrives this is the line that changes.
+    constexpr size_t kTexturesPerMaterial = 3;
     const uint32_t materialCount = static_cast<uint32_t>(materialSources.size());
-    renderer.textures.resize(static_cast<size_t>(materialCount) * 2);
+    renderer.textures.resize(static_cast<size_t>(materialCount) * kTexturesPerMaterial);
 
     // One white texel, for a material that names no base colour. glTF says such a
     // material is its baseColorFactor alone, and white is the texture that multiplies
@@ -773,10 +793,23 @@ int main() {
                                      VK_IMAGE_USAGE_TRANSFER_DST_BIT
                                          | VK_IMAGE_USAGE_SAMPLED_BIT};
 
+    // And once more for metallic-roughness. White again, for the same reason the base
+    // colour's stand-in is: green and blue both multiply the factors, so 1.0 leaves
+    // them alone. UNORM -- these are numbers, not a colour.
+    //
+    // 24 of Sponza's 25 materials name one, so this is drawn once.
+
+    const TextureDesc numbersDesc{{1, 1},
+                                  VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT,
+                                  VK_IMAGE_USAGE_TRANSFER_DST_BIT
+                                      | VK_IMAGE_USAGE_SAMPLED_BIT};
+
     for (uint32_t i = 0; i < materialCount; ++i) {
         const MaterialSource& named = materialSources[i];
-        Texture& base = renderer.textures[static_cast<size_t>(i) * 2];
-        Texture& normal = renderer.textures[static_cast<size_t>(i) * 2 + 1];
+        const size_t first = static_cast<size_t>(i) * kTexturesPerMaterial;
+        Texture& base = renderer.textures[first];
+        Texture& normal = renderer.textures[first + 1];
+        Texture& metalRough = renderer.textures[first + 2];
 
         if (!named.baseColor.empty()) {
             const std::string path = std::string(LAMBDA_ASSET_ROOT "/Sponza/")
@@ -796,6 +829,21 @@ int main() {
         } else if (!CreateTextureFromPixels(dev, commands, flatNormalDesc,
                                             flatNormalPixels, sizeof(flatNormalPixels),
                                             &normal)) {
+            return 1;
+        }
+
+        // UNORM, not SRGB. These channels are roughness and metalness -- numbers the
+        // shader multiplies, not light the eye sees. Reading them as SRGB would bend
+        // every value and nothing would report it, which is the same trap the normal
+        // map is in.
+        if (!named.metallicRoughness.empty()) {
+            const std::string path = std::string(LAMBDA_ASSET_ROOT "/Sponza/")
+                                   + named.metallicRoughness;
+            if (!LoadTextureFile(dev, commands, path.c_str(),
+                                 VK_FORMAT_R8G8B8A8_UNORM, &metalRough)) { return 1; }
+        } else if (!CreateTextureFromPixels(dev, commands, numbersDesc,
+                                            whitePixel, sizeof(whitePixel),
+                                            &metalRough)) {
             return 1;
         }
     }
@@ -836,8 +884,10 @@ int main() {
                                                                  : MaterialParams{};
         // The cast is for the braced init: the enum is int, the flags field is
         // unsigned, and that counts as narrowing here.
-        sources[i] = {&renderer.textures[static_cast<size_t>(i) * 2],
-                      &renderer.textures[static_cast<size_t>(i) * 2 + 1],
+        const size_t first = static_cast<size_t>(i) * kTexturesPerMaterial;
+        sources[i] = {&renderer.textures[first],
+                      &renderer.textures[first + 1],
+                      &renderer.textures[first + 2],
                       params,
                       static_cast<VkCullModeFlags>(doubleSided ? VK_CULL_MODE_NONE
                                                                : VK_CULL_MODE_BACK_BIT)};
@@ -1089,7 +1139,7 @@ int main() {
         renderer.shadowPass.frames[slot.index].uniformValue = {lightViewProj};
         renderer.scenePass.frames[slot.index].uniformValue =
             {camera, lightViewProj, glm::vec4{lightDir, 0.0f},
-             glm::vec4{1.0f, 0.95f, 0.9f, 0.15f}, glm::vec4{eye, 48.0f}};
+             glm::vec4{1.0f, 0.95f, 0.9f, 0.15f}, glm::vec4{eye, 0.0f}};
 
         // Draw it
         // --------------------------------------------------------------------

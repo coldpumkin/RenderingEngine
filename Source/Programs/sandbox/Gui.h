@@ -65,6 +65,10 @@ struct ViewOptions {
     bool alphaMask = true;
     bool shadow = true;
 
+    // Off, every surface is fully rough and not metal -- one constant for the whole
+    // scene, which is what the lighting had before the asset was asked.
+    bool metallicRoughness = true;
+
     // The three below do not reach a shader. They are read on the CPU where the scene
     // pass records, and they differ in what that costs:
     //
@@ -129,7 +133,8 @@ struct ViewOptionsUniform {
     float specular;
     float alphaMask;
     float shadow;
-    float pad[3];   // std140 rounds the block up to a second vec4
+    float metallicRoughness;
+    float pad[2];   // std140 rounds the block up to a second vec4
 };
 
 // ImGui keeps its widget state in a global context, so this holds only what we own

@@ -272,7 +272,8 @@ void UploadGuiOptions(const Gui& gui, uint32_t frameIndex) noexcept {
                                    o.baseColor ? 1.0f : 0.0f,
                                    o.specular ? 1.0f : 0.0f,
                                    o.alphaMask ? 1.0f : 0.0f,
-                                   o.shadow ? 1.0f : 0.0f};
+                                   o.shadow ? 1.0f : 0.0f,
+                                   o.metallicRoughness ? 1.0f : 0.0f};
     std::memcpy(gui.frames[frameIndex].options.mapped, &value, sizeof(value));
 }
 
@@ -290,6 +291,7 @@ void BuildGui(Gui* gui, const GuiFrameInfo& info) noexcept {
         ImGui::Checkbox("specular", &options->specular);
         ImGui::Checkbox("alpha mask", &options->alphaMask);
         ImGui::Checkbox("shadow", &options->shadow);
+        ImGui::Checkbox("metal/rough", &options->metallicRoughness);
 
         // Separated because these are a different kind of switch: the five above turn
         // a term of the lighting off, these change how the same draws are rasterized.

@@ -43,6 +43,7 @@ layout(set = 0, binding = 2) uniform View {
     float useSpecular;
     float useAlphaMask;
     float useShadow;
+    float useMetallicRoughness;
 } view;
 
 // Set 1 is the material's -- three bindings, not three sets, because all three are
@@ -67,7 +68,16 @@ layout(set = 1, binding = 1) uniform sampler2D normalMap;
 layout(set = 1, binding = 2) uniform MaterialBlock {
     vec4 baseColorFactor;   // rgb multiplies the texture, a multiplies its alpha
     float alphaCutoff;      // 0 keeps every texel. glTF MASK sets it, OPAQUE does not
+    float metallic;         // both multiply the texture below, and glTF defaults
+    float roughness;        // both to 1
 } mtl;
+
+// glTF packs two numbers into one image: green is roughness, blue is metallic. Red is
+// unused here -- some tools write occlusion into it, which we do not read.
+//
+// Contract: this image must be UNORM. These are numbers the shader multiplies, not
+//           light the eye sees, and SRGB would bend every one of them.
+layout(set = 1, binding = 3) uniform sampler2D metallicRoughnessMap;
 
 // This draw's, and nothing else: the push block is the one thing sent for every draw
 // whatever the order.
@@ -151,9 +161,30 @@ void main() {
 
     // Blinn-Phong: the halfway vector stands in for the mirror direction, and lines up
     // with the normal exactly when the surface reflects the light at the eye.
+    // What the surface is made of. Texture times factor, the same rule base colour
+    // follows -- glTF means neither alone.
+    //
+    // Off, both take the value a material with no answer would have: fully rough and
+    // not metal, which is the flat plastic everything looked like before this was
+    // read.
+    const vec2 mr = texture(metallicRoughnessMap, fragUV).gb;
+    const float roughness = view.useMetallicRoughness > 0.5
+                          ? clamp(mr.x * mtl.roughness, 0.04, 1.0) : 1.0;
+    const float metallic = view.useMetallicRoughness > 0.5 ? mr.y * mtl.metallic : 0.0;
+
     const vec3 toEye = normalize(scene.viewPos.xyz - fragWorldPos);
     const vec3 halfway = normalize(toLight + toEye);
-    const float highlight = pow(max(dot(normal, halfway), 0.0), scene.viewPos.w);
+
+    // Roughness as a Blinn-Phong exponent. **This is not PBR** -- there is no GGX
+    // distribution, no Fresnel and no energy conservation here. What it buys is that
+    // roughness now comes from the asset instead of one constant for the whole scene,
+    // so marble and cloth stop having the same highlight.
+    //
+    // The mapping is the usual one: a smooth surface concentrates the highlight, a
+    // rough one spreads it. 2/a^4 - 2 with a = roughness^2 is the standard
+    // correspondence; this is the same curve without the arithmetic.
+    const float shininess = mix(256.0, 4.0, roughness);
+    const float highlight = pow(max(dot(normal, halfway), 0.0), shininess);
 
     // Gated on lambert: a surface facing away from the light cannot shine.
     const float specular = highlight * step(0.0001, lambert) * view.useSpecular;
@@ -170,9 +201,25 @@ void main() {
     const vec3 albedo = view.useBaseColor > 0.5
                       ? sampled.rgb * mtl.baseColorFactor.rgb
                       : vec3(0.8);
-    // Ambient is outside the shade: a shadowed surface is still lit by the room.
-    const vec3 lit = (scene.lightColor.rgb * lambert * shade + scene.lightColor.a) * albedo
-                   + scene.lightColor.rgb * specular * shade;
+
+    // What metalness means, in the two places it means anything. A metal reflects its
+    // own colour and has no diffuse at all; a dielectric reflects the light's colour
+    // and keeps its paint. 0.04 is the reflectance most non-metals sit near.
+    const vec3 specularColor = mix(vec3(0.04), albedo, metallic);
+    const vec3 diffuseColor = albedo * (1.0 - metallic);
+
+    // Ambient is outside the shade: a shadowed surface is still lit by the room. It
+    // reaches the reflected term too, which is not what a real renderer does -- there
+    // an environment map is what a metal reflects.
+    //
+    // Without one, a metal has no diffuse and only a highlight, so every metal surface
+    // not facing the light goes black. Sponza has several (the curtain rods, the
+    // planters) and they did exactly that. The ambient standing in for a reflection is
+    // the cheapest thing that is not a black hole, and it is the line that changes the
+    // day an environment map arrives.
+    const vec3 lit =
+        (scene.lightColor.rgb * lambert * shade + scene.lightColor.a) * diffuseColor
+        + (scene.lightColor.rgb * specular * shade + scene.lightColor.a) * specularColor;
 
     outColor = vec4(lit, pc.alpha);
 }

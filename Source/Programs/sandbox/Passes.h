@@ -97,7 +97,9 @@ struct SceneUniform {
 
     glm::vec4 lightDir;     // xyz = surface toward the light, w unused
     glm::vec4 lightColor;   // rgb = colour, a = ambient
-    glm::vec4 viewPos;      // xyz = camera position, w = specular exponent
+    // w is unused. It carried one specular exponent for the whole scene until
+    // roughness came out of the material, which is the value that replaced it.
+    glm::vec4 viewPos;      // xyz = camera position
 
 
 };
@@ -145,8 +147,16 @@ static_assert(sizeof(PushConstants) == 116, "push constant block grew past its l
 //           block up to 16 bytes, so the leftover is named rather than hidden.
 struct MaterialParams {
     glm::vec4 baseColorFactor{1.0f};   // rgb multiplies the texture, a its alpha
+
     float alphaCutoff = 0.0f;          // 0 keeps every texel
-    float pad[3]{};
+
+    // Both multiply the texture the way baseColorFactor does, and glTF defaults both
+    // to 1: fully metallic and fully rough, which is what a material naming neither a
+    // texture nor a factor asks for.
+    float metallic = 1.0f;
+    float roughness = 1.0f;
+
+    float pad{};   // std140 rounds the block to 32
 };
 
 
@@ -157,9 +167,9 @@ struct MaterialParams {
 // many textures a scene has is the scene's business, and two materials naming the
 // same image is normal.
 //
-// Three bindings, in the one set. The prediction written here held twice: a second and
-// a third thing a material owns are more bindings, not more sets, because they are
-// counted the same way -- one per material.
+// Four bindings, in the one set. The prediction written here has held three times now:
+// each new thing a material owns is another binding, not another set, because they are
+// all counted the same way -- one per material.
 //
 // The set is not all of it. What a surface looks like also decides one thing no shader
 // can be handed, and that is the line the last field is on.
@@ -191,6 +201,11 @@ struct Material {
 struct MaterialDesc {
     const Texture* baseColor = nullptr;
     const Texture* normal = nullptr;
+
+    // glTF packs two values into one image: green is roughness, blue is metallic.
+    // Red is free and some tools put occlusion there, which we do not read.
+    const Texture* metallicRoughness = nullptr;
+
     MaterialParams params;
     VkCullModeFlags cullMode = VK_CULL_MODE_BACK_BIT;
 };
