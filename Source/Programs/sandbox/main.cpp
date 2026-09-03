@@ -149,6 +149,90 @@ static bool WriteBmp(const char* path, uint32_t width, uint32_t height,
     return true;
 }
 
+// Tangents for one primitive, from its positions and uvs.
+//
+// glTF makes TANGENT optional and says a runtime must generate it when a normal
+// texture is present without one. Sponza has exactly one primitive without it, and
+// that material names no normal map -- so nothing the shader builds from this reaches
+// the picture today. It is generated anyway, because zero is not a neutral value: the
+// TBN's first column would be normalize(0), which is NaN, and the day that material
+// gets a normal map the NaN is what would show.
+//
+// The standard construction. Across one triangle the surface is a plane, so uv is an
+// affine function of position and the tangent is the direction u grows in:
+//
+//   [du1]   [dp1]        T = (dp1 * dv2 - dp2 * dv1) / (du1 * dv2 - du2 * dv1)
+//   [du2]   [dp2]
+//
+// Accumulated per vertex and normalized after, which is what averages the seams
+// between triangles. Not MikkTSpace -- that splits vertices to keep mirrored uvs
+// exact, and we have one primitive to serve.
+//
+// Contract: normals are already written, and w is the bitangent sign the fragment
+//           stage multiplies cross(N, T) by.
+static void GenerateTangents(Vertex* vertices, size_t vertexCount,
+                             const uint16_t* indices, size_t indexCount) noexcept {
+    std::vector<glm::vec3> accumulated(vertexCount, glm::vec3{0.0f});
+
+    for (size_t i = 0; i + 2 < indexCount; i += 3) {
+        const uint16_t i0 = indices[i];
+        const uint16_t i1 = indices[i + 1];
+        const uint16_t i2 = indices[i + 2];
+
+        const Vertex& v0 = vertices[i0];
+        const Vertex& v1 = vertices[i1];
+        const Vertex& v2 = vertices[i2];
+
+        const glm::vec3 p0{v0.position[0], v0.position[1], v0.position[2]};
+        const glm::vec3 dp1 = glm::vec3{v1.position[0], v1.position[1], v1.position[2]} - p0;
+        const glm::vec3 dp2 = glm::vec3{v2.position[0], v2.position[1], v2.position[2]} - p0;
+
+        const float du1 = v1.uv[0] - v0.uv[0];
+        const float dv1 = v1.uv[1] - v0.uv[1];
+        const float du2 = v2.uv[0] - v0.uv[0];
+        const float dv2 = v2.uv[1] - v0.uv[1];
+
+        // Degenerate in uv: the triangle covers no area in the texture, so it says
+        // nothing about which way u runs. Skipped rather than divided by.
+        const float determinant = du1 * dv2 - du2 * dv1;
+        if (std::fabs(determinant) < 1e-12f) { continue; }
+
+        const glm::vec3 tangent = (dp1 * dv2 - dp2 * dv1) / determinant;
+        accumulated[i0] += tangent;
+        accumulated[i1] += tangent;
+        accumulated[i2] += tangent;
+    }
+
+    for (size_t v = 0; v < vertexCount; ++v) {
+        Vertex& out = vertices[v];
+        const glm::vec3 normal{out.normal[0], out.normal[1], out.normal[2]};
+        glm::vec3 tangent = accumulated[v];
+
+        // A vertex no triangle contributed to, or one whose triangles were all
+        // degenerate. Any direction perpendicular to the normal is as good as another
+        // when uv says nothing, and the point is only to stay off zero.
+        if (glm::dot(tangent, tangent) < 1e-16f) {
+            const glm::vec3 axis = std::fabs(normal.x) < 0.9f ? glm::vec3{1.0f, 0.0f, 0.0f}
+                                                             : glm::vec3{0.0f, 1.0f, 0.0f};
+            tangent = glm::cross(normal, axis);
+        }
+
+        // Gram-Schmidt, the same step mesh.frag repeats after interpolation.
+        tangent = tangent - normal * glm::dot(normal, tangent);
+        if (glm::dot(tangent, tangent) < 1e-16f) { tangent = glm::vec3{1.0f, 0.0f, 0.0f}; }
+        tangent = glm::normalize(tangent);
+
+        out.tangent[0] = tangent.x;
+        out.tangent[1] = tangent.y;
+        out.tangent[2] = tangent.z;
+
+        // +1 because this construction puts the bitangent at cross(N, T) already.
+        // A mirrored uv island would want -1, which is what MikkTSpace tracks and
+        // this does not.
+        out.tangent[3] = 1.0f;
+    }
+}
+
 // A glTF file, flattened into the one mesh and the one item list this pass draws.
 //
 // Input:  path to a .gltf. Its .bin is opened from beside it
@@ -231,6 +315,36 @@ static bool LoadGltf(const char* path,
             }
             if (pos == nullptr) { continue; }
 
+            // The third link in a chain that had two. CheckVertexInterface compares
+            // the .spv against the layout and SameVertexLayout compares the layout
+            // against the mesh; nothing compared the asset against either, so a file
+            // missing an attribute filled it with the zeroes resize left behind.
+            //
+            // A zero normal is not dark, it is undefined -- normalize() of it is NaN
+            // and the lighting goes wherever that lands. A zero tangent takes the
+            // whole TBN with it. Neither shows up as an error anywhere.
+            //
+            // Refused rather than computed. Flat normals from the index buffer are the
+            // right answer for a file without them, and glTF says so, but that code
+            // would never run here: this asset has all four. Something that cannot be
+            // run cannot be trusted, which is the same reason there is no 1x MSAA path.
+            // The third link in a chain that had two. CheckVertexInterface compares
+            // the .spv against the layout and SameVertexLayout compares the layout
+            // against the mesh; nothing compared the asset against either, so a file
+            // missing an attribute filled it with the zeroes resize left behind, and
+            // a zero normal is not dark -- normalize() of it is NaN.
+            //
+            // Refused rather than guessed. Sponza has neither missing, so anything
+            // written here to cope would be code that never runs.
+            const char* missing = nullptr;
+            if (nrm == nullptr)      { missing = "NORMAL"; }
+            else if (uv0 == nullptr) { missing = "TEXCOORD_0"; }
+            if (missing != nullptr) {
+                LOG("[gltf] a primitive has no %s, and mesh.vert reads it\n", missing);
+                cgltf_free(data);
+                return false;
+            }
+
             const size_t first = vertices->size();
             if (first > 0x7FFFFFFF) {
                 LOG("[gltf] more vertices than vertexOffset can address\n");
@@ -250,8 +364,8 @@ static bool LoadGltf(const char* path,
                 // read_float unpacks whatever the accessor stores -- normalized bytes,
                 // shorts, strided floats -- which is most of why this library is here.
                 cgltf_accessor_read_float(pos, v, out.position, 3);
-                if (nrm != nullptr) { cgltf_accessor_read_float(nrm, v, out.normal, 3); }
-                if (uv0 != nullptr) { cgltf_accessor_read_float(uv0, v, out.uv, 2); }
+                cgltf_accessor_read_float(nrm, v, out.normal, 3);
+                cgltf_accessor_read_float(uv0, v, out.uv, 2);
                 if (tan != nullptr) { cgltf_accessor_read_float(tan, v, out.tangent, 4); }
             }
 
@@ -260,6 +374,13 @@ static bool LoadGltf(const char* path,
             for (cgltf_size i = 0; i < prim.indices->count; ++i) {
                 indices->push_back(
                     static_cast<uint16_t>(cgltf_accessor_read_index(prim.indices, i)));
+            }
+
+            // After the indices, because the triangles are what tangents come from.
+            // Sponza needs this for one primitive out of 103.
+            if (tan == nullptr) {
+                GenerateTangents(vertices->data() + first, pos->count,
+                                 indices->data() + firstIndex, prim.indices->count);
             }
 
             // Two things the material says that land in different places: the cutoff
@@ -307,7 +428,17 @@ static bool LoadGltf(const char* path,
                     named.normal = nrm2->image->uri;
                 }
 
-                if (!named.baseColor.empty() || !named.normal.empty()) {
+                // Every material the file names gets an entry, images or not. The
+                // test that used to be here -- at least one texture named -- sent a
+                // material with only a base colour factor to the stand-in, which
+                // carries a white factor, no cutoff and back-face culling. A glTF
+                // material with no images and a coloured factor is ordinary, and its
+                // colour, cutoff and double_sided were read three lines above and then
+                // dropped.
+                //
+                // What is left for the stand-in is a primitive that names no material
+                // at all, which is the one case with nothing to carry.
+                {
                     for (size_t m = 0; m < materialSources->size(); ++m) {
                         if ((*materialSources)[m].baseColor == named.baseColor
                                 && (*materialSources)[m].normal == named.normal
