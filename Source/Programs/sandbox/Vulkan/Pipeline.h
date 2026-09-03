@@ -4,8 +4,6 @@
 #include "Vulkan/Device.h"
 #include "Vulkan/Shader.h"
 
-#include <glm/glm.hpp>   // PushConstants holds a mat4
-
 // ViewportY - one sign that decides two things
 // ============================================================================
 //
@@ -39,18 +37,6 @@ VkViewport MakeViewport(VkExtent2D extent, ViewportY y) noexcept;
 enum class Blending {
     Opaque,        // blend off - depth write on
     Translucent,   // blend on  - depth write off
-};
-
-//
-// Appending never moves an earlier offset, so a new field cannot disturb a shader.
-//
-// Contract: a field is not an attribute. VertexInput() declares only what
-//           the shader reads -- the layer warns about any extra. tangent has none.
-struct Vertex {
-    float position[3];   // location 0
-    float normal[3];     // location 1
-    float uv[2];         // location 2
-    float tangent[4];    // no attribute yet
 };
 
 // One pipeline's worth of decisions. Everything not here is the same in both of
@@ -117,42 +103,6 @@ struct Pipeline {
 //           caller calls vkDeviceWaitIdle - one frame's fence is not enough.
 void DestroyPipeline(const VulkanDevice& dev, Pipeline* pipeline) noexcept;
 
-
-// Rides inside the command buffer: no pool, no set, no lifetime. At least 128 bytes
-// are guaranteed, which is why the three matrices are multiplied on the CPU - sent
-// apart they would be 192. Lighting that wants world space splits model back out.
-//
-// Contract: field order and types match the shader's push_constant block. The layer
-//           checks the size, not the order.
-// Contract: every stage that reads it must be in pushRange.stageFlags - fragment
-//           reads alpha, so VERTEX alone is not enough.
-// Contract: mesh.vert / mesh.frag의 Scene 블록과 필드가 같아야 한다. 프레임마다 한 번
-//           쓰고 모든 draw가 같은 값을 읽는다 - draw마다 다른 것은 push로 간다.
-//
-// vec3가 아니라 vec4인 이유: std140에서 vec3도 16바이트로 정렬되므로, 남는 자리를
-// 숨기는 것보다 이름을 붙이는 쪽이 낫다.
-struct SceneUniform {
-    glm::mat4 viewProj;
-    glm::vec4 lightDir;     // xyz = 표면에서 광원을 향하는 방향, w 미사용
-    glm::vec4 lightColor;   // rgb = 색, a = ambient
-    glm::vec4 viewPos;      // xyz = 카메라 위치, w = specular 지수
-};
-
-struct PushConstants {
-    glm::mat4 mvp;   // model -> world -> view -> clip
-    float alpha;     // 1.0 is opaque. Opaque pipelines ignore it: blending is off
-};
-
-// Vertex - stride 48, all float so no padding. Offsets leave via offsetof.
-//
-//   position  12   world space
-//   normal    12   +z for a z=0 face wound CCW in y-up
-//   uv         8   (0,0) top-left, y down
-//   tangent   16   xyz, w = bitangent sign (glTF TANGENT)
-
-// The vertex layout for Vertex. Callers hand this to desc.vertexInput; a shader that
-// builds its own points (fullscreen) leaves that null.
-const VkPipelineVertexInputStateCreateInfo& VertexInput() noexcept;
 
 // Effect: builds one pipeline from desc. The push range, the set layout and the
 //         shader stages come out of the .spv; everything else is desc. An out that

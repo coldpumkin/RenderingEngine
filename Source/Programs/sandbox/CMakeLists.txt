@@ -1,7 +1,12 @@
 ﻿# **개념당 한 쌍.** 언리얼 VulkanRHI와 같은 축이다 - 자원이 늘어도 기존 파일이
 # 안 자라고 새 쌍이 하나 생긴다. 추상화 층은 없다 (struct + 자유 함수뿐).
 #
-# 의존은 한 방향으로만 흐른다:
+# 층이 둘이고 의존이 한 방향으로만 흐른다. **Vulkan/ 아래의 어떤 헤더도 위 두 줄을
+# include하지 않는다** - 그것이 이 선의 전부다:
+#
+#   main.cpp  ->  Passes . Vertex  ->  Vulkan/*
+#
+# Vulkan/ 안에서도 한 방향이다:
 #   Core <- Instance <- Device <- { Swapchain, Commands, Pipeline, Buffer }
 #                                    ^                      ^
 #                                  Window                 Frame (Window + Commands를 쓴다)
@@ -20,13 +25,16 @@ add_executable(sandbox
     Vulkan/Barrier.h     Vulkan/Barrier.cpp     # 이미지 레이아웃 전이
     Vulkan/Descriptors.h Vulkan/Descriptors.cpp # 셰이더가 이미지를 읽게 하는 장치
     Vulkan/Commands.h    Vulkan/Commands.cpp    # 커맨드 풀 (큐 패밀리마다)
-    Vulkan/Frame.h       Vulkan/Frame.cpp       # 프레임 자원(프레임마다) + 프레임 여닫기
+    Vulkan/Frame.h       Vulkan/Frame.cpp       # 프레임 슬롯 · 프레임 타겟 · 여닫기
     Vulkan/Shader.h      Vulkan/Shader.cpp      # .spv 읽기 + SPIR-V reflection
     Vulkan/Pipeline.h    Vulkan/Pipeline.cpp
     Vulkan/Buffer.h      Vulkan/Buffer.cpp
     Vulkan/Mesh.h        Vulkan/Mesh.cpp        # 한 draw가 늘 같이 bind하는 버퍼 둘
 
-    main.cpp                # 한 프레임이 어떻게 도나 (런타임 경로)
+    Vertex.h             Vertex.cpp        # 우리 정점 형식 + 그 layout 선언
+    Passes.h             Passes.cpp        # scene / post-process pass, DrawItem, 기록
+
+    main.cpp                # 무엇을 만들고 무엇을 프레임에 건네나
 )
 
 # 자기 폴더를 include 루트로 - "Vulkan/Device.h"처럼 어느 그룹인지가 include에 보인다.
