@@ -14,8 +14,14 @@ bool CreateTexture(const VulkanDevice& dev, const TextureDesc& desc,
     // needs a second, 1-sample Texture beside it, and the pass that owns both makes
     // it -- SAMPLED on a multisample image would be a validation error, not a hint
     // to create anything here.
-    return CreateImage2D(dev, desc.extent, desc.format, desc.samples, desc.usage,
-                         &out->image);
+    if (!CreateImage2D(dev, desc.extent, desc.format, desc.samples, desc.usage,
+                       &out->image)) {
+        return false;
+    }
+
+    // {}: the whole image, the way it already is. Anything that wants less makes its
+    // own view from out->image.handle.
+    return CreateImageView(dev, out->image.handle, desc.format, {}, &out->view);
 }
 
 bool CreateTextureFromPixels(const VulkanDevice& dev, const Commands& commands,

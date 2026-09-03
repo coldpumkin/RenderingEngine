@@ -199,7 +199,7 @@ bool CreateGuiSet(const Descriptors& descriptors, const Pipeline& pipeline,
     if (!AllocateSets(descriptors, pipeline.setLayouts[0], 1, &out->set)) {
         return false;
     }
-    const BindingValue values[] = {{out->font.image.view}};
+    const BindingValue values[] = {{out->font.view.handle}};
     UpdateSet(descriptors, pipeline.setLayouts[0], out->set, values, 1);
     return true;
 }
@@ -375,7 +375,7 @@ void RecordGuiPass(const FrameSlot& slot, Gui& gui, const Texture& target) noexc
     // picture rather than replacing it. No barrier either -- the post-process pass
     // left the image COLOR_ATTACHMENT_OPTIMAL, which is what this needs.
     VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-    color.imageView = target.image.view;
+    color.imageView = target.view.handle;
     color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     color.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
     color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;

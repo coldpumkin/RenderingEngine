@@ -1,15 +1,25 @@
 ﻿#pragma once
 
-// Image - one image we create and destroy, plus its view
+// Image, ImageView - the allocation, and how one looks at it
 // ============================================================================
 //
-// The opposite of a swapchain image, which is queried and lends us only its view.
+// Two types because Vulkan has two objects, and because they are owned differently:
 //
-// It owns itself, like Buffer: a half-built one still frees, and holding several
-// costs the holder no destructor.
+//   Image      the bytes and their shape. A swapchain's is queried, so it may not be
+//              ours to free -- allocation says which
+//   ImageView  which part of that, read as what. Always ours, even over a queried
+//              image, so its destructor has no condition to check
 //
-// allocation says what we own. A swapchain image is queried, so it has none and only
-// the view -- which is ours -- is destroyed.
+// Everything that draws or reads takes a view. Only a barrier takes the image,
+// because a layout transition is a fact about the memory:
+//
+//   VkRenderingAttachmentInfo.imageView   drawing into it
+//   VkDescriptorImageInfo.imageView       reading from it
+//   VkImageMemoryBarrier2.image           moving it between those two
+//
+// One view per image today, held by Texture beside its Image. Nothing here says one:
+// mips, cube faces or a depth/stencil split each make it several, and no caller that
+// takes a view changes when they do.
 
 #include "Vulkan/Device.h"
 
@@ -17,8 +27,7 @@ struct Image {
     const VulkanDevice* dev = nullptr;   // non-owning, needed to destroy
 
     VkImage handle = VK_NULL_HANDLE;
-    VmaAllocation allocation = VK_NULL_HANDLE;
-    VkImageView view = VK_NULL_HANDLE;
+    VmaAllocation allocation = VK_NULL_HANDLE;   // null = queried, not ours to free
 
     Image() = default;
     ~Image();
@@ -31,20 +40,63 @@ struct Image {
     Image& operator=(Image&& other) noexcept;
 };
 
-// Input:  samples는 MSAA sample 수 (1_BIT면 MSAA 없음)
-//         usage는 무엇에 쓸 image인가 (attachment / sampled / 복사 대상)
-// Output: image + allocation + view가 채워진 Image
+// Which part of an image, seen as what. Every default means "all of it, the way the
+// image already is", so a caller with nothing to say passes {}.
 //
-// The view's aspect comes from format, so a depth image cannot get a color view.
+// Kept by the view because Vulkan cannot be asked what a view sees.
+struct ImageViewDesc {
+    VkImageViewType type = VK_IMAGE_VIEW_TYPE_2D;
+    VkFormat format = VK_FORMAT_UNDEFINED;   // UNDEFINED = the image's own format
+    VkImageAspectFlags aspect = 0;           // 0 = derived from that format
+
+    uint32_t baseMip = 0;
+    uint32_t mipCount = VK_REMAINING_MIP_LEVELS;
+    uint32_t baseLayer = 0;
+    uint32_t layerCount = VK_REMAINING_ARRAY_LAYERS;
+};
+
+// No pointer back to its Image. A view is used through the caller that already holds
+// both, and a Texture moves inside a vector -- a pointer at a sibling member would
+// survive the move pointing at the old one, with nothing to catch it.
+struct ImageView {
+    const VulkanDevice* dev = nullptr;   // non-owning, needed to destroy
+
+    VkImageView handle = VK_NULL_HANDLE;
+    ImageViewDesc desc;
+
+    ImageView() = default;
+    ~ImageView();
+    ImageView(const ImageView&) = delete;
+    ImageView& operator=(const ImageView&) = delete;
+    ImageView(ImageView&& other) noexcept;
+    ImageView& operator=(ImageView&& other) noexcept;
+};
+
+// Input:  samples is the MSAA sample count (1_BIT means no MSAA)
+//         usage is what this image is for (attachment / sampled / copy destination)
+// Output: an Image with no view. CreateImageView makes those.
 //
-// Contract: samples가 이 image를 attachment로 쓰는 pipeline의 rasterizationSamples와
-//           같아야 한다. 검증 레이어가 잡아준다 - vkCmdBeginRendering에서 말한다.
+// Contract: samples must equal the rasterizationSamples of every pipeline that draws
+//           into this. The validation layer says so at vkCmdBeginRendering.
 //
-// 기본값을 안 준 이유: 1_BIT가 기본이면 MSAA image를 만들 자리에서 깜빡해도
-// 컴파일된다. 호출자가 셋뿐이라 명시가 싸다.
+// No default for samples: 1_BIT as one would compile at a call site that meant to
+// make a multisample image. There are three callers, so being explicit is cheap.
 bool CreateImage2D(const VulkanDevice& dev,
                    VkExtent2D extent,
                    VkFormat format,
                    VkSampleCountFlagBits samples,
                    VkImageUsageFlags usage,
                    Image* out) noexcept;
+
+// Input:  imageFormat is what the image was created with -- desc.format UNDEFINED
+//         means that one, and desc.aspect 0 is derived from it.
+//
+// The format is passed rather than read back because Image does not keep it: the
+// caller that made the image has it, and a queried swapchain image was told it.
+//
+// Contract: image must outlive the view. Vulkan destroys neither for the other.
+bool CreateImageView(const VulkanDevice& dev,
+                     VkImage image,
+                     VkFormat imageFormat,
+                     const ImageViewDesc& desc,
+                     ImageView* out) noexcept;

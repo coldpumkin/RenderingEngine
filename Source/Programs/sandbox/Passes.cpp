@@ -94,8 +94,8 @@ bool CreateMaterials(const Descriptors& descriptors, const Pipeline& pipeline,
         out[i].set = sets[i];
         // Order is binding order, which the shader declares and reflection reports.
         const BindingValue values[] = {
-            {sources[i].baseColor->image.view},   // 0
-            {sources[i].normal->image.view},      // 1
+            {sources[i].baseColor->view.handle},   // 0
+            {sources[i].normal->view.handle},      // 1
         };
         UpdateSet(descriptors, pipeline.setLayouts[kMaterialSet], out[i].set,
                   values, static_cast<uint32_t>(std::size(values)));
@@ -115,7 +115,7 @@ bool CreatePostProcessPass(const Descriptors& descriptors, const ScenePass& sour
 
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
         // The resolve, not color: a multisample image cannot be sampled.
-        const BindingValue values[] = {{source.frames[i].colorResolve.image.view}};
+        const BindingValue values[] = {{source.frames[i].colorResolve.view.handle}};
         UpdateSet(descriptors, pipeline.setLayouts[kFrameSet], out->sets[i], values, 1);
     }
     return true;
@@ -180,10 +180,10 @@ static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
     // writing the multisample image back would be pure bandwidth. The resolve still
     // happens -- resolveMode is what drives it, not storeOp.
     VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-    color.imageView = targets.color.image.view;
+    color.imageView = targets.color.view.handle;
     color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     color.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
-    color.resolveImageView = targets.colorResolve.image.view;
+    color.resolveImageView = targets.colorResolve.view.handle;
     color.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     color.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -192,7 +192,7 @@ static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
     // Clear 1.0 = farthest, paired with the pipeline's compareOp=LESS.
     // DONT_CARE: depth is used only within this frame.
     VkRenderingAttachmentInfo depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-    depth.imageView = targets.depth.image.view;
+    depth.imageView = targets.depth.view.handle;
     depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
     depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -322,7 +322,7 @@ static void RecordPostProcessPass(const FrameSlot& slot, const PostProcessPass& 
 
     // Window sized, unlike the scene pass. The sampler's LINEAR filter scales.
     VkRenderingAttachmentInfo swapColor{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-    swapColor.imageView = dest.image.view;
+    swapColor.imageView = dest.view.handle;
     swapColor.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     swapColor.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;   // the draw covers everything
     swapColor.storeOp = VK_ATTACHMENT_STORE_OP_STORE;

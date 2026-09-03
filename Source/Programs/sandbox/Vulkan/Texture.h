@@ -3,10 +3,10 @@
 // Texture - one GPU image resource
 // ============================================================================
 //
-// One Texture is one image. Being an attachment or a sampled input is not a property
-// of the type: desc.usage and the current layout decide that. Unreal's FRHITexture is
-// the same shape, and an attachment there (FColorEntry) points at two of them rather
-// than nesting one inside the other.
+// One Texture is one image plus the view onto it. Being an attachment or a sampled
+// input is not a property of the type: desc.usage and the current layout decide that.
+// Unreal's FRHITexture is the same shape, and an attachment there (FColorEntry) points
+// at two of them rather than nesting one inside the other.
 //
 // So a resolve target is its own Texture, and the pass that owns both names them.
 // Holding it in here gave every sampled texture a field it never used, and turned
@@ -34,6 +34,15 @@ struct TextureDesc {
 struct Texture {
     TextureDesc desc;
     Image image;
+
+    // The one view anything else actually takes. Declared last so it is destroyed
+    // first: Vulkan frees neither for the other, and a view over a dead image is a
+    // dangling child.
+    //
+    // One because this image has one mip and one layer. Mips, cube faces or a
+    // depth/stencil split make it several, and only this struct changes -- everyone
+    // else already takes a view rather than a Texture.
+    ImageView view;
 };
 
 // Output: an empty texture. Something has to draw into it before it is worth reading.
