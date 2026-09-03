@@ -12,6 +12,7 @@
 
 
 #include "Config.h"
+#include "Vulkan/Attachments.h"   // main picks what we draw into, not the device layer
 #include "Vulkan/Barrier.h"
 #include "Vulkan/Commands.h"
 #include "Vulkan/Descriptors.h"
@@ -584,15 +585,18 @@ int main() {
         return 1;
     }
 
-    // The only question asked of the hardware. It answers with the GPU, its queues,
-    // and what we can draw into on it -- a GPU that cannot do the last one is not a
-    // candidate. The post-process pass draws in the swapchain's format, and that is
-    // made in the loop, so nothing asks for it here.
+    // What the hardware is asked: which GPU, and which of its queue families. Nothing
+    // about what we intend to draw -- that is the next question and ours to answer.
     const PhysicalDeviceSelection selection = PickPhysicalDevice(inst, window.surface);
     if (selection.gpu == VK_NULL_HANDLE) { return 1; }
-    const AttachmentFormats formats = selection.formats;
 
-    // The queue side of selection is absorbed into dev here; formats outlive it.
+    // What we draw into, on that GPU. A policy, not a property: the candidate list and
+    // its order are ours and the GPU only says which are supported. Asked here rather
+    // than inside PickPhysicalDevice so the device layer never sees this type.
+    AttachmentFormats formats;
+    if (!ChooseAttachmentFormats(inst, selection.gpu, &formats)) { return 1; }
+
+    // selection is consumed here and not kept -- it lives only between these two calls.
     if (!CreateDevice(inst, selection, &dev)) { return 1; }
     if (!CreateCommands(dev, &commands)) { return 1; }
 
