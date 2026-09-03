@@ -77,7 +77,7 @@ bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
 }
 
 bool CreatePostProcessPass(const Descriptors& descriptors, const ScenePass& source,
-                           Pipeline& pipeline, PostProcessPass* out) noexcept {
+                           const Pipeline& pipeline, PostProcessPass* out) noexcept {
     out->source = &source;
     out->pipeline = &pipeline;
 
@@ -91,15 +91,6 @@ bool CreatePostProcessPass(const Descriptors& descriptors, const ScenePass& sour
         UpdateSet(descriptors, pipeline.setLayout, out->sets[i], values, 1);
     }
     return true;
-}
-
-// Both sides say what format they are, so the mismatch is the whole test -- no flag
-// to raise and no flag to forget to clear.
-bool EnsurePostProcessPipeline(const VulkanDevice& dev, const PostProcessPass& post,
-                               const Texture& target) noexcept {
-    if (post.pipeline->desc.formats.color == target.desc.format) { return true; }
-
-    return RebuildPipeline(dev, AttachmentFormats{target.desc.format}, post.pipeline);
 }
 
 bool CreateFrameSlot(const VulkanDevice& dev, const Commands& commands,

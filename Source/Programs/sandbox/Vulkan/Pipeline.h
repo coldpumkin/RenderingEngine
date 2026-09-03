@@ -117,12 +117,6 @@ struct Pipeline {
 //           caller calls vkDeviceWaitIdle - one frame's fence is not enough.
 void DestroyPipeline(const VulkanDevice& dev, Pipeline* pipeline) noexcept;
 
-// Effect: rebuilds it for new attachment formats -- waits, destroys, creates, in that
-//         order, which is DestroyPipeline's contract.
-//
-// The rest of the desc is already inside, so only what changed is passed.
-bool RebuildPipeline(const VulkanDevice& dev, AttachmentFormats formats,
-                     Pipeline* pipeline) noexcept;
 
 // Rides inside the command buffer: no pool, no set, no lifetime. At least 128 bytes
 // are guaranteed, which is why the three matrices are multiplied on the CPU - sent

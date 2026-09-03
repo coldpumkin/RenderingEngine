@@ -596,19 +596,14 @@ int main() {
     if (!CreateDevice(inst, selection, &dev)) { return 1; }
     if (!CreateCommands(dev, &commands)) { return 1; }
 
-    // The swapchain is made here rather than on the first frame, because what it
-    // decides -- the surface format -- is an input to the pipeline built below. Left
-    // to the loop, that pipeline starts with no format at all and throws itself away
-    // one frame later.
+    // The format, not the swapchain. vkGetPhysicalDeviceSurfaceFormatsKHR answers
+    // without one, which is why this takes a physical device -- and the pipeline built
+    // below needs the answer, not the images.
     //
-    // false here is fatal, unlike the same call inside BeginFrame. There it means the
-    // window is minimised and the frame is skipped; here it means we never had a place
-    // to draw. Starting minimised would land in this branch, which is rare enough that
-    // failing is the honest answer until it actually happens.
-    if (!EnsureSwapchain(dev, &window)) {
-        LOG("[vk] cannot create a swapchain -- is the window minimised?\n");
-        return 1;
-    }
+    // Making the swapchain here instead would put "secure a place to draw" in init,
+    // where it does not belong: it has to happen again on every resize, and that is
+    // the loop's business.
+    if (!SelectSurfaceFormat(inst, dev.gpu, &window)) { return 1; }
 
     // Passes
     // ------------------------------------------------------------------------
@@ -630,10 +625,8 @@ int main() {
     opaqueDesc.blending = Blending::Opaque;
     if (!CreateGraphicsPipeline(dev, opaqueDesc, &opaque)) { return 1; }
 
-    // The format comes from the swapchain made above, so this is right the first time.
-    // EnsurePostProcessPipeline still compares every frame -- moving the window to a
-    // monitor in another format is what it is for, and now it simply passes on frame
-    // one instead of rebuilding.
+    // The format was settled by SelectSurfaceFormat above and does not change, so this
+    // pipeline is right from the start and nothing rebuilds it.
     //
     // No vertex input, no depth, 1 sample -- MSAA ended at the resolve.
     GraphicsPipelineDesc presentDesc;
@@ -889,10 +882,6 @@ int main() {
         // Everything from here breaks instead of continuing. The acquire already
         // happened, and skipping the submit would leave a signalled semaphore and a
         // reset fence with nobody left to wait on them.
-
-        // Right after BeginFrame, not at the top: the swapchain is remade in there,
-        // and one iteration later this frame would draw with the stale pipeline.
-        if (!EnsurePostProcessPipeline(dev, post, target->texture)) { break; }
 
         if (!RecordFrame(slot, scene, post, target->texture,
                          items.data(), static_cast<uint32_t>(items.size()))) {

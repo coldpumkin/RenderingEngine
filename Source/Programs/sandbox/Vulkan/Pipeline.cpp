@@ -264,19 +264,6 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     return true;
 }
 
-// Only formats change in practice: the surface hands the swapchain a new one when the
-// window moves between monitors, and dynamic rendering baked the old one in.
-bool RebuildPipeline(const VulkanDevice& dev, AttachmentFormats formats,
-                     Pipeline* pipeline) noexcept {
-    GraphicsPipelineDesc desc = pipeline->desc;
-    desc.formats = formats;
-
-    // Spec: destroying a pipeline in use is forbidden, and a frame's own fence is not
-    // enough -- other frames may still be reading it.
-    dev.table.vkDeviceWaitIdle(dev.handle);
-    DestroyPipeline(dev, pipeline);
-    return CreateGraphicsPipeline(dev, desc, pipeline);
-}
 
 void DestroyPipeline(const VulkanDevice& dev, Pipeline* pipeline) noexcept {
     if (pipeline->handle != VK_NULL_HANDLE) {

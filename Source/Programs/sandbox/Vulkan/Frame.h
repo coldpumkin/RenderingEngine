@@ -107,12 +107,12 @@ bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
 // No attachments of its own: what it draws into arrives from acquire, sized by the
 // swapchain's image count rather than by frames in flight.
 //
-// pipeline is non-const because the surface format can change under it -- dragging
-// the window to a monitor in another format. The pass holds the check because it
-// holds both sides of that pair.
+// The pipeline is const, like the scene pass's. It was mutable while the surface
+// format could change under it; the format is settled once at init now, so nothing
+// rebuilds this and nothing has to watch for it.
 struct PostProcessPass {
     const ScenePass* source = nullptr;
-    Pipeline* pipeline = nullptr;      // non-owning
+    const Pipeline* pipeline = nullptr;   // non-owning
 
     // One per frame in flight, because each names that frame's colorResolve. Flat
     // rather than a PerFrame like the scene pass, since a set is all there is.
@@ -123,16 +123,7 @@ struct PostProcessPass {
 //
 // Contract: source must already be created -- the sets name its colorResolve images.
 bool CreatePostProcessPass(const Descriptors& descriptors, const ScenePass& source,
-                           Pipeline& pipeline, PostProcessPass* out) noexcept;
-
-// Effect: rebuilds post.pipeline when target's format is not the one it was built for
-// Output: false is fatal -- the old pipeline is already destroyed
-//
-// Call after BeginFrame, not before it: the swapchain is remade in there, and one
-// iteration later this frame would draw with the stale pipeline. True on the first
-// frame too, since the pipeline starts with no format at all.
-bool EnsurePostProcessPipeline(const VulkanDevice& dev, const PostProcessPass& post,
-                               const Texture& target) noexcept;
+                           const Pipeline& pipeline, PostProcessPass* out) noexcept;
 
 
 // cmd, imageAvailable and inFlight are sized by kFramesInFlight because one signal

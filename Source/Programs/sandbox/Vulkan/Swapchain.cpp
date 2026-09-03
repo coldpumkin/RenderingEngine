@@ -240,15 +240,16 @@ bool EnsureSwapchain(const VulkanDevice& dev, Window* window) noexcept {
 
     dev.table.vkDeviceWaitIdle(dev.handle);
 
-    // Surface에 format을 다시 묻는다 - 결과가 고정이라는 보장이 없다(Window.h).
+    // **Format을 다시 묻지 않는다.** window->surfaceFormat은 초기화 때 한 번 정해지고
+    // 그대로 간다 - 언리얼의 FVulkanViewport도 PixelFormat을 들고 재생성할 때 그것을
+    // 다시 넣는다(RecreateSwapchainFromRT).
     //
-    // 여기가 그 재조회의 자리인 이유: format이 바뀌는 사건과 swapchain을 다시 만드는
-    // 사건이 같은 것이다. 창이 다른 모니터로 가면 둘 다 일어난다.
+    // 재조회하던 때는 "format이 언제든 바뀔 수 있다"가 전제가 되고, 그러면 그것을
+    // 감시하는 코드가 렌더링 경로에 붙는다. 실제로 붙어 있었다.
     //
-    // 실패는 무시한다 - 이전 format으로 계속 가는 것이 그릴 곳이 없어지는 것보다 낫다.
-    // 바뀌었다고 알릴 필요는 없다: 새 swapchain image가 자기 format을 들고 가고,
-    // pipeline과 다르면 그것이 곧 신호다.
-    SelectSurfaceFormat(*window->inst, dev.gpu, window);
+    // 전제가 어긋나면 조용히 넘어가지 않는다: 지원하지 않는 format으로
+    // vkCreateSwapchainKHR을 부르는 것은 VUID 위반이라 검증 레이어가 잡는다.
+    // 정말로 바꿔야 할 일(HDR 전환 등)이 생기면 그때는 요청이지 감지가 아니다.
 
     // 이전 것을 oldSwapchain으로 넘겨 retire시키고, 새것을 만든 뒤에 놓는다.
     // 스펙: 생성이 실패해도 retire는 일어난다 - 그래서 실패해도 이전 것은 버려야 한다.

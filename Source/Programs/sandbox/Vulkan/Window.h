@@ -53,15 +53,18 @@ struct Window {
     // 여기 있으면 pipeline이 swapchain을 기다릴 필요가 없다. GPU가 정해져야 알 수 있어서
     // OpenWindow가 아니라 SelectSurfaceFormat이 채운다.
     //
-    // **"리사이즈로 바뀌지 않는다"고 적혀 있었는데, 그건 스펙이 보장하는 것보다 센
-    // 주장이었다.** vkGetPhysicalDeviceSurfaceFormatsKHR의 결과는 고정이 아니다 -
-    // 창이 다른 모니터로 가거나 HDR이 켜지면 달라질 수 있다. 리사이즈만 놓고 보면
-    // 맞는 말이지만 그 셋을 다 덮지는 못한다.
+    // **초기화 때 한 번 정하고 그대로 간다.** SelectSurfaceFormat이 채우고, swapchain을
+    // 다시 만들 때도 이 값을 그대로 다시 넣는다 - 언리얼의 FVulkanViewport가
+    // PixelFormat을 들고 RecreateSwapchainFromRT에 넘기는 것과 같다.
     //
-    // 그래서 EnsureSwapchain이 재생성할 때마다 다시 묻는다. 바뀌었다고 따로 알리지는
-    // 않는다 - 새 swapchain image가 자기 format을 들고 가므로, pipeline이 구워둔 것과
-    // 다르면 그 차이 자체가 신호다(EnsurePostProcessPipeline). 세울 플래그도, 지우는 것을
-    // 잊을 플래그도 없다.
+    // 한때 재생성마다 다시 물었다. 그러면 "언제든 바뀔 수 있다"가 전제가 되고, 그것을
+    // 감시하는 코드가 렌더링 경로에 붙는다. 실제로 붙어 있었고, 그 감시는 첫 프레임
+    // 말고는 한 번도 돌지 않았다.
+    //
+    // 전제가 어긋나도 조용하지 않다: 지원하지 않는 format으로 vkCreateSwapchainKHR을
+    // 부르는 것은 VUID 위반이라 검증 레이어가 잡는다. 정말 바꿔야 할 일(HDR 전환)이
+    // 오면 그때는 감지가 아니라 요청이고, 그 자리는 SelectSurfaceFormat을 다시 부르는
+    // 것이다.
     VkSurfaceFormatKHR surfaceFormat{};
 
     // unique_ptr인 이유: 리사이즈마다 통째로 갈아끼운다. 값으로 두면 move 대입이
