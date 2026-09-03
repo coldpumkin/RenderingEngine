@@ -36,8 +36,17 @@ layout(location = 0) out vec4 outColor;
 layout(push_constant) uniform Push {
     mat4 model;
     float alpha;
-    float alphaCutoff;   // 0 keeps every texel. glTF MASK sets it, OPAQUE does not
 } pc;
+
+// What the material is, apart from its images. One per material, like the samplers
+// above -- alphaCutoff used to ride the push constant, which sent a per-material value
+// once per draw.
+//
+// Contract: field order and std140 padding match MaterialParams in Passes.h.
+layout(set = 1, binding = 2) uniform MaterialBlock {
+    vec4 baseColorFactor;   // rgb multiplies the texture. a unused
+    float alphaCutoff;      // 0 keeps every texel. glTF MASK sets it, OPAQUE does not
+} mtl;
 
 void main() {
     // Before the lighting: a thrown-away fragment should cost nothing after this
@@ -46,7 +55,7 @@ void main() {
     // The alpha is the base colour texture's, not the push constant's -- one says
     // which texels exist, the other how see-through the whole surface is.
     const vec4 sampled = texture(baseColor, fragUV);
-    if (scene.useAlphaMask > 0.5 && sampled.a < pc.alphaCutoff) { discard; }
+    if (scene.useAlphaMask > 0.5 && sampled.a < mtl.alphaCutoff) { discard; }
 
     // Normalized here because interpolation across the triangle shortens it.
     const vec3 geometric = normalize(fragNormal);
@@ -77,7 +86,12 @@ void main() {
     // Diffuse takes the surface colour, specular does not -- a highlight is the light
     // itself reflected, not the paint.
     // A flat grey when it is off, so the shape and the lighting stay readable.
-    const vec3 albedo = scene.useBaseColor > 0.5 ? sampled.rgb : vec3(0.8);
+    // The factor is the material's, not the texture's: glTF multiplies one by the
+    // other, and every one of Sponza's 25 materials sets it (0.588 grey). Ignoring it
+    // was why this looked brighter than the asset asks for.
+    const vec3 albedo = scene.useBaseColor > 0.5
+                      ? sampled.rgb * mtl.baseColorFactor.rgb
+                      : vec3(0.8);
     const vec3 lit = (scene.lightColor.rgb * lambert + scene.lightColor.a) * albedo
                    + scene.lightColor.rgb * specular;
 

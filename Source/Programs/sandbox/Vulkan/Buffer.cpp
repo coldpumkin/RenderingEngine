@@ -1,6 +1,7 @@
 ﻿#include "Vulkan/Buffer.h"
 
 #include <cstring>
+#include <new>      // placement new in move assignment
 
 bool CreateBuffer(const VulkanDevice& dev,
                   VkDeviceSize size,
@@ -34,6 +35,24 @@ bool CreateBuffer(const VulkanDevice& dev,
     buffer.mapped = allocated.pMappedData;
     buffer.size = size;
     return true;
+}
+
+Buffer::Buffer(Buffer&& other) noexcept
+    : dev(other.dev), handle(other.handle), allocation(other.allocation),
+      mapped(other.mapped), size(other.size) {
+    other.dev = nullptr;
+    other.handle = VK_NULL_HANDLE;
+    other.allocation = VK_NULL_HANDLE;
+    other.mapped = nullptr;
+    other.size = 0;
+}
+
+Buffer& Buffer::operator=(Buffer&& other) noexcept {
+    if (this != &other) {
+        this->~Buffer();
+        new (this) Buffer(static_cast<Buffer&&>(other));
+    }
+    return *this;
 }
 
 Buffer::~Buffer() {

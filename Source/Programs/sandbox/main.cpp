@@ -123,6 +123,12 @@ struct MaterialSource {
     std::string baseColor;
     std::string normal;
     bool doubleSided = false;
+
+    // The numbers, in the key for the reason doubleSided is: two glTF materials naming
+    // the same images but multiplying them differently are two materials. Every one of
+    // Sponza's 25 sets baseColorFactor, so leaving it out was throwing away the only
+    // thing that distinguishes some of them.
+    MaterialParams params;
 };
 
 // Capture
@@ -301,11 +307,16 @@ static bool LoadGltf(const char* path,
             // In this asset the two move together (all 3 MASK materials are also
             // double sided), but nothing in glTF says they must, so they are read
             // apart.
-            float cutoff = 0.0f;
+            MaterialParams params;
             bool doubleSided = false;
             if (prim.material != nullptr) {
                 if (prim.material->alpha_mode == cgltf_alpha_mode_mask) {
-                    cutoff = prim.material->alpha_cutoff;
+                    params.alphaCutoff = prim.material->alpha_cutoff;
+                }
+                if (prim.material->has_pbr_metallic_roughness) {
+                    const cgltf_float* f =
+                        prim.material->pbr_metallic_roughness.base_color_factor;
+                    params.baseColorFactor = glm::vec4{f[0], f[1], f[2], f[3]};
                 }
                 doubleSided = prim.material->double_sided != 0;
             }
@@ -318,6 +329,7 @@ static bool LoadGltf(const char* path,
             if (prim.material != nullptr) {
                 MaterialSource named;
                 named.doubleSided = doubleSided;
+                named.params = params;
                 if (prim.material->has_pbr_metallic_roughness) {
                     const cgltf_texture* tex =
                         prim.material->pbr_metallic_roughness.base_color_texture.texture;
@@ -336,7 +348,11 @@ static bool LoadGltf(const char* path,
                     for (size_t m = 0; m < materialSources->size(); ++m) {
                         if ((*materialSources)[m].baseColor == named.baseColor
                                 && (*materialSources)[m].normal == named.normal
-                                && (*materialSources)[m].doubleSided == named.doubleSided) {
+                                && (*materialSources)[m].doubleSided == named.doubleSided
+                                && (*materialSources)[m].params.baseColorFactor
+                                       == named.params.baseColorFactor
+                                && (*materialSources)[m].params.alphaCutoff
+                                       == named.params.alphaCutoff) {
                             material = static_cast<uint32_t>(m);
                             break;
                         }
@@ -350,7 +366,6 @@ static bool LoadGltf(const char* path,
             itemMaterial->push_back(material);
 
             DrawItem item{};
-            item.alphaCutoff = cutoff;
             item.range = {static_cast<uint32_t>(firstIndex),
                           static_cast<uint32_t>(prim.indices->count)};
             item.vertexOffset = static_cast<int32_t>(first);
@@ -601,7 +616,7 @@ int main() {
         // that names no texture. Closed shapes, so they cull like the opaque ones.
         for (const glm::mat4& m : kPlacements) {
             // material is filled in below, once the Material array exists.
-            items.push_back(DrawItem{m, 1.0f, 0.0f, kSphereIndices, nullptr, 0});
+            items.push_back(DrawItem{m, 1.0f, kSphereIndices, nullptr, 0});
             itemMaterial.push_back(UINT32_MAX);
         }
     }
@@ -715,10 +730,15 @@ int main() {
         // The stand-in is last and the loader did not describe it: closed shapes, so
         // it culls like the opaque ones.
         const bool doubleSided = i < materialSources.size() && materialSources[i].doubleSided;
+        // Same for the numbers: a white factor and no cutoff, which is what glTF means
+        // by leaving both out.
+        const MaterialParams params = i < materialSources.size() ? materialSources[i].params
+                                                                 : MaterialParams{};
         // The cast is for the braced init: the enum is int, the flags field is
         // unsigned, and that counts as narrowing here.
         sources[i] = {&renderer.textures[static_cast<size_t>(i) * 2],
                       &renderer.textures[static_cast<size_t>(i) * 2 + 1],
+                      params,
                       static_cast<VkCullModeFlags>(doubleSided ? VK_CULL_MODE_NONE
                                                                : VK_CULL_MODE_BACK_BIT)};
     }
@@ -727,7 +747,7 @@ int main() {
                       &renderer.guiPass)) { return 1; }
 
     renderer.materials.resize(materialCount);
-    if (!CreateMaterials(renderer.descriptors,
+    if (!CreateMaterials(dev, renderer.descriptors,
                          renderer.sceneProgram.setLayouts[kMaterialSet], sources.data(),
                          materialCount, renderer.materials.data())) { return 1; }
 

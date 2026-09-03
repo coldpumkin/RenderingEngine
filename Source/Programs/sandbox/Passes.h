@@ -115,15 +115,21 @@ struct SceneUniform {
 struct PushConstants {
     glm::mat4 model;   // object -> world. viewProj is in SceneUniform
     float alpha;       // 1.0 is opaque. Opaque pipelines ignore it: blending is off
+};
 
-    // glTF alphaMode MASK: a texel below this is thrown away. 0 keeps everything,
-    // which is what OPAQUE means, so the two modes are one value and not a flag
-    // beside it -- a flag would make "masked, cutoff 0" expressible.
-    //
-    // Here rather than in the material set because the asset has exactly one cutoff
-    // (0.5, on all three of its masked materials). A set would be a second thing to
-    // bind for a number that never differs.
-    float alphaCutoff;
+// The material's numbers, as the shader reads them. One per material, in set 1
+// beside its images.
+//
+// alphaCutoff was in PushConstants, which made that block span two domains: a value
+// counted by materials went out once per draw. It is counted here the way the samplers
+// are.
+//
+// Contract: field order and types match the shader's MaterialBlock. std140 rounds a
+//           block up to 16 bytes, so the leftover is named rather than hidden.
+struct MaterialParams {
+    glm::vec4 baseColorFactor{1.0f};   // rgb multiplies the texture. a unused
+    float alphaCutoff = 0.0f;          // 0 keeps every texel
+    float pad[3]{};
 };
 
 
@@ -142,6 +148,11 @@ struct PushConstants {
 // can be handed, and that is the line the second field is on.
 struct Material {
     VkDescriptorSet set = VK_NULL_HANDLE;
+
+    // Binding 2 of that set. Owned rather than borrowed, unlike the textures: an image
+    // can be shared between materials, these numbers are one per material by
+    // definition.
+    Buffer params;
 
     // glTF doubleSided, as the value the API wants. Here rather than on the draw
     // because it is counted the way the set is -- one per material, never per draw --
@@ -163,6 +174,7 @@ struct Material {
 struct MaterialDesc {
     const Texture* baseColor = nullptr;
     const Texture* normal = nullptr;
+    MaterialParams params;
     VkCullModeFlags cullMode = VK_CULL_MODE_BACK_BIT;
 };
 
@@ -170,7 +182,8 @@ struct MaterialDesc {
 //
 // Contract: pipeline must be the one these will be bound with -- the set is drawn
 //           from its material layout.
-bool CreateMaterials(const Descriptors& descriptors, const DescriptorLayout& layout,
+bool CreateMaterials(const VulkanDevice& dev,
+                     const Descriptors& descriptors, const DescriptorLayout& layout,
                      const MaterialDesc* sources, uint32_t count,
                      Material* out) noexcept;
 
@@ -196,7 +209,6 @@ struct IndexRange {
 struct DrawItem {
     glm::mat4 model{1.0f};
     float alpha = 1.0f;
-    float alphaCutoff = 0.0f;   // 0 = draw every texel
     IndexRange range{};
 
     // The material, not its set. Two reasons the handle was not enough: the recorder

@@ -92,7 +92,8 @@ bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
     return true;
 }
 
-bool CreateMaterials(const Descriptors& descriptors, const DescriptorLayout& layout,
+bool CreateMaterials(const VulkanDevice& dev,
+                     const Descriptors& descriptors, const DescriptorLayout& layout,
                      const MaterialDesc* sources, uint32_t count,
                      Material* out) noexcept {
     if (count == 0) { return true; }
@@ -107,10 +108,29 @@ bool CreateMaterials(const Descriptors& descriptors, const DescriptorLayout& lay
     for (uint32_t i = 0; i < count; ++i) {
         out[i].set = sets[i];
         out[i].cullMode = sources[i].cullMode;   // copied, not bound: it is not a binding
+
+        // 32 bytes, written once and never again -- but HOST_VISIBLE like the scene's
+        // uniform rather than a staging copy, because a device-local upload for 32
+        // bytes costs a command buffer and a queue wait each.
+        if (!CreateBuffer(dev, sizeof(MaterialParams),
+                          VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                          VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+                          VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+                              | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                          &out[i].params)) {
+            return false;
+        }
+        if (out[i].params.mapped == nullptr) {
+            LOG("[vk] material uniform buffer is not mapped\n");
+            return false;
+        }
+        std::memcpy(out[i].params.mapped, &sources[i].params, sizeof(MaterialParams));
+
         // Order is binding order, which the shader declares and reflection reports.
         const BindingValue values[] = {
-            {sources[i].baseColor->view.handle},   // 0
-            {sources[i].normal->view.handle},      // 1
+            {sources[i].baseColor->view.handle},                              // 0
+            {sources[i].normal->view.handle},                                 // 1
+            {VK_NULL_HANDLE, out[i].params.handle, sizeof(MaterialParams)},   // 2
         };
         UpdateSet(descriptors, layout, out[i].set,
                   values, static_cast<uint32_t>(std::size(values)));
@@ -291,7 +311,7 @@ static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
 
         // viewProj is in the uniform this set already points at; only the item's own
         // values ride the command buffer.
-        const PushConstants push{item.model, item.alpha, item.alphaCutoff};
+        const PushConstants push{item.model, item.alpha};
         vk.vkCmdPushConstants(cmd, layout,
                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                               0, sizeof(push), &push);

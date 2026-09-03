@@ -29,6 +29,11 @@ struct Buffer {
     ~Buffer();
     Buffer(const Buffer&) = delete;
     Buffer& operator=(const Buffer&) = delete;
+
+    // Movable for the reason Image is: a Material owns one and materials live in a
+    // vector. The source is left empty, so its destructor frees nothing.
+    Buffer(Buffer&& other) noexcept;
+    Buffer& operator=(Buffer&& other) noexcept;
 };
 
 // memoryUsage says who touches it and VMA picks the memory type:
