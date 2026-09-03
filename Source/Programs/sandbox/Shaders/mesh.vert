@@ -9,23 +9,20 @@ layout(location = 1) in vec3 inNormal;
 layout(location = 2) in vec2 inUV;
 layout(location = 3) in vec4 inTangent;   // xyz along +u, w = bitangent sign
 
-// Set 0 is the frame's: one camera and one light for every draw in the pass.
-// Contract: same fields as SceneUniform in Passes.h. Written once per frame.
+// Set 0 is the frame's, and this stage reads one thing out of it.
+//
+// The front of the block, not all of it. A program's interface is the union of what
+// its stages require, not one declaration copied into each -- mesh.frag names the
+// rest, and BuildSetLayout ors the two. Declaring fields this stage never reads made
+// the file look like it needed a light and four switches to place a vertex.
+//
+// Truncating is safe where reordering is not: std140 offsets are decided by what
+// comes before a field, so the first N fields sit where they sit. Reading a later one
+// means saying its offset, the way mesh.frag's push block does.
+//
+// Contract: viewProj is the first field of SceneUniform in Passes.h.
 layout(set = 0, binding = 0) uniform Scene {
     mat4 viewProj;
-
-    // The same world, seen from the light. Here rather than in the push block for the
-    // reason the camera is: one light for every draw in the pass.
-    mat4 lightViewProj;
-
-    vec4 lightDir;
-    vec4 lightColor;
-    vec4 viewPos;
-    float useNormalMap;
-    float useBaseColor;
-    float useSpecular;
-    float useAlphaMask;
-    float useShadow;
 } scene;
 
 // Contract: same block in the fragment stage, field for field.

@@ -63,9 +63,22 @@ layout(set = 1, binding = 2) uniform MaterialBlock {
 
 // This draw's, and nothing else: the push block is the one thing sent for every draw
 // whatever the order.
+//
+// One field, at the offset it actually sits at. A stage declares what it reads, not
+// what the block contains -- but a field's offset comes from every field in front of
+// it, so naming a subset means saying where the subset starts.
+//
+// Written out as mat4 + three vec4 before it, this stage would have to carry a normal
+// matrix it never touches only to put alpha in the right place. It said
+// "mat4 model; float alpha;" instead, which put alpha at 64 and read the first column
+// of the normal matrix -- about 125 under our uniform scale. Nothing showed, because
+// blending is off and the alpha channel is discarded.
+//
+// Contract: 112 is offsetof(PushConstants, alpha) in Passes.h. Nothing checks it --
+//           the .spv reports the block's size and the layer compares that, and a field
+//           inside it is past what either side can see.
 layout(push_constant) uniform Push {
-    mat4 model;
-    float alpha;
+    layout(offset = 112) float alpha;
 } pc;
 
 layout(location = 0) out vec4 outColor;

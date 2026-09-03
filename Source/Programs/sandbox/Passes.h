@@ -363,9 +363,16 @@ struct ScenePass {
     // range, pipeline layout. It is the pass's and not a pipeline's, because a pass
     // may hold several pipelines and they all bind through this one.
     //
-    // This is also the pass's half of admission. A draw gets in when its pipeline was
-    // built from this program (so the sets fit) and for these attachment formats (so
-    // Vulkan accepts it at all).
+    // What Vulkan requires of a draw here is only that its pipeline was compiled for
+    // these attachment formats. Sharing a program is our restriction, not the API's:
+    // recording binds set 0 and pushes constants through this one layout, so a
+    // pipeline from a different program would have to bring its own -- and every draw
+    // would then carry which layout to use.
+    //
+    // That is the shape a second program in one pass would take, and it is why
+    // "one program per pass" is written here rather than assumed: the day a draw needs
+    // a different set layout against the same attachments, this field becomes the
+    // draw's rather than the pass's.
     const ShaderProgram* program = nullptr;
 
     // The draws bring their own now; this one is what the pass itself needs -- the
