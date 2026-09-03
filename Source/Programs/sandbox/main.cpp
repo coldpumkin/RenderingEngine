@@ -22,10 +22,13 @@
 #include "Vulkan/Window.h"
 
 #include <GLFW/glfw3.h>
+#include <cgltf.h>
 
 #include <cmath>      // cos, sin
+#include <cstdio>     // fopen, to test for the asset before loading it
 #include <cstring>    // memcpy
 #include <iterator>   // std::size
+#include <vector>     // scene data is too big for the stack now
 
 // One header at a time. <glm/ext.hpp> was dropped when vendoring (VERSION.md).
 #include <glm/common.hpp>                  // clamp
@@ -94,6 +97,12 @@ struct DrawItem {
     glm::mat4 model{1.0f};
     float alpha = 1.0f;
     IndexRange range{};
+
+    // Added to every index this draw reads, so a primitive's indices can stay
+    // relative to its own vertices. glTF numbers each primitive from zero, and
+    // Sponza has 192,496 vertices across 103 of them -- without this the indices
+    // would have to be rewritten into uint32 while merging.
+    int32_t vertexOffset = 0;
 };
 
 // Scene pass
@@ -217,9 +226,11 @@ static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                               0, sizeof(push), &push);
 
-        // firstIndex is a position in the index buffer. vertexOffset (0) is added to
-        // every index, which matters once meshes number their vertices from zero.
-        vk.vkCmdDrawIndexed(cmd, item.range.count, 1, item.range.firstIndex, 0, 0);
+        // firstIndex is a position in the index buffer; vertexOffset is added to every
+        // index it reads. Both come from the item because one buffer holds every
+        // primitive's vertices and indices end to end.
+        vk.vkCmdDrawIndexed(cmd, item.range.count, 1, item.range.firstIndex,
+                            item.vertexOffset, 0);
     }
 
     vk.vkCmdEndRendering(cmd);
@@ -348,11 +359,12 @@ static bool RecordFrame(const FrameSlot& slot, const ScenePass& scene,
     return true;
 }
 
-// Scene data made in code
+// Scene data
 // ============================================================================
 //
-// Neither is about Vulkan: both hand back plain arrays, which is what CreateMesh and
-// CreateTextureFromPixels take. A file loader fills the same arrays.
+// None of this is about Vulkan: everything here hands back plain arrays, which is what
+// CreateMesh and CreateTextureFromPixels take. The glTF loader fills the same ones the
+// generated sphere does -- that is the whole reason MakeSphere stays.
 
 // A UV sphere. On a unit sphere the position is also the normal, which is the whole
 // reason this shape shows lighting.
@@ -407,6 +419,116 @@ static void MakeSphere(uint32_t stacks, uint32_t slices, float radius,
 // LINEAR sampler softens the edges.
 //
 // Output: pixels[size * size * 4], RGBA8
+// A glTF file, flattened into the one mesh and the one item list this pass draws.
+//
+// Input:  path to a .gltf. Its .bin is opened from beside it
+// Output: vertices and indices appended end to end, one DrawItem per primitive
+//         false means nothing was appended -- the caller falls back to MakeSphere
+//
+// Every primitive keeps its own indices, numbered from its own first vertex, and the
+// DrawItem carries that first vertex as vertexOffset. So the indices stay uint16 even
+// though the buffer holds far more than 65535 vertices -- what has to fit in 16 bits
+// is one primitive, and Sponza's largest is 23,038.
+//
+// Node transforms are not walked. Sponza is one node with a scale and no children, so
+// the caller multiplies that in. cgltf_node_transform_world is where nesting would go.
+static bool LoadGltf(const char* path,
+                     std::vector<Vertex>* vertices,
+                     std::vector<uint16_t>* indices,
+                     std::vector<DrawItem>* items) noexcept {
+    cgltf_options options{};
+    cgltf_data* data = nullptr;
+
+    if (cgltf_parse_file(&options, path, &data) != cgltf_result_success) {
+        LOG("[gltf] cannot parse %s\n", path);
+        return false;
+    }
+
+    // The JSON only names the .bin; this opens it. Skipping it leaves every accessor
+    // pointing at nothing, and the failure looks like an empty model rather than a
+    // missing file.
+    if (cgltf_load_buffers(&options, data, path) != cgltf_result_success) {
+        LOG("[gltf] cannot load buffers for %s\n", path);
+        cgltf_free(data);
+        return false;
+    }
+    if (cgltf_validate(data) != cgltf_result_success) {
+        LOG("[gltf] %s did not validate\n", path);
+        cgltf_free(data);
+        return false;
+    }
+
+    for (cgltf_size mi = 0; mi < data->meshes_count; ++mi) {
+        const cgltf_mesh& mesh = data->meshes[mi];
+        for (cgltf_size pi = 0; pi < mesh.primitives_count; ++pi) {
+            const cgltf_primitive& prim = mesh.primitives[pi];
+
+            // The pipeline is built for triangles. Anything else would need its own.
+            if (prim.type != cgltf_primitive_type_triangles || prim.indices == nullptr) {
+                continue;
+            }
+
+            const cgltf_accessor* pos = nullptr;
+            const cgltf_accessor* nrm = nullptr;
+            const cgltf_accessor* uv0 = nullptr;
+            const cgltf_accessor* tan = nullptr;
+            for (cgltf_size a = 0; a < prim.attributes_count; ++a) {
+                const cgltf_attribute& at = prim.attributes[a];
+                if (at.type == cgltf_attribute_type_position)      { pos = at.data; }
+                else if (at.type == cgltf_attribute_type_normal)   { nrm = at.data; }
+                else if (at.type == cgltf_attribute_type_tangent)  { tan = at.data; }
+                else if (at.type == cgltf_attribute_type_texcoord && at.index == 0) {
+                    uv0 = at.data;
+                }
+            }
+            if (pos == nullptr) { continue; }
+
+            const size_t first = vertices->size();
+            if (first > 0x7FFFFFFF) {
+                LOG("[gltf] more vertices than vertexOffset can address\n");
+                cgltf_free(data);
+                return false;
+            }
+            if (pos->count > 0xFFFF) {
+                LOG("[gltf] primitive has %zu vertices, uint16 indices cannot reach\n",
+                    (size_t)pos->count);
+                cgltf_free(data);
+                return false;
+            }
+
+            vertices->resize(first + pos->count);
+            for (cgltf_size v = 0; v < pos->count; ++v) {
+                Vertex& out = (*vertices)[first + v];
+                // read_float unpacks whatever the accessor stores -- normalized bytes,
+                // shorts, strided floats -- which is most of why this library is here.
+                cgltf_accessor_read_float(pos, v, out.position, 3);
+                if (nrm != nullptr) { cgltf_accessor_read_float(nrm, v, out.normal, 3); }
+                if (uv0 != nullptr) { cgltf_accessor_read_float(uv0, v, out.uv, 2); }
+                if (tan != nullptr) { cgltf_accessor_read_float(tan, v, out.tangent, 4); }
+            }
+
+            const size_t firstIndex = indices->size();
+            indices->reserve(firstIndex + prim.indices->count);
+            for (cgltf_size i = 0; i < prim.indices->count; ++i) {
+                indices->push_back(
+                    static_cast<uint16_t>(cgltf_accessor_read_index(prim.indices, i)));
+            }
+
+            DrawItem item{};
+            item.range = {static_cast<uint32_t>(firstIndex),
+                          static_cast<uint32_t>(prim.indices->count)};
+            item.vertexOffset = static_cast<int32_t>(first);
+            items->push_back(item);
+        }
+    }
+
+    LOG("[gltf] %s: %zu primitives, %zu vertices, %zu indices\n",
+        path, items->size(), vertices->size(), indices->size());
+
+    cgltf_free(data);
+    return !items->empty();
+}
+
 static void MakeChecker(uint32_t size, uint8_t* pixels) noexcept {
     for (uint32_t y = 0; y < size; ++y) {
         for (uint32_t x = 0; x < size; ++x) {
@@ -526,27 +648,73 @@ int main() {
     // Scene
     // ------------------------------------------------------------------------
     //
-    // Test data, made in code: no loader yet, and what we are checking is the path
-    // from bytes to GPU, not a file format. A loader replaces the two Make* calls.
-    constexpr uint32_t kStacks = 16;
-    constexpr uint32_t kSlices = 32;
-    constexpr float kRadius = 0.7f;
-    constexpr uint32_t kVertexCount = (kStacks + 1) * (kSlices + 1);
-    constexpr uint32_t kIndexCount = kStacks * kSlices * 6;
-    static_assert(kVertexCount <= 0xFFFF, "index type is uint16");
+    // Heap, not the stack: Sponza is 192,496 vertices, which is 8.8 MB as Vertex[48].
+    // Init may allocate freely (see the table at the top of this file); the frame loop
+    // still may not, and nothing below the loop touches these again after the upload.
+    std::vector<Vertex> vertices;
+    std::vector<uint16_t> indices;
+    std::vector<DrawItem> items;
 
-    Vertex vertices[kVertexCount]{};
-    uint16_t indices[kIndexCount]{};
-    MakeSphere(kStacks, kSlices, kRadius, vertices, indices);
+    // The asset is gitignored, so a machine without it is normal. The generated sphere
+    // is the fallback, and it is also what says whether a blank screen is the loader's
+    // fault or the renderer's.
+    const char* const kScenePath = LAMBDA_ASSET_ROOT "/Sponza/Sponza.gltf";
+    bool loaded = false;
+    if (std::FILE* probe = std::fopen(kScenePath, "rb")) {
+        std::fclose(probe);
+        loaded = LoadGltf(kScenePath, &vertices, &indices, &items);
+    } else {
+        LOG("[scene] no %s -- drawing the generated sphere instead\n", kScenePath);
+    }
 
-    constexpr IndexRange kSphereIndices{0, kIndexCount};
-    static_assert(kSphereIndices.End() == kIndexCount,
-                  "spans do not cover the index array");
+    // glTF gives Sponza in centimetres and puts the scale on its one node. Applied
+    // here rather than baked into the positions so the file stays the source of truth.
+    constexpr float kSponzaScale = 0.008f;
+    if (loaded) {
+        const glm::mat4 model = glm::scale(glm::mat4(1.0f), glm::vec3{kSponzaScale});
+        for (DrawItem& item : items) { item.model = model; }
+    }
+
+    if (!loaded) {
+        constexpr uint32_t kStacks = 16;
+        constexpr uint32_t kSlices = 32;
+        constexpr float kRadius = 0.7f;
+        constexpr uint32_t kVertexCount = (kStacks + 1) * (kSlices + 1);
+        constexpr uint32_t kIndexCount = kStacks * kSlices * 6;
+        static_assert(kVertexCount <= 0xFFFF, "index type is uint16");
+
+        vertices.resize(kVertexCount);
+        indices.resize(kIndexCount);
+        MakeSphere(kStacks, kSlices, kRadius, vertices.data(), indices.data());
+
+        constexpr IndexRange kSphereIndices{0, kIndexCount};
+        static_assert(kSphereIndices.End() == kIndexCount,
+                      "spans do not cover the index array");
+
+        // Five of them, so depth and the lighting have something to work on. One mesh
+        // and one span for all five -- only the matrix differs, which is what a
+        // DrawItem is for.
+        const glm::mat4 half = glm::scale(glm::mat4(1.0f), glm::vec3{0.5f});
+        const glm::mat4 kPlacements[] = {
+            glm::mat4(1.0f),
+            glm::translate(glm::mat4(1.0f), glm::vec3{-1.5f, 0.0f, 0.0f}) * half,
+            glm::translate(glm::mat4(1.0f), glm::vec3{ 1.5f, 0.0f, 0.0f}) * half,
+            glm::translate(glm::mat4(1.0f), glm::vec3{ 0.0f, 1.1f, -1.2f}) * half,
+            glm::translate(glm::mat4(1.0f), glm::vec3{ 0.0f, -1.0f, 0.9f}) * half,
+        };
+        for (const glm::mat4& m : kPlacements) {
+            items.push_back(DrawItem{m, 1.0f, kSphereIndices, 0});
+        }
+    }
 
     // stride is the one thing a mesh can say about its vertices; the pipeline says
     // which bytes are what.
-    const MeshDesc meshDesc{sizeof(Vertex), kVertexCount, kIndexCount};
-    if (!CreateMesh(dev, commands, meshDesc, vertices, indices, &mesh)) { return 1; }
+    const MeshDesc meshDesc{sizeof(Vertex),
+                            static_cast<uint32_t>(vertices.size()),
+                            static_cast<uint32_t>(indices.size())};
+    if (!CreateMesh(dev, commands, meshDesc, vertices.data(), indices.data(), &mesh)) {
+        return 1;
+    }
 
     constexpr uint32_t kCheckerSize = 8;
     uint8_t checkerPixels[kCheckerSize * kCheckerSize * 4]{};
@@ -669,37 +837,6 @@ int main() {
         const glm::vec3 lightDir = glm::normalize(
             glm::vec3{std::cos(t) * 0.7f, 0.5f, std::sin(t) * 0.7f});
 
-        // Items
-        //
-        // Five items and nothing here sorts them. With one pipeline and one texture
-        // the order costs nothing yet; it starts to matter when either becomes two.
-        const glm::vec3 kZAxis{0.0f, 0.0f, 1.0f};
-        const glm::vec3 kYAxis{0.0f, 1.0f, 0.0f};
-
-        // One mesh, five items: only the matrix differs, so the whole cost of another
-        // object is one DrawItem. The spans are identical because they all index the
-        // same sphere.
-        const glm::mat4 half = glm::scale(glm::mat4(1.0f), glm::vec3{0.5f});
-        const DrawItem items[] = {
-            // Centre, spinning about z: the sphere looks the same, but the checker
-            // slides over it, so the texture and the lighting are visibly separate.
-            {glm::rotate(glm::mat4(1.0f), t, kZAxis), 1.0f, kSphereIndices},
-
-            // Left and right, turning the other way and about y.
-            {glm::translate(glm::mat4(1.0f), glm::vec3{-1.5f, 0.0f, 0.0f})
-                 * glm::rotate(glm::mat4(1.0f), -t, kYAxis) * half,
-             1.0f, kSphereIndices},
-            {glm::translate(glm::mat4(1.0f), glm::vec3{1.5f, 0.0f, 0.0f})
-                 * glm::rotate(glm::mat4(1.0f), t * 1.7f, kYAxis) * half,
-             1.0f, kSphereIndices},
-
-            // Behind and in front, so depth has something to sort out.
-            {glm::translate(glm::mat4(1.0f), glm::vec3{0.0f, 1.1f, -1.2f}) * half,
-             1.0f, kSphereIndices},
-            {glm::translate(glm::mat4(1.0f), glm::vec3{0.0f, -1.0f, 0.9f}) * half,
-             1.0f, kSphereIndices},
-        };
-
         // Fill this frame's share of the pass
         //
         // Assignment only, so it belongs up here: what reaches the GPU, and when, is
@@ -733,7 +870,7 @@ int main() {
         if (!EnsurePostProcessPipeline(dev, post, target->texture)) { break; }
 
         if (!RecordFrame(slot, scene, post, *target,
-                         items, static_cast<uint32_t>(std::size(items)))) {
+                         items.data(), static_cast<uint32_t>(items.size()))) {
             break;
         }
 

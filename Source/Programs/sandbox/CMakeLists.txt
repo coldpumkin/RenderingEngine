@@ -40,6 +40,15 @@ target_link_libraries(sandbox PRIVATE volk glfw vma glm spirv-reflect cgltf)
 # 이 파일이 MSVC 전용이 되고, 여기서는 셰이더 파일 하나를 읽을 뿐이라 얻는 게 없다.
 target_compile_definitions(sandbox PRIVATE _CRT_SECURE_NO_WARNINGS)
 
+# 에셋은 셰이더와 다르게 실행 파일 옆으로 복사하지 않는다. 셰이더는 컴파일 산출물이라
+# 빌드 트리에 있어야 하지만 에셋은 소스이고, Sponza만 9.3MB에 텍스처까지 오면 50MB라
+# 빌드마다 복사할 이유가 없다. 대신 소스 경로를 박는다.
+#
+# 이 경로가 없어도 정상이다 - 에셋은 gitignore라 각자 받고, main은 없으면 MakeSphere로
+# 돌아간다.
+target_compile_definitions(sandbox PRIVATE
+    LAMBDA_ASSET_ROOT="${CMAKE_SOURCE_DIR}/Assets")
+
 # 검증 레이어 on/off. 항상 0 또는 1로 정의해서 #if가 오타에 조용히 넘어가지 않게 한다.
 if (LAMBDA_ENABLE_VULKAN_VALIDATION)
     target_compile_definitions(sandbox PRIVATE LAMBDA_ENABLE_VULKAN_VALIDATION=1)
