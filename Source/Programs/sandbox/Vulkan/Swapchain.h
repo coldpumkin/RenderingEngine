@@ -17,13 +17,12 @@ struct Window;
 // 그려지는 image이므로 Texture다 - 우리 attachment와 같은 타입이고, 그래서 무슨
 // format인지 desc가 말한다. 다른 점은 allocation이 없다는 것뿐이다: image는 조회한
 // 것이고 view만 우리가 만든다.
+//
+// swapchain이 소유한 자원이고 밖으로 나가지 않는다. 밖으로 나가는 것은 이 중 하나를
+// 이번 프레임 목적지로 지목한 FrameTarget이고, index도 거기 있다 - 배열 위치를 여기
+// 복사해두면 그 사본이 낡을 수 있다.
 struct SwapchainImage {
     Texture texture;
-
-    // Present가 요구하는 값. 배열 위치와 같아 중복이지만, 밖에서 image와 index를
-    // 따로 들고 다니면 짝이 어긋나도 컴파일된다.
-    uint32_t index = 0;
-
     VkSemaphore renderFinished = VK_NULL_HANDLE;  // image당 하나 (이유는 .cpp에)
 };
 

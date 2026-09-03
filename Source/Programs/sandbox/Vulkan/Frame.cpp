@@ -142,8 +142,8 @@ FrameSlot::~FrameSlot() {
 FrameResult BeginFrame(const VulkanDevice& dev,
                        Window* window,
                        const FrameSlot& slot,
-                       const SwapchainImage** image) noexcept {
-    *image = nullptr;
+                       FrameTarget* target) noexcept {
+    *target = FrameTarget{};
 
     // Skip, not Fatal: the window can stop being drawable between the loop's check
     // and here, mid resize-drag. The cost is a spin if creation keeps failing.
@@ -182,23 +182,28 @@ FrameResult BeginFrame(const VulkanDevice& dev,
     }
 
     // The fence is not reset here - reset pairs with submit (see SubmitFrame).
-    *image = &swapchain.images[imageIndex];
+    //
+    // Assembled here, from this one acquire: the image the caller draws into, the
+    // semaphore that says it is done, and the number present shows are three answers
+    // to the same call and cannot be picked apart afterwards.
+    const SwapchainImage& image = swapchain.images[imageIndex];
+    *target = FrameTarget{&image.texture, image.renderFinished, imageIndex};
     return FrameResult::Ready;
 }
 
 bool SubmitFrame(const VulkanDevice& dev, const FrameSlot& slot,
-                 const SwapchainImage& image) noexcept {
-    // Wait where the swapchain image is first touched -- the post-process pass draws
-    // into it. The scene pass may run before the acquire completes.
+                 const FrameTarget& target) noexcept {
+    // Wait where the target is first touched -- the post-process pass draws into it.
+    // The scene pass may run before the acquire completes.
     //
-    // Must overlap RecordPresentPass's barrier srcStageMask, not match it. Checked
+    // Must overlap RecordPostProcessPass's barrier srcStageMask, not match it. Checked
     // with sync validation: no overlap gave 20 reports, partial overlap gave 0.
     VkSemaphoreSubmitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
     wait.semaphore = slot.imageAvailable;
     wait.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
 
     VkSemaphoreSubmitInfo signal{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
-    signal.semaphore = image.renderFinished;
+    signal.semaphore = target.renderFinished;
     signal.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
 
     VkCommandBufferSubmitInfo cmdInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
@@ -232,16 +237,16 @@ bool SubmitFrame(const VulkanDevice& dev, const FrameSlot& slot,
 
 bool PresentFrame(const VulkanDevice& dev,
                   Window* window,
-                  const SwapchainImage& image) noexcept {
+                  const FrameTarget& target) noexcept {
     const VkSwapchainKHR swapchainHandle = window->swapchain->handle;
 
     VkPresentInfoKHR present{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
     present.waitSemaphoreCount = 1;
-    present.pWaitSemaphores = &image.renderFinished;
+    present.pWaitSemaphores = &target.renderFinished;
     // Arrays: several windows present at once. Submit does not grow on that axis.
     present.swapchainCount = 1;
     present.pSwapchains = &swapchainHandle;
-    present.pImageIndices = &image.index;
+    present.pImageIndices = &target.index;
 
     const VkResult presented = dev.table.vkQueuePresentKHR(dev.queues.present, &present);
 

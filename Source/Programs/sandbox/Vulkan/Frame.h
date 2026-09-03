@@ -159,6 +159,21 @@ struct FrameSlot {
 bool CreateFrameSlot(const VulkanDevice& dev, const Commands& commands,
                      uint32_t index, FrameSlot* out) noexcept;
 
+// Where this frame ends up -- the other axis from FrameSlot.
+//
+// Counted by swapchain images, not by frames in flight, which is why 2 slots and 3
+// images need not match. A slot is what a frame runs on; a target is where it goes.
+//
+// A value assembled by BeginFrame from one acquire, not a pointer into the swapchain's
+// array. That is what keeps the three from being paired wrongly, and it is why the
+// caller never names a swapchain type: what leaves here is a destination, not an image
+// the swapchain owns.
+struct FrameTarget {
+    const Texture* texture = nullptr;             // draw here
+    VkSemaphore renderFinished = VK_NULL_HANDLE;  // signalled once that is done
+    uint32_t index = 0;                           // which image present shows
+};
+
 // What the caller must do next, not what happened inside. A bool would collapse
 // three orders into one and spin forever on the one that never recovers.
 enum class FrameResult {
@@ -168,37 +183,37 @@ enum class FrameResult {
 };
 
 // Input:  dev, window, slot
-// Output: image. Cleared to null first, so Skip and Fatal leave it null rather than
-//         stale -- a caller that ignores the result dereferences null instead of an
-//         image from the frame before
+// Output: target. Emptied first, so Skip and Fatal leave texture null rather than
+//         stale -- a caller that ignores the result dereferences null instead of
+//         drawing into the frame before's image
 // Effect: rebuilds the swapchain if needed, waits for this slot, acquires an image
 //
-// The image is returned rather than stored: it belongs to the swapchain, which the
-// slot outlives, and the frame needs it only from here until present. slot is const
-// because nothing in it changes -- the wait and the acquire only read the fence and
-// the semaphore.
+// This is the only place a slot and a target meet: the acquire is made with the
+// slot's semaphore, so the pairing is produced here rather than chosen by the caller.
+// slot is const because nothing in it changes -- the wait and the acquire only read
+// the fence and the semaphore.
 //
 // Minimization is not handled here: the loop filters it with WindowHasDrawableSize.
 FrameResult BeginFrame(const VulkanDevice& dev,
                        Window* window,
                        const FrameSlot& slot,
-                       const SwapchainImage** image) noexcept;
+                       FrameTarget* target) noexcept;
 
-// Submit and present stay two calls: they share no arguments and grow on different
+// Submit and present stay two calls: they share only the target and grow on different
 // axes -- present per window, submit per queue. The start does not split because
 // acquire touches both at once.
 
 // Effect: resets the fence and submits the slot's command buffer
 //
-// Takes both so the slot and the image it signals cannot be mismatched -- they come
-// from different axes and only the caller knows they belong to the same frame.
+// The target rather than a semaphore: what to signal is a property of where this
+// frame goes, and passing it whole keeps the caller from having to know that.
 bool SubmitFrame(const VulkanDevice& dev, const FrameSlot& slot,
-                 const SwapchainImage& image) noexcept;
+                 const FrameTarget& target) noexcept;
 
-// Effect: presents the swapchain image, flagging the window if it went stale
+// Effect: presents this frame's target, flagging the window if it went stale
 //
-// No slot: the index and the semaphore both ride inside the image, and present waits
-// on the queue rather than on anything this frame owns.
+// No slot: the index and the semaphore both ride in the target, and present waits on
+// the queue rather than on anything this frame owns.
 bool PresentFrame(const VulkanDevice& dev,
                   Window* window,
-                  const SwapchainImage& image) noexcept;
+                  const FrameTarget& target) noexcept;

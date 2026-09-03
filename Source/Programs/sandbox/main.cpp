@@ -243,10 +243,10 @@ static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
 //         texture to draw into
 // Effect: appends commands that sample the scene pass's resolve into that texture
 //
-// A Texture, not a SwapchainImage: nothing here reads the index or the semaphore, and
-// those are what make an image the swapchain's. Drawing somewhere else -- the next
-// stage of an effect chain, a screenshot -- is then a different argument, not a
-// different function.
+// A Texture, not the whole FrameTarget: nothing here reads the index or the semaphore,
+// and those belong to getting the frame out, not to drawing it. Drawing somewhere else
+// -- the next stage of an effect chain, a screenshot -- is then a different argument,
+// not a different function.
 static void RecordPostProcessPass(const FrameSlot& slot, const PostProcessPass& post,
                                   const Texture& target) noexcept {
     const VolkDeviceTable& vk = slot.dev->table;
@@ -868,8 +868,9 @@ int main() {
         // Draw it
         // --------------------------------------------------------------------
 
-        // Lives until present, and no further: it is the swapchain's, not the slot's.
-        const SwapchainImage* target = nullptr;
+        // Where this frame goes. Lives until present and no further, and the loop
+        // only carries it -- BeginFrame is what pairs it with this slot.
+        FrameTarget target;
         const FrameResult begun = BeginFrame(dev, &window, slot, &target);
         if (begun == FrameResult::Fatal) { break; }
 
@@ -879,16 +880,17 @@ int main() {
         // happened, and skipping the submit would leave a signalled semaphore and a
         // reset fence with nobody left to wait on them.
 
-        if (!RecordFrame(slot, scene, post, target->texture,
+        // Only the texture: recording has no use for the rest of the target.
+        if (!RecordFrame(slot, scene, post, *target.texture,
                          items.data(), static_cast<uint32_t>(items.size()))) {
             break;
         }
 
         // Frame.h holds the reason submit and present are separate.
-        if (!SubmitFrame(dev, slot, *target)) {
+        if (!SubmitFrame(dev, slot, target)) {
             break;
         }
-        if (!PresentFrame(dev, &window, *target)) {
+        if (!PresentFrame(dev, &window, target)) {
             break;
         }
 

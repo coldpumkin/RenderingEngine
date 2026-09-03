@@ -179,7 +179,6 @@ bool CreateSwapchain(const VulkanInstance& inst,
                         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT};
         texture.image.dev = &dev;
         texture.image.handle = rawImages[i];   // allocation은 비운다 = 우리 것이 아니다
-        sc.images[i].index = i;
 
         VkImageViewCreateInfo viewInfo{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
         viewInfo.image = rawImages[i];
