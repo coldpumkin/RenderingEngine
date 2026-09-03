@@ -19,6 +19,7 @@ layout(set = 0, binding = 0) uniform Scene {
 layout(push_constant) uniform Push {
     mat4 model;
     float alpha;
+    float alphaCutoff;   // read by the fragment stage only, declared here to match
 } pc;
 
 layout(location = 0) out vec3 fragNormal;

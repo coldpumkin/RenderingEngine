@@ -104,8 +104,9 @@ static void MakeSphere(uint32_t stacks, uint32_t slices, float radius,
 //
 // Input:  path to a .gltf. Its .bin is opened from beside it
 // Output: vertices and indices appended end to end, one DrawItem per primitive,
-//         the base colour image each material names, and which of those each item
-//         wants. UINT32_MAX means the primitive named none.
+//         the base colour image each material names, which of those each item wants
+//         (UINT32_MAX means the primitive named none), and whether each item is
+//         double sided -- which the caller turns into a pipeline.
 //         false means nothing was appended -- the caller falls back to MakeSphere
 //
 // The DrawItem cannot carry the material itself: a set does not exist until the pool
@@ -124,6 +125,7 @@ static bool LoadGltf(const char* path,
                      std::vector<uint16_t>* indices,
                      std::vector<DrawItem>* items,
                      std::vector<uint32_t>* itemMaterial,
+                     std::vector<uint8_t>* itemDoubleSided,
                      std::vector<std::string>* baseColorUris) noexcept {
     cgltf_options options{};
     cgltf_data* data = nullptr;
@@ -207,6 +209,23 @@ static bool LoadGltf(const char* path,
             // built as we go. Deduplicated by uri rather than by cgltf_material
             // pointer: two materials naming one image should be one texture, and
             // Sponza has 25 materials over 69 images.
+            // Two more things the material says, and they land in different places:
+            // the cutoff is a number the shader compares against, cull is state a
+            // pipeline bakes in. Only the second one forces a second pipeline.
+            //
+            // In this asset the two move together (all 3 MASK materials are also
+            // double sided), but nothing in glTF says they must, so they are read
+            // apart.
+            float cutoff = 0.0f;
+            bool doubleSided = false;
+            if (prim.material != nullptr) {
+                if (prim.material->alpha_mode == cgltf_alpha_mode_mask) {
+                    cutoff = prim.material->alpha_cutoff;
+                }
+                doubleSided = prim.material->double_sided != 0;
+            }
+            itemDoubleSided->push_back(doubleSided ? 1u : 0u);
+
             uint32_t material = UINT32_MAX;
             if (prim.material != nullptr && prim.material->has_pbr_metallic_roughness) {
                 const cgltf_texture* tex =
@@ -228,6 +247,7 @@ static bool LoadGltf(const char* path,
             itemMaterial->push_back(material);
 
             DrawItem item{};
+            item.alphaCutoff = cutoff;
             item.range = {static_cast<uint32_t>(firstIndex),
                           static_cast<uint32_t>(prim.indices->count)};
             item.vertexOffset = static_cast<int32_t>(first);
@@ -301,7 +321,8 @@ int main() {
     VulkanDevice   dev;
     Window         window;        // holds the swapchain, so it dies before dev
     Commands       commands;
-    Pipeline       opaque;        // each owns the set layout its shaders declare
+    Pipeline       opaque;        // each owns the set layouts its shaders declare
+    Pipeline       masked;        // same shaders, no culling. The asset asks for it
     Pipeline       present;
     Descriptors    descriptors;   // the pool, so it outlives the sets drawn from it
     std::vector<Texture>  textures;    // one per material the scene names, checker last
@@ -345,12 +366,11 @@ int main() {
     // Passes
     // ------------------------------------------------------------------------
     //
-    // One pipeline each, which is where the passes happen to be, not a rule about
-    // them. What stays fixed inside a pass lives here; what can change between draws
-    // belongs to a DrawItem.
+    // Two for the scene pass, one for the post pass. That is not a rule about passes:
+    // a pass is a render-target configuration, and how many pipelines its draws use is
+    // whatever the scene asks for.
     //
-    // viewportY and cullMode are the pass's, not the shader's. A pipeline and a frame's
-    // targets never create each other but must agree on formats -- a pair per pass.
+    // viewportY is the pass's. cullMode was too, until the asset started answering it.
     GraphicsPipelineDesc opaqueDesc;
     opaqueDesc.vertPath = "Shaders/mesh.vert.spv";
     opaqueDesc.fragPath = "Shaders/mesh.frag.spv";
@@ -361,6 +381,20 @@ int main() {
     opaqueDesc.polygonMode = VK_POLYGON_MODE_FILL;
     opaqueDesc.blending = Blending::Opaque;
     if (!CreateGraphicsPipeline(dev, opaqueDesc, &opaque)) { return 1; }
+
+    // The same shaders and the same targets, differing in one value -- and that value
+    // is glTF's doubleSided. A leaf is one quad seen from both faces, so culling would
+    // throw half of them away, and no shader can switch cull: it is baked in.
+    //
+    // Cutting alphaMode MASK the same way would be a second pipeline for a number the
+    // shader can just compare against, so that one rides in the push constant instead.
+    //
+    // Set layouts are its own, built from the same .spv. Separately created layouts
+    // that are identically defined are compatible (spec: pipeline layout
+    // compatibility), so a material set drawn from opaque's layout binds here too.
+    GraphicsPipelineDesc maskedDesc = opaqueDesc;
+    maskedDesc.cullMode = VK_CULL_MODE_NONE;
+    if (!CreateGraphicsPipeline(dev, maskedDesc, &masked)) { return 1; }
 
     // The format was settled by SelectSurfaceFormat above and does not change, so this
     // pipeline is right from the start and nothing rebuilds it.
@@ -403,12 +437,13 @@ int main() {
     // fault or the renderer's.
     const char* const kScenePath = LAMBDA_ASSET_ROOT "/Sponza/Sponza.gltf";
     std::vector<uint32_t> itemMaterial;      // one per item, indexing baseColorUris
+    std::vector<uint8_t> itemDoubleSided;    // one per item, choosing the pipeline
     std::vector<std::string> baseColorUris;
     bool loaded = false;
     if (std::FILE* probe = std::fopen(kScenePath, "rb")) {
         std::fclose(probe);
         loaded = LoadGltf(kScenePath, &vertices, &indices, &items,
-                          &itemMaterial, &baseColorUris);
+                          &itemMaterial, &itemDoubleSided, &baseColorUris);
     } else {
         LOG("[scene] no %s -- drawing the generated sphere instead\n", kScenePath);
     }
@@ -450,9 +485,13 @@ int main() {
         };
         // No material of their own: they take the checker, like a glTF primitive
         // that names no texture.
+        // No material of their own: they take the checker, like a glTF primitive
+        // that names no texture. Closed shapes, so they cull like the opaque ones.
         for (const glm::mat4& m : kPlacements) {
-            items.push_back(DrawItem{m, 1.0f, kSphereIndices, VK_NULL_HANDLE, 0});
+            items.push_back(DrawItem{m, 1.0f, 0.0f, kSphereIndices, nullptr,
+                                     VK_NULL_HANDLE, 0});
             itemMaterial.push_back(UINT32_MAX);
+            itemDoubleSided.push_back(0);
         }
     }
 
@@ -530,6 +569,7 @@ int main() {
     for (size_t i = 0; i < items.size(); ++i) {
         const uint32_t index = itemMaterial[i];
         items[i].material = materials[index == UINT32_MAX ? kNoTexture : index].set;
+        items[i].pipeline = itemDoubleSided[i] != 0 ? &masked : &opaque;
     }
 
     // Frames

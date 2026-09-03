@@ -211,8 +211,10 @@ static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
     scissor.extent = extent;
     vk.vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-    vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.handle);
-
+    // Not bound here any more -- each item names its own below. What is still the
+    // pass's is the layout and the viewport sign, and every pipeline a draw can name
+    // shares them.
+    //
     // Once, above the loop: it is this frame's, and every draw in the pass reads it.
     vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.layout,
                                kFrameSet, 1, &targets.set, 0, nullptr);
@@ -230,8 +232,18 @@ static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
     // and now the order costs something: a material bind happens wherever two
     // neighbours differ, so the same items in another order bind more times.
     VkDescriptorSet boundMaterial = VK_NULL_HANDLE;
+    const Pipeline* boundPipeline = nullptr;
     for (uint32_t i = 0; i < itemCount; ++i) {
         const DrawItem& item = items[i];
+
+        // Two binds, two conditions. They are separate because they do not change
+        // together: 89 of Sponza's primitives are opaque and 14 are masked, while its
+        // textures change far more often than that.
+        if (item.pipeline != boundPipeline) {
+            vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                 item.pipeline->handle);
+            boundPipeline = item.pipeline;
+        }
 
         if (item.material != boundMaterial) {
             vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -242,7 +254,7 @@ static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
 
         // viewProj is in the uniform this set already points at; only the item's own
         // values ride the command buffer.
-        const PushConstants push{item.model, item.alpha};
+        const PushConstants push{item.model, item.alpha, item.alphaCutoff};
         vk.vkCmdPushConstants(cmd, pipeline.layout,
                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                               0, sizeof(push), &push);

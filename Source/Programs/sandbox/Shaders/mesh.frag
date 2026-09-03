@@ -24,9 +24,18 @@ layout(location = 0) out vec4 outColor;
 layout(push_constant) uniform Push {
     mat4 model;
     float alpha;
+    float alphaCutoff;   // 0 keeps every texel. glTF MASK sets it, OPAQUE does not
 } pc;
 
 void main() {
+    // Before the lighting: a thrown-away fragment should cost nothing after this
+    // point, and discard is what glTF alphaMode MASK means.
+    //
+    // The alpha is the base colour texture's, not the push constant's -- one says
+    // which texels exist, the other how see-through the whole surface is.
+    const vec4 sampled = texture(baseColor, fragUV);
+    if (sampled.a < pc.alphaCutoff) { discard; }
+
     // Normalized here because interpolation across the triangle shortens it.
     const vec3 normal = normalize(fragNormal);
     const vec3 toLight = normalize(scene.lightDir.xyz);
@@ -43,7 +52,7 @@ void main() {
 
     // Diffuse takes the surface colour, specular does not -- a highlight is the light
     // itself reflected, not the paint.
-    const vec3 albedo = texture(baseColor, fragUV).rgb;
+    const vec3 albedo = sampled.rgb;
     const vec3 lit = (scene.lightColor.rgb * lambert + scene.lightColor.a) * albedo
                    + scene.lightColor.rgb * specular;
 

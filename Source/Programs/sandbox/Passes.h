@@ -92,6 +92,15 @@ struct SceneUniform {
 struct PushConstants {
     glm::mat4 mvp;   // model -> world -> view -> clip
     float alpha;     // 1.0 is opaque. Opaque pipelines ignore it: blending is off
+
+    // glTF alphaMode MASK: a texel below this is thrown away. 0 keeps everything,
+    // which is what OPAQUE means, so the two modes are one value and not a flag
+    // beside it -- a flag would make "masked, cutoff 0" expressible.
+    //
+    // Here rather than in the material set because the asset has exactly one cutoff
+    // (0.5, on all three of its masked materials). A set would be a second thing to
+    // bind for a number that never differs.
+    float alphaCutoff;
 };
 
 
@@ -138,11 +147,20 @@ struct IndexRange {
 struct DrawItem {
     glm::mat4 model{1.0f};
     float alpha = 1.0f;
+    float alphaCutoff = 0.0f;   // 0 = draw every texel
     IndexRange range{};
+
+    // Which pipeline draws this. The asset decides it: glTF doubleSided means
+    // cullMode NONE, and cull is baked into a pipeline, so a shader cannot switch it.
+    //
+    // Contract: every pipeline named here must share the pass's pipeline layout --
+    //           they are built from the same shaders, so they do.
+    const Pipeline* pipeline = nullptr;
 
     // The set, not an index into a list the recorder would also have to be handed.
     // Bound only when it differs from the last one, so the order items are written in
     // decides how many binds happen -- that is what a sort key would be sorting.
+    // The pipeline above is bound the same way, and the two do not change together.
     VkDescriptorSet material = VK_NULL_HANDLE;
 
     // Added to every index this draw reads, so a primitive's indices can stay
@@ -170,12 +188,12 @@ struct DrawItem {
 struct ScenePass {
     const Mesh* mesh = nullptr;
 
-    // Non-owning, and a pointer rather than a value: a pass is a render-target
-    // configuration with draws in it, and how many pipelines those draws use is not
-    // fixed at one. This becomes a list the day a draw here needs a different one.
+    // The draws bring their own now; this one is what the pass itself needs -- the
+    // layout to bind set 0 with, and the viewport sign. Both are the same across
+    // every pipeline a draw can name, because they all come from these shaders.
     //
-    // It is here because the pass owns both sides of a pair -- the pipeline bakes in
-    // the attachment formats, and frames[].color is made from the same ones.
+    // It is still here because the pass owns both sides of a pair: the pipeline bakes
+    // in the attachment formats, and frames[].color is made from the same ones.
     const Pipeline* pipeline = nullptr;
 
     struct PerFrame {
