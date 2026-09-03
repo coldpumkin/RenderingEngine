@@ -4,7 +4,7 @@
 # 층이 둘이고 의존이 한 방향으로만 흐른다. **Vulkan/ 아래의 어떤 헤더도 위 두 줄을
 # include하지 않는다** - 그것이 이 선의 전부다:
 #
-#   main.cpp  ->  Passes . Vertex  ->  Vulkan/*
+#   main.cpp  ->  Gui . Passes . Vertex  ->  Vulkan/*
 #
 # Vulkan/ 안에서도 한 방향이다:
 #   Core <- Instance <- Device <- { Swapchain, Commands, Pipeline, Buffer }
@@ -33,6 +33,7 @@ add_executable(sandbox
 
     Vertex.h             Vertex.cpp        # 우리 정점 형식 + 그 layout 선언
     Passes.h             Passes.cpp        # scene / post-process pass, DrawItem, 기록
+    Gui.h                Gui.cpp           # ImGui 창 하나. 옵션을 눈으로 켠다
 
     main.cpp                # 무엇을 만들고 무엇을 프레임에 건네나
 )
@@ -42,7 +43,7 @@ target_include_directories(sandbox PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 # 평평하게 쓰는 동안은 sandbox가 volk와 GLFW를 직접 든다.
 # 중간 모듈이 없으므로 숨길 것도 없다.
-target_link_libraries(sandbox PRIVATE volk glfw vma glm spirv-reflect cgltf stb)
+target_link_libraries(sandbox PRIVATE volk glfw vma glm spirv-reflect cgltf stb imgui)
 
 # std::fopen이 MSVC에서 C4996(deprecated)로 경고를 낸다. fopen_s는 표준이 아니라
 # 이 파일이 MSVC 전용이 되고, 여기서는 셰이더 파일 하나를 읽을 뿐이라 얻는 게 없다.

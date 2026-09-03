@@ -26,8 +26,12 @@
 //     barrier target    -> COLOR_ATTACHMENT
 //     BeginRendering   attachment = the frame's target, in its own format
 //       BindPipeline, BindDescriptorSets, Draw 3 vertices
-//     EndRendering
-//     barrier target    -> PRESENT_SRC
+//     EndRendering     <- leaves it COLOR_ATTACHMENT_OPTIMAL, and says so
+//
+//   [gui pass] (Gui.cpp) draws on top with loadOp LOAD
+//
+//   barrier target -> PRESENT_SRC, in RecordFrame. After every pass, because which
+//   one is last is the frame's business and not any pass's
 //
 // Pipeline sits in the middle of three agreements, and a pass owns both sides of each:
 //   pipeline <-> render target   attachment format (dynamic rendering bakes it in)

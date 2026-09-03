@@ -1,5 +1,6 @@
 ﻿#include "Passes.h"
 
+#include "Gui.h"
 #include "Vulkan/Barrier.h"
 #include "Vulkan/Mesh.h"
 
@@ -351,20 +352,10 @@ static void RecordPostProcessPass(const FrameSlot& slot, const PostProcessPass& 
 
     vk.vkCmdEndRendering(cmd);
 
-    // The one place this still assumes the target is a swapchain image. Drawing into
-    // an intermediate texture would want SHADER_READ_ONLY here instead, and which one
-    // it should be is the pass's output contract -- not written down anywhere yet.
-    //
-    // dstAccess is 0, unlike every other barrier here: present is not a queue
-    // operation and reads nothing through the memory model, so there is no access to
-    // make visible. The semaphore SubmitFrame signals is what present actually waits
-    // on -- this barrier only has to leave the image in the right layout.
-    RecordLayoutTransition(vk, cmd, dest.image.handle, VK_IMAGE_ASPECT_COLOR_BIT,
-                           VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                           VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                           VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0,
-                           VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                           VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+    // The target is left COLOR_ATTACHMENT_OPTIMAL, which is this pass's whole output
+    // contract. What happens to it next -- another pass on top, or the screen -- is
+    // not this function's to know, and the transition that used to be here said
+    // otherwise.
 }
 
 bool RecordFrame(const FrameSlot& slot, const ScenePass& scene,
@@ -390,10 +381,28 @@ bool RecordFrame(const FrameSlot& slot, const ScenePass& scene,
         return false;
     }
 
-    // The order is here, in these two lines, and nowhere else. post.source points at
-    // scene, but that is a dependency -- it would not stop these from being swapped.
+    // The order is here, in these three lines, and nowhere else. post.source points
+    // at scene, but that is a dependency -- it would not stop these from being
+    // swapped.
     RecordScenePass(slot, scene, items, itemCount);
     RecordPostProcessPass(slot, post, target);
+    RecordGuiPass(slot, target);
+
+    // The frame leaves for the presentation engine here, after everything that draws
+    // into it. This used to sit at the end of the post-process pass, which made that
+    // pass assume its target was a swapchain image -- adding a second pass on top is
+    // what forced it out.
+    //
+    // dstAccess is 0, unlike every other barrier here: present is not a queue
+    // operation and reads nothing through the memory model, so there is no access to
+    // make visible. The semaphore SubmitFrame signals is what present actually waits
+    // on -- this barrier only has to leave the image in the right layout.
+    RecordLayoutTransition(vk, cmd, target.image.handle, VK_IMAGE_ASPECT_COLOR_BIT,
+                           VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                           VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                           VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0,
+                           VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                           VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 
     if (vk.vkEndCommandBuffer(cmd) != VK_SUCCESS) {
         LOG("[vk] vkEndCommandBuffer failed\n");

@@ -16,6 +16,7 @@
 
 
 #include "Config.h"
+#include "Gui.h"                 // the panel, and the pass that draws it
 #include "Passes.h"             // what we draw. main assembles it and hands it the frame
 #include "Vertex.h"
 #include "Vulkan/Attachments.h"   // main picks what we draw into, not the device layer
@@ -355,6 +356,7 @@ int main() {
     std::vector<Texture>  textures;    // one per material the scene names, checker last
     std::vector<Material> materials;   // their sets. Freed with the pool, not by these
     Mesh           mesh;          // before scene: the pass points at it
+    Gui            gui;           // before scene only because nothing points at it
     ScenePass      scene;         // attachments, and the sets naming them
     PostProcessPass post;         // reads scene, writes the swapchain
     FrameSlot      slots[kFramesInFlight];   // command buffer and its two signals
@@ -654,6 +656,10 @@ int main() {
         if (!CreateFrameSlot(dev, commands, i, &slots[i])) { return 1; }
     }
 
+    // The swapchain's format, not the render target's: the panel goes on top of the
+    // finished picture, in the pass after the post-process one.
+    if (!CreateGui(inst, dev, window, window.surfaceFormat.format, &gui)) { return 1; }
+
     LOG("close the window to exit.  1 normal map / 2 base colour / 3 specular / 4 alpha mask\n");
 
     // Frame state
@@ -688,10 +694,7 @@ int main() {
     //
     // Not in Config.h: a constant would have to be edited and rebuilt, and the point
     // is to see both within a second of each other.
-    bool useNormalMap = true;
-    bool useBaseColor = true;
-    bool useSpecular = true;
-    bool useAlphaMask = true;
+    ViewOptions viewOptions;   // 'view' is the matrix below
 
     // glfwGetKey reports a state, not an event, so acting on it directly would flip
     // the toggle every frame it is held. This remembers the last frame's state so
@@ -773,8 +776,8 @@ int main() {
         // The log line is on an edge, not a condition, so it cannot flood -- it says
         // what the picture is showing now, which a screenshot alone does not.
         const int kToggleKeys[4]{GLFW_KEY_1, GLFW_KEY_2, GLFW_KEY_3, GLFW_KEY_4};
-        bool* const kToggles[4]{&useNormalMap, &useBaseColor, &useSpecular,
-                                &useAlphaMask};
+        bool* const kToggles[4]{&viewOptions.normalMap, &viewOptions.baseColor,
+                                &viewOptions.specular, &viewOptions.alphaMask};
         const char* const kToggleNames[4]{"normal map", "base colour", "specular",
                                           "alpha mask"};
         for (int i = 0; i < 4; ++i) {
@@ -811,8 +814,13 @@ int main() {
         scene.frames[slot.index].uniformValue =
             {camera, glm::vec4{lightDir, 0.0f},
              glm::vec4{1.0f, 0.95f, 0.9f, 0.15f}, glm::vec4{eye, 48.0f},
-             useNormalMap ? 1.0f : 0.0f, useBaseColor ? 1.0f : 0.0f,
-             useSpecular ? 1.0f : 0.0f, useAlphaMask ? 1.0f : 0.0f};
+             viewOptions.normalMap ? 1.0f : 0.0f, viewOptions.baseColor ? 1.0f : 0.0f,
+             viewOptions.specular ? 1.0f : 0.0f, viewOptions.alphaMask ? 1.0f : 0.0f};
+
+        // The panel is state, like the camera above it, so it is built here and not
+        // where commands are written. dt is last frame's, which is what a frame time
+        // reading means anyway.
+        BuildGui(&viewOptions, dt, static_cast<uint32_t>(items.size()), materialCount);
 
         // Draw it
         // --------------------------------------------------------------------

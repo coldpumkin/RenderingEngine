@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.24)
+﻿cmake_minimum_required(VERSION 3.24)
 # volk.c 때문에 C도 필요하다 (우리 코드는 전부 C++).
 project(RenderingEngine LANGUAGES CXX C)
 
@@ -41,6 +41,8 @@ add_subdirectory(Source/ThirdParty/glm)
 add_subdirectory(Source/ThirdParty/spirv-reflect)
 add_subdirectory(Source/ThirdParty/cgltf)
 add_subdirectory(Source/ThirdParty/stb)
+# glfw 뒤에 온다 - backend가 GLFW 타깃을 링크한다
+add_subdirectory(Source/ThirdParty/imgui)
 
 # 모듈이 없다. sandbox 하나에 평평하게 쓴다.
 #
