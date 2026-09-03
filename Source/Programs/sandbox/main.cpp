@@ -615,9 +615,10 @@ int main() {
         // No material of their own: they take the checker, like a glTF primitive
         // that names no texture. Closed shapes, so they cull like the opaque ones.
         for (const glm::mat4& m : kPlacements) {
-            // material is filled in below, once the Material array exists. The model
-            // goes through SetDrawModel rather than the initializer, so the normal
-            // matrix cannot be left at identity.
+            // material is filled in below, once the Material array exists -- it stays
+            // kNoMaterial until then, which is a value the recorder skips rather than
+            // a wrong one it draws. The model goes through SetDrawModel rather than the
+            // initializer, so the normal matrix cannot be left at identity.
             DrawItem item{};
             SetDrawModel(&item, m);
             item.range = kSphereIndices;
@@ -758,21 +759,21 @@ int main() {
 
     // Join the two halves the loader had to hand back separately. The stand-in pair is
     // last, so it is what UINT32_MAX resolves to.
-    // Contract: renderer.materials must not be resized after this -- the items point
-    //           into it. It is filled once above and never grows.
+    // An index, so this survives renderer.materials moving in memory -- only its
+    // length matters now, and the recorder checks every index against it. The array is
+    // filled once above and never grows.
     const uint32_t kNoTexture = materialCount - 1;
     for (size_t i = 0; i < items.size(); ++i) {
         const uint32_t index = itemMaterial[i];
-        items[i].material =
-            &renderer.materials[index == UINT32_MAX ? kNoTexture : index];
+        items[i].material = index == UINT32_MAX ? kNoTexture : index;
     }
 
     // The draw order, now that both things a bind depends on hang off one pointer.
     //
     // Only grouping matters, not which group comes first: a bind happens where two
     // neighbours differ, so any total order that puts equal materials together reaches
-    // the same count. That is why comparing the pointers is enough -- they are
-    // positions in one vector, and their order carries no meaning beyond "not equal".
+    // the same count. Comparing the indices is enough, and unlike the addresses they
+    // replaced they are an order we chose -- two runs sort the same way.
     //
     // Cull first, even though it is a function of the material and so adds no
     // information. It adds an ordering: sorting on the material alone leaves the cull
@@ -781,13 +782,21 @@ int main() {
     //
     // Stable, so items that tie keep the order the file gave them. Nothing depends on
     // it yet -- blending is off, so no draw has to come after another.
+    const std::vector<Material>& materials = renderer.materials;
     std::stable_sort(items.begin(), items.end(),
-                     [](const DrawItem& a, const DrawItem& b) noexcept {
-                         if (a.material->cullMode != b.material->cullMode) {
-                             return a.material->cullMode < b.material->cullMode;
-                         }
+                     [&materials](const DrawItem& a, const DrawItem& b) noexcept {
+                         const VkCullModeFlags cullA = materials[a.material].cullMode;
+                         const VkCullModeFlags cullB = materials[b.material].cullMode;
+                         if (cullA != cullB) { return cullA < cullB; }
                          return a.material < b.material;
                      });
+
+    // The items and the array their material index points into, paired once. Built
+    // here rather than per frame because neither changes below this line, and built at
+    // all because an index handed in without its array is the one way this goes wrong
+    // without saying so.
+    const DrawList drawList{items.data(), static_cast<uint32_t>(items.size()),
+                            renderer.materials.data(), materialCount};
 
     // Frames
     // ------------------------------------------------------------------------
@@ -1001,9 +1010,7 @@ int main() {
         // Only the texture: recording has no use for the rest of the target.
         DrawStats drawStats;
         if (!RecordFrame(slot, renderer.scenePass, renderer.postPass,
-                         renderer.guiPass, *target.texture,
-                         items.data(), static_cast<uint32_t>(items.size()),
-                         &drawStats)) {
+                         renderer.guiPass, *target.texture, drawList, &drawStats)) {
             break;
         }
 

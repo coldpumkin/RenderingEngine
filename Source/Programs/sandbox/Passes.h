@@ -207,6 +207,13 @@ bool CreateMaterials(const VulkanDevice& dev,
 // What one draw is
 // ============================================================================
 
+// No material. A DrawItem's index defaults to this, so an item nobody assigned one to
+// is not silently the material that happens to sit at 0.
+//
+// UINT32_MAX and not -1: it is also above every valid index, so one comparison against
+// the array's size catches both an unset item and an index past the end.
+constexpr uint32_t kNoMaterial = UINT32_MAX;
+
 // A span inside the index buffer.
 //
 // Holding the two numbers together lets DrawItem carry a name instead of a position.
@@ -231,15 +238,16 @@ struct DrawItem {
     float alpha = 1.0f;
     IndexRange range{};
 
-    // The material, not its set. Two reasons the handle was not enough: the recorder
-    // needs the cull mode as well, and a sort key needs something that has an order --
-    // a descriptor set handle is a number the driver chose.
+    // Where the material is, not where it lives in memory. Materials sit end to end in
+    // one array and the position is what identifies one; a pointer spelled that
+    // position as an address, which cost three things. It ordered by an address nobody
+    // chose, it was too wide to pack into a sort key, and "do not resize the array" was
+    // a comment rather than something the type survives.
     //
     // Bound only when it differs from the last one, so the order items are written in
-    // decides how many binds happen -- that is what a sort key would be sorting. Cull
-    // is set the same way, and the two now change together because both come from
-    // here.
-    const Material* material = nullptr;
+    // decides how many binds happen -- that is what a sort key sorts. Cull is set the
+    // same way and changes with it, because both are read through this one index.
+    uint32_t material = kNoMaterial;
 
     // Added to every index this draw reads, so a primitive's indices can stay
     // relative to its own vertices. glTF numbers each primitive from zero, and
@@ -254,6 +262,27 @@ struct DrawItem {
 // to the previous transform, which is invisible until a scale is not uniform and
 // silently wrong after that.
 void SetDrawModel(DrawItem* item, const glm::mat4& model) noexcept;
+
+
+// What a pass is asked to draw
+// ============================================================================
+//
+// One type because an index means nothing without the array it indexes. Kept apart,
+// the two could be handed in from different places and disagree, and nothing would
+// say so -- the draw would simply bind another material's set.
+//
+// Passed per recording rather than owned by the pass, for the reason the item list
+// always was: the items are the frame's and the materials are the scene's. What
+// changed is that they now have to arrive together.
+struct DrawList {
+    const DrawItem* items = nullptr;
+    uint32_t itemCount = 0;
+
+    // What item.material indexes. materialCount is read, not decoration: it is the
+    // bound every index is checked against.
+    const Material* materials = nullptr;
+    uint32_t materialCount = 0;
+};
 
 
 // ScenePass - the off-screen pass, and what it draws into
@@ -373,5 +402,4 @@ struct DrawStats {
 // and those belong to getting the frame out, not to drawing it.
 bool RecordFrame(const FrameSlot& slot, const ScenePass& scene,
                  const PostProcessPass& post, Gui& gui, const Texture& target,
-                 const DrawItem* items, uint32_t itemCount,
-                 DrawStats* stats = nullptr) noexcept;
+                 const DrawList& draws, DrawStats* stats = nullptr) noexcept;

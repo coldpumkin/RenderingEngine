@@ -185,8 +185,7 @@ bool CreatePostProcessPass(const Descriptors& descriptors, const ScenePass& sour
 // One mesh for every item: the spans in items index into it. A second mesh means
 // another BindVertexBuffers, which is why the bind sits above the loop and not in it.
 static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
-                            const DrawItem* items, uint32_t itemCount,
-                            DrawStats* stats) noexcept {
+                            const DrawList& draws, DrawStats* stats) noexcept {
     const VolkDeviceTable& vk = slot.dev->table;
     VkCommandBuffer cmd = slot.cmd;
     const Mesh& mesh = *scene.mesh;
@@ -298,28 +297,35 @@ static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
     // far more often than that. Both are set only where two neighbours differ, which
     // is what a sort key would be sorting.
     //
-    // UINT32_MAX rather than a cull value: every real value is a legal starting
-    // state, so "not set yet" needs one that is not.
+    // Neither starting value is a real one: every cull mode is a legal state to begin
+    // in, and every material index is a legal one to draw, so "not set yet" needs a
+    // value outside both.
     //
-    // Both now read one pointer, so an item cannot ask for a cull mode its material
-    // does not have. They still change at different rates: cull is a function of the
-    // material, and a function is coarser than what it is a function of.
-    const Material* boundMaterial = nullptr;
+    // Both read one index, so an item cannot ask for a cull mode its material does not
+    // have. They still change at different rates: cull is a function of the material,
+    // and a function is coarser than what it is a function of.
+    uint32_t boundMaterial = kNoMaterial;
     VkCullModeFlags boundCull = UINT32_MAX;
-    for (uint32_t i = 0; i < itemCount; ++i) {
-        const DrawItem& item = items[i];
-        if (item.material == nullptr) { continue; }   // no set to bind, so nothing to draw
+    for (uint32_t i = 0; i < draws.itemCount; ++i) {
+        const DrawItem& item = draws.items[i];
 
-        if (item.material->cullMode != boundCull) {
-            vk.vkCmdSetCullMode(cmd, item.material->cullMode);
-            boundCull = item.material->cullMode;
+        // One comparison for two failures: kNoMaterial is above every valid index, so
+        // an item nobody assigned a material and an index past the end are caught the
+        // same way. The pointer this replaced could only report the first, and a stale
+        // one not even that.
+        if (item.material >= draws.materialCount) { continue; }
+        const Material& material = draws.materials[item.material];
+
+        if (material.cullMode != boundCull) {
+            vk.vkCmdSetCullMode(cmd, material.cullMode);
+            boundCull = material.cullMode;
             if (stats != nullptr) { stats->cullChanges += 1; }
         }
 
         if (item.material != boundMaterial) {
             vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                        layout, kMaterialSet, 1,
-                                       &item.material->set, 0, nullptr);
+                                       &material.set, 0, nullptr);
             boundMaterial = item.material;
             if (stats != nullptr) { stats->materialBinds += 1; }
         }
@@ -434,8 +440,7 @@ static void RecordPostProcessPass(const FrameSlot& slot, const PostProcessPass& 
 
 bool RecordFrame(const FrameSlot& slot, const ScenePass& scene,
                  const PostProcessPass& post, Gui& gui, const Texture& target,
-                 const DrawItem* items, uint32_t itemCount,
-                 DrawStats* stats) noexcept {
+                 const DrawList& draws, DrawStats* stats) noexcept {
     const VolkDeviceTable& vk = slot.dev->table;
 
     // The value and its GPU copy meet here. Safe because BeginFrame waited on this
@@ -459,7 +464,7 @@ bool RecordFrame(const FrameSlot& slot, const ScenePass& scene,
     // The order is here, in these three lines, and nowhere else. post.source points
     // at scene, but that is a dependency -- it would not stop these from being
     // swapped.
-    RecordScenePass(slot, scene, items, itemCount, stats);
+    RecordScenePass(slot, scene, draws, stats);
     RecordPostProcessPass(slot, post, target);
     RecordGuiPass(slot, gui, target);
 
