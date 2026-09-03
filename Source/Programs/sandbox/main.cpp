@@ -29,10 +29,12 @@
 
 #include <GLFW/glfw3.h>
 #include <cgltf.h>
+#include <stb_image.h>
 
 #include <cmath>      // cos, sin
 #include <cstdio>     // fopen, to test for the asset before loading it
 #include <iterator>   // std::size
+#include <string>     // the texture path the glTF names
 #include <vector>     // scene data is too big for the stack now
 
 // One header at a time. <glm/ext.hpp> was dropped when vendoring (VERSION.md).
@@ -98,10 +100,6 @@ static void MakeSphere(uint32_t stacks, uint32_t slices, float radius,
     }
 }
 
-// Small cells on purpose: one texel per cell makes a wrong uv obvious, and the
-// LINEAR sampler softens the edges.
-//
-// Output: pixels[size * size * 4], RGBA8
 // A glTF file, flattened into the one mesh and the one item list this pass draws.
 //
 // Input:  path to a .gltf. Its .bin is opened from beside it
@@ -118,7 +116,8 @@ static void MakeSphere(uint32_t stacks, uint32_t slices, float radius,
 static bool LoadGltf(const char* path,
                      std::vector<Vertex>* vertices,
                      std::vector<uint16_t>* indices,
-                     std::vector<DrawItem>* items) noexcept {
+                     std::vector<DrawItem>* items,
+                     std::string* baseColorUri) noexcept {
     cgltf_options options{};
     cgltf_data* data = nullptr;
 
@@ -197,6 +196,18 @@ static bool LoadGltf(const char* path,
                     static_cast<uint16_t>(cgltf_accessor_read_index(prim.indices, i)));
             }
 
+            // The first base colour this file names, and only the first: one texture
+            // is all a DrawItem can point at today. Sponza has 25 materials, and the
+            // second one is where a material has to become data.
+            if (baseColorUri->empty() && prim.material != nullptr
+                    && prim.material->has_pbr_metallic_roughness) {
+                const cgltf_texture* tex =
+                    prim.material->pbr_metallic_roughness.base_color_texture.texture;
+                if (tex != nullptr && tex->image != nullptr && tex->image->uri != nullptr) {
+                    *baseColorUri = tex->image->uri;
+                }
+            }
+
             DrawItem item{};
             item.range = {static_cast<uint32_t>(firstIndex),
                           static_cast<uint32_t>(prim.indices->count)};
@@ -212,6 +223,10 @@ static bool LoadGltf(const char* path,
     return !items->empty();
 }
 
+// Small cells on purpose: one texel per cell makes a wrong uv obvious, and the
+// LINEAR sampler softens the edges. The fallback when the scene names no texture.
+//
+// Output: pixels[size * size * 4], RGBA8
 static void MakeChecker(uint32_t size, uint8_t* pixels) noexcept {
     for (uint32_t y = 0; y < size; ++y) {
         for (uint32_t x = 0; x < size; ++x) {
@@ -220,6 +235,39 @@ static void MakeChecker(uint32_t size, uint8_t* pixels) noexcept {
             p[0] = v; p[1] = v; p[2] = v; p[3] = 255;
         }
     }
+}
+
+// Effect: reads an image file into a texture, ready for a set to name it
+//
+// 4 channels forced: the shader samples a vec4 and there is no guaranteed 8-bit
+// three-channel format. stb expands whatever the file stores.
+//
+// SRGB, like the checker it replaces: base colour is authored in sRGB, and reading it
+// as UNORM would light the scene with values that were never linear.
+//
+// The pixels live only for this call -- CreateTextureFromPixels stages and blocks.
+static bool LoadTextureFile(const VulkanDevice& dev, const Commands& commands,
+                            const char* path, Texture* out) noexcept {
+    int width = 0;
+    int height = 0;
+    int channelsInFile = 0;
+    stbi_uc* pixels = stbi_load(path, &width, &height, &channelsInFile, 4);
+    if (pixels == nullptr) {
+        LOG("[img] cannot read %s (%s)\n", path, stbi_failure_reason());
+        return false;
+    }
+
+    const TextureDesc desc{{static_cast<uint32_t>(width), static_cast<uint32_t>(height)},
+                           VK_FORMAT_R8G8B8A8_SRGB, VK_SAMPLE_COUNT_1_BIT,
+                           VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT};
+    const size_t byteCount = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
+    const bool uploaded = CreateTextureFromPixels(dev, commands, desc, pixels,
+                                                  byteCount, out);
+    stbi_image_free(pixels);
+    if (uploaded) {
+        LOG("[img] %s (%dx%d, %d channels in file)\n", path, width, height, channelsInFile);
+    }
+    return uploaded;
 }
 
 int main() {
@@ -237,7 +285,7 @@ int main() {
     Pipeline       opaque;        // each owns the set layout its shaders declare
     Pipeline       present;
     Descriptors    descriptors;   // the pool, so it outlives the sets drawn from it
-    Texture        checker;       // before scene: the pass points at both of these,
+    Texture        baseColor;       // before scene: the pass points at both of these,
     Mesh           mesh;          // so they must not die first
     ScenePass      scene;         // attachments, and the sets naming them
     PostProcessPass post;         // reads scene, writes the swapchain
@@ -348,10 +396,11 @@ int main() {
     // is the fallback, and it is also what says whether a blank screen is the loader's
     // fault or the renderer's.
     const char* const kScenePath = LAMBDA_ASSET_ROOT "/Sponza/Sponza.gltf";
+    std::string baseColorUri;
     bool loaded = false;
     if (std::FILE* probe = std::fopen(kScenePath, "rb")) {
         std::fclose(probe);
-        loaded = LoadGltf(kScenePath, &vertices, &indices, &items);
+        loaded = LoadGltf(kScenePath, &vertices, &indices, &items, &baseColorUri);
     } else {
         LOG("[scene] no %s -- drawing the generated sphere instead\n", kScenePath);
     }
@@ -405,18 +454,37 @@ int main() {
         return 1;
     }
 
-    constexpr uint32_t kCheckerSize = 8;
-    uint8_t checkerPixels[kCheckerSize * kCheckerSize * 4]{};
-    MakeChecker(kCheckerSize, checkerPixels);
+    // One texture, on every draw. The scene names 25 materials and this takes the
+    // first -- which is wrong, and visibly so: it is the same wall on every surface.
+    //
+    // That is the point of stopping here. Making it right means a draw pointing at its
+    // own texture, and the DrawItem cannot do that until a set is a material's rather
+    // than a pass's. The second texture is what forces that, not an argument about it.
+    //
+    // URI is relative to the .gltf, per the spec, and Sponza keeps its images beside it.
+    bool textured = false;
+    if (!baseColorUri.empty()) {
+        const std::string path = LAMBDA_ASSET_ROOT "/Sponza/" + baseColorUri;
+        textured = LoadTextureFile(dev, commands, path.c_str(), &baseColor);
+    }
 
+    // The fallback is code, not a file, so a machine without the asset still draws
+    // something that shows whether uv and the sampler are right.
+    //
     // SRGB: this is multiplied with the shader's output, so it must be in the same
     // space as the render target. UNORM here would brighten the result.
-    const TextureDesc checkerDesc{{kCheckerSize, kCheckerSize},
-                                  VK_FORMAT_R8G8B8A8_SRGB, VK_SAMPLE_COUNT_1_BIT,
-                                  VK_IMAGE_USAGE_TRANSFER_DST_BIT
-                                      | VK_IMAGE_USAGE_SAMPLED_BIT};
-    if (!CreateTextureFromPixels(dev, commands, checkerDesc, checkerPixels,
-                                 sizeof(checkerPixels), &checker)) { return 1; }
+    if (!textured) {
+        constexpr uint32_t kCheckerSize = 8;
+        uint8_t checkerPixels[kCheckerSize * kCheckerSize * 4]{};
+        MakeChecker(kCheckerSize, checkerPixels);
+
+        const TextureDesc checkerDesc{{kCheckerSize, kCheckerSize},
+                                      VK_FORMAT_R8G8B8A8_SRGB, VK_SAMPLE_COUNT_1_BIT,
+                                      VK_IMAGE_USAGE_TRANSFER_DST_BIT
+                                          | VK_IMAGE_USAGE_SAMPLED_BIT};
+        if (!CreateTextureFromPixels(dev, commands, checkerDesc, checkerPixels,
+                                     sizeof(checkerPixels), &baseColor)) { return 1; }
+    }
 
     // Frames
     // ------------------------------------------------------------------------
@@ -424,7 +492,7 @@ int main() {
     // Passes first, in dependency order: the post pass's sets name what the scene
     // pass made. A slot owns none of that -- it only knows which frame it is.
     if (!CreateScenePass(dev, descriptors, formats, kRenderExtent,
-                         mesh, checker, opaque, &scene)) { return 1; }
+                         mesh, baseColor, opaque, &scene)) { return 1; }
     if (!CreatePostProcessPass(descriptors, scene, present, &post)) { return 1; }
 
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {

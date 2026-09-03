@@ -55,13 +55,19 @@ bool CreateDescriptors(const VulkanDevice& dev,
     // 여러 image를 읽는다. 두 layout이 이것 하나를 같이 쓴다.
     //
     // LINEAR: 렌더 해상도와 창 크기가 다를 수 있어 확대·축소가 일어난다
-    // CLAMP_TO_EDGE: 0~1 밖은 가장자리 색. REPEAT면 반대편이 말려 들어온다
+    //
+    // REPEAT: **에셋이 그것을 전제로 만들어졌다.** Sponza의 uv는 u -27.79..32.29 /
+    // v -4.95..7.58이고 103개 primitive 중 45개가 0~1 밖이다 - 벽 한 장을 타일로 깔려고
+    // 그렇게 적은 것이라, CLAMP면 그 45개가 가장자리 한 줄로 늘어난다.
+    //
+    // 반대 대가는 texture atlas다: 한 장에 여러 그림이 있으면 반대편이 말려 들어온다.
+    // Sponza는 그림당 파일 하나라 해당 없다.
     VkSamplerCreateInfo samplerInfo{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
     samplerInfo.magFilter = VK_FILTER_LINEAR;
     samplerInfo.minFilter = VK_FILTER_LINEAR;
-    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;   // mipmap이 없다
     if (dev.table.vkCreateSampler(dev.handle, &samplerInfo, nullptr, &out->sampler)
             != VK_SUCCESS) {
