@@ -461,10 +461,19 @@ int main() {
     if (!CreateShaderProgram(dev, "Shaders/shadow.vert.spv", "Shaders/shadow.frag.spv",
                              &renderer.shadowProgram)) { return 1; }
 
+    // The same layout the scene pipeline gets: it describes the buffer, and
+    // shadow.vert reads one location out of it. Which ones a pipeline consumes is the
+    // vertex stage's answer, and CheckVertexInterface reads it from the .spv.
+    //
+    // formats as a value, for the reason AttachmentFormats exists: CreateShadowPass
+    // makes its image from this same one, so the two cannot be edited apart.
+    const AttachmentFormats shadowFormats{VK_FORMAT_UNDEFINED, formats.depth,
+                                          VK_SAMPLE_COUNT_1_BIT};
+    constexpr VkExtent2D kShadowExtent{kShadowResolution, kShadowResolution};
+
     GraphicsPipelineDesc shadowDesc;
-    shadowDesc.vertexLayout = PositionInput();
-    shadowDesc.formats = AttachmentFormats{VK_FORMAT_UNDEFINED, formats.depth,
-                                           VK_SAMPLE_COUNT_1_BIT};
+    shadowDesc.vertexLayout = VertexInput();
+    shadowDesc.formats = shadowFormats;
     // Down, and it decides one thing only: which way the map's v axis runs. mesh.frag
     // reads it back as ndc * 0.5 + 0.5, which is this sign. frontFace comes along and
     // does not matter -- the pass culls nothing.
@@ -734,7 +743,7 @@ int main() {
     // Passes first, in dependency order: the scene pass's sets name the shadow maps,
     // the post pass's name what the scene pass made. A slot owns none of that -- it
     // only knows which frame it is.
-    if (!CreateShadowPass(dev, renderer.descriptors, formats.depth, kShadowResolution,
+    if (!CreateShadowPass(dev, renderer.descriptors, shadowFormats, kShadowExtent,
                           renderer.mesh, renderer.shadowProgram,
                           renderer.shadowPipeline, &renderer.shadowPass)) { return 1; }
     if (!CreateScenePass(dev, renderer.descriptors, formats, kRenderExtent,

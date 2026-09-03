@@ -11,29 +11,28 @@
 #include <glm/matrix.hpp>   // inverse, transpose
 
 bool CreateShadowPass(const VulkanDevice& dev, const Descriptors& descriptors,
-                      VkFormat depthFormat, uint32_t resolution,
+                      AttachmentFormats formats, VkExtent2D extent,
                       const Mesh& mesh, const ShaderProgram& program,
                       const Pipeline& pipeline, ShadowPass* out) noexcept {
     out->mesh = &mesh;
     out->program = &program;
     out->pipeline = &pipeline;
 
-    // Stride, not the whole layout. The scene pass compares layouts because its
-    // pipeline reads every attribute; this one reads position alone, so what has to
-    // agree is where one vertex ends -- the pipeline steps over the rest.
-    if (mesh.desc.vertexLayout.stride != pipeline.desc.vertexLayout.stride) {
-        LOG("[vk] the mesh and the shadow pipeline disagree about the vertex stride\n");
+    // The same comparison the scene pass makes, because both pipelines are built from
+    // the same layout now. What differs between them is which locations their vertex
+    // stages read, and that is the .spv's business rather than this one's.
+    if (!SameVertexLayout(mesh.desc.vertexLayout, pipeline.desc.vertexLayout)) {
+        LOG("[vk] the mesh and the shadow pipeline disagree about the vertex layout\n");
         return false;
     }
 
-    const VkExtent2D extent{resolution, resolution};
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
         ShadowPass::PerFrame& frame = out->frames[i];
 
         // Both usages, which is what makes this image the seam between two passes.
         // One sample: averaging depths across an edge produces a value no surface was
         // ever at, and every fragment comparing against it is wrong.
-        if (!CreateTexture(dev, {extent, depthFormat, VK_SAMPLE_COUNT_1_BIT,
+        if (!CreateTexture(dev, {extent, formats.depth, formats.samples,
                                  VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
                                      | VK_IMAGE_USAGE_SAMPLED_BIT},
                            &frame.depth)) {

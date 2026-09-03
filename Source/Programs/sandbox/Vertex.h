@@ -16,8 +16,9 @@
 //   uv         8   (0,0) top-left, y down
 //   tangent   16   xyz, w = bitangent sign (glTF TANGENT)
 //
-// Contract: a field is not an attribute. VertexInput() declares only what the shader
-//           reads -- the layer warns about any extra. All four are read now.
+// Contract: a field is not an attribute. VertexInput() declares what the buffer
+//           carries; a shader reads the locations it needs and the pipeline layer
+//           checks those, not the count.
 
 #include "Vulkan/VertexLayout.h"
 
@@ -30,12 +31,10 @@ struct Vertex {
 
 // The vertex layout for Vertex, as a value. Callers put it in desc.vertexLayout; a
 // shader that builds its own points (fullscreen) leaves that default, stride 0.
-VertexLayout VertexInput() noexcept;
-
-// The same buffer read for position alone, which is all a depth-only pass needs.
 //
-// Same stride, one attribute: a layout does not have to feed every field the buffer
-// holds, and the pipeline steps over the rest. It is a separate layout rather than a
-// subset taken at runtime because the shader decides which locations it reads, and
-// this is the value that has to match shadow.vert's one input.
-VertexLayout PositionInput() noexcept;
+// One of these, not one per shader. A depth-only pass reading position alone is built
+// from this same value: which locations a pipeline actually consumes is decided by
+// its vertex stage, and the .spv already says so. A second "position only" layout
+// would be that answer written out by hand, and it would be the hand-written copy
+// that goes stale.
+VertexLayout VertexInput() noexcept;

@@ -16,14 +16,3 @@ VertexLayout VertexInput() noexcept {
     layout.attributes[3] = {3, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, tangent)};
     return layout;
 }
-
-// Position alone, over the same stride. The offset is the same offsetof, so the two
-// layouts cannot drift: whichever one a pass uses, location 0 is where the struct
-// says position is.
-VertexLayout PositionInput() noexcept {
-    VertexLayout layout;
-    layout.stride = sizeof(Vertex);
-    layout.attributeCount = 1;
-    layout.attributes[0] = {0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position)};
-    return layout;
-}

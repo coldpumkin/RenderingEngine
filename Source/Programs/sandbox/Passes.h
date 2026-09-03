@@ -334,10 +334,12 @@ struct ShadowPass {
 
 // Effect: creates each frame's depth map and the set naming its matrix
 //
-// Contract: depthFormat must be what pipeline was built with, and extent is square --
-//           the light's box is.
+// Contract: formats must be what pipeline was built with -- the same shape
+//           CreateScenePass takes, and unchecked here for the same reason.
+//           formats.color is UNDEFINED: this pass has no colour attachment.
+//           extent is square, because the light's box is.
 bool CreateShadowPass(const VulkanDevice& dev, const Descriptors& descriptors,
-                      VkFormat depthFormat, uint32_t resolution,
+                      AttachmentFormats formats, VkExtent2D extent,
                       const Mesh& mesh, const ShaderProgram& program,
                       const Pipeline& pipeline, ShadowPass* out) noexcept;
 

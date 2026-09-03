@@ -42,11 +42,7 @@ static bool CheckVertexInterface(const GraphicsPipelineDesc& desc,
                                  const ShaderInterface& vs,
                                  const char* vertPath) noexcept {
     const VertexLayout& layout = desc.vertexLayout;
-    if (vs.inputCount != layout.attributeCount) {
-        LOG("[vk] %s reads %u vertex inputs, the layout supplies %u\n",
-            vertPath, vs.inputCount, layout.attributeCount);
-        return false;
-    }
+
     // Vulkan is fine with a shader reading locations 0 and 2 and a layout supplying
     // both. We are not: in these shaders a gap means a location was removed and the
     // layout not followed. Ours to relax if a real one ever turns up.
@@ -56,43 +52,58 @@ static bool CheckVertexInterface(const GraphicsPipelineDesc& desc,
         return false;
     }
 
-    // Location by location, because a count is not an agreement. The layout is the
-    // buffer's -- its stride, offsets and formats are free to differ from anything the
-    // shader says -- so the only thing the two sides owe each other is that each
-    // location exists on both and delivers the kind of number the shader reads.
-    uint32_t matched = 0;
-    for (uint32_t i = 0; i < layout.attributeCount; ++i) {
-        const VertexAttribute& attribute = layout.attributes[i];
+    // Walked from the shader's side, and the direction is the point. The layout
+    // describes the buffer, which is one thing; the shaders reading it are several,
+    // and each reads the locations it needs. mesh.vert takes all four of ours,
+    // shadow.vert takes position, and both are built from the same layout.
+    //
+    // So a layout supplying more than this shader reads is not an error -- Vulkan
+    // ignores the surplus. What it may not do is leave out something the shader reads,
+    // or supply it as the wrong kind of number.
+    for (uint32_t i = 0; i < vs.inputCount; ++i) {
+        const VertexInputSlot& slot = vs.inputs[i];
 
-        const VertexInputSlot* slot = nullptr;
-        for (uint32_t j = 0; j < vs.inputCount; ++j) {
-            if (vs.inputs[j].location == attribute.location) { slot = &vs.inputs[j]; break; }
+        const VertexAttribute* attribute = nullptr;
+        for (uint32_t j = 0; j < layout.attributeCount; ++j) {
+            if (layout.attributes[j].location == slot.location) {
+                attribute = &layout.attributes[j];
+                break;
+            }
         }
-        if (slot == nullptr) {
-            LOG("[vk] %s: the layout feeds location %u, which the shader does not read\n",
-                vertPath, attribute.location);
+        if (attribute == nullptr) {
+            LOG("[vk] %s reads location %u, which the layout does not supply\n",
+                vertPath, slot.location);
             return false;
         }
-        if ((matched & (1u << attribute.location)) != 0) {
-            LOG("[vk] %s: the layout feeds location %u twice\n", vertPath, attribute.location);
-            return false;
-        }
-        matched |= 1u << attribute.location;
 
         // Vulkan converts inside a kind and not across one, so this is the line that
         // actually matters. R8G8B8A8_UNORM feeding a vec4 passes; R32G32B32A32_UINT
         // feeding one does not, and nothing else would have said so.
-        const NumericKind supplied = KindOfFormat(attribute.format);
+        const NumericKind supplied = KindOfFormat(attribute->format);
         if (supplied == NumericKind::Unknown) {
             LOG("[vk] %s: location %u uses format %d, which KindOfFormat does not know\n",
-                vertPath, attribute.location, attribute.format);
+                vertPath, slot.location, attribute->format);
             return false;
         }
-        if (supplied != slot->kind) {
+        if (supplied != slot.kind) {
             LOG("[vk] %s: location %u is supplied as %s and read as %s\n",
-                vertPath, attribute.location, KindName(supplied), KindName(slot->kind));
+                vertPath, slot.location, KindName(supplied), KindName(slot.kind));
             return false;
         }
+    }
+
+    // The layout's own consistency, which is not about this shader: feeding one
+    // location twice is wrong whoever reads it, and the second entry would silently
+    // win.
+    uint32_t seen = 0;
+    for (uint32_t i = 0; i < layout.attributeCount; ++i) {
+        const uint32_t bit = 1u << layout.attributes[i].location;
+        if ((seen & bit) != 0) {
+            LOG("[vk] %s: the layout feeds location %u twice\n",
+                vertPath, layout.attributes[i].location);
+            return false;
+        }
+        seen |= bit;
     }
     return true;
 }
