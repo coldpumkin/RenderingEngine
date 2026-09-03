@@ -481,9 +481,9 @@ int main() {
     // One sample: the default, and averaging a visibility test would produce a depth
     // no surface was ever at.
     //
-    // A value rather than two arguments, for the reason AttachmentFormats exists:
-    // CreateShadowPass makes its image from this same one, so the two cannot be
-    // edited apart.
+    // It goes into the pipeline and nowhere else. CreateShadowPass reads it back out
+    // of there, so this value is written once and the images cannot be made from a
+    // different one.
     const AttachmentFormats shadowFormats{.depth = sceneFormats.depth};
     constexpr VkExtent2D kShadowExtent{kShadowResolution, kShadowResolution};
 
@@ -768,10 +768,12 @@ int main() {
     // Passes first, in dependency order: the scene pass's sets name the shadow maps,
     // the post pass's name what the scene pass made. A slot owns none of that -- it
     // only knows which frame it is.
-    if (!CreateShadowPass(dev, renderer.descriptors, shadowFormats, kShadowExtent,
+    // No formats here. Each pass reads them off its pipeline, which is the thing that
+    // baked them in -- passing them again would only make a second value to disagree.
+    if (!CreateShadowPass(dev, renderer.descriptors, kShadowExtent,
                           renderer.mesh, renderer.shadowProgram,
                           renderer.shadowPipeline, &renderer.shadowPass)) { return 1; }
-    if (!CreateScenePass(dev, renderer.descriptors, sceneFormats, kRenderExtent,
+    if (!CreateScenePass(dev, renderer.descriptors, kRenderExtent,
                          renderer.mesh, renderer.sceneProgram, renderer.scenePipeline,
                          renderer.shadowPass, &renderer.scenePass)) { return 1; }
     if (!CreatePostProcessPass(renderer.descriptors, renderer.scenePass,

@@ -11,12 +11,16 @@
 #include <glm/matrix.hpp>   // inverse, transpose
 
 bool CreateShadowPass(const VulkanDevice& dev, const Descriptors& descriptors,
-                      AttachmentFormats formats, VkExtent2D extent,
+                      VkExtent2D extent,
                       const Mesh& mesh, const ShaderProgram& program,
                       const Pipeline& pipeline, ShadowPass* out) noexcept {
     out->mesh = &mesh;
     out->program = &program;
     out->pipeline = &pipeline;
+
+    // The one place these come from. A pipeline bakes them in, so asking it is asking
+    // the thing the images have to match.
+    const AttachmentFormats& formats = pipeline.desc.formats;
 
     // The same comparison the scene pass makes, because both pipelines are built from
     // the same layout now. What differs between them is which locations their vertex
@@ -72,13 +76,18 @@ bool CreateShadowPass(const VulkanDevice& dev, const Descriptors& descriptors,
 // Built without looking at the window, so this works while minimized - there may be
 // no swapchain yet, and nothing here depends on one.
 bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
-                     AttachmentFormats formats, VkExtent2D extent,
+                     VkExtent2D extent,
                      const Mesh& mesh, const ShaderProgram& program,
                      const Pipeline& pipeline, const ShadowPass& shadow,
                      ScenePass* out) noexcept {
     out->mesh = &mesh;
     out->program = &program;
     out->pipeline = &pipeline;
+
+    // Read off the pipeline, like the shadow pass above. The images below exist
+    // because these three values say so: a colour format, a sample count above one,
+    // and a depth format.
+    const AttachmentFormats& formats = pipeline.desc.formats;
 
     // The bytes were written as one thing and are read as another unless these agree.
     // Nobody else looks: the pipeline checked its layout against the shader, the mesh

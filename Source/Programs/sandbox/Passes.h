@@ -334,12 +334,13 @@ struct ShadowPass {
 
 // Effect: creates each frame's depth map and the set naming its matrix
 //
-// Contract: formats must be what pipeline was built with -- the same shape
-//           CreateScenePass takes, and unchecked here for the same reason.
-//           formats.color is UNDEFINED: this pass has no colour attachment.
-//           extent is square, because the light's box is.
+// The formats come out of pipeline. They used to be an argument beside it with a
+// contract saying the two must agree and nothing checking it; a pipeline already
+// carries what it was compiled for, so the second copy was only a way to disagree.
+//
+// Contract: extent is square, because the light's box is.
 bool CreateShadowPass(const VulkanDevice& dev, const Descriptors& descriptors,
-                      AttachmentFormats formats, VkExtent2D extent,
+                      VkExtent2D extent,
                       const Mesh& mesh, const ShaderProgram& program,
                       const Pipeline& pipeline, ShadowPass* out) noexcept;
 
@@ -407,13 +408,18 @@ struct ScenePass {
 // Effect: creates each frame's attachments and uniform buffer, and points the pass at
 //         what the scene brings.
 //
-// Contract: formats must be what pipeline was built with. Both are arguments here so
-//           the mismatch is at least in one call, but nothing checks it.
+// What the attachments are made of is read off pipeline, the same way the shadow pass
+// reads its own. Which images exist at all follows from the same three values: a
+// colour format that is not UNDEFINED means a colour attachment, more than one sample
+// means a resolve beside it, a depth format means depth. That rule produces this
+// pass's three and the shadow pass's one, which is why neither takes them as an
+// argument any more.
+//
 // Contract: shadow must already be created -- each frame's set names its depth map,
 //           frame for frame. Taken by value at set-fill time and not stored: the
 //           barrier that makes it readable belongs to the pass that writes it.
 bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
-                     AttachmentFormats formats, VkExtent2D extent,
+                     VkExtent2D extent,
                      const Mesh& mesh, const ShaderProgram& program,
                      const Pipeline& pipeline, const ShadowPass& shadow,
                      ScenePass* out) noexcept;

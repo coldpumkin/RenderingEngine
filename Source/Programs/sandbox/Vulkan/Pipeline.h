@@ -89,8 +89,13 @@ struct Pipeline {
 
     VkPipeline handle = VK_NULL_HANDLE;
 
-    // What it was built from. Recording reads viewportY out of it, and a rebuild needs
-    // the rest -- without this the caller would have to keep the desc alive.
+    // What it was built from, and the only copy of it. Recording reads viewportY,
+    // a pass makes its attachments from formats, and a rebuild needs the rest.
+    //
+    // Keeping it here is what lets those callers stop carrying their own: an
+    // AttachmentFormats beside a pipeline is a second value that can disagree with
+    // what the pipeline actually baked, and there is no way to check one against the
+    // other after the fact.
     GraphicsPipelineDesc desc;
 
     Pipeline() = default;
