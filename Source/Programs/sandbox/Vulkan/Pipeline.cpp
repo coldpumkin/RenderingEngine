@@ -92,17 +92,6 @@ static bool CheckOutputInterface(const GraphicsPipelineDesc& desc,
     return true;
 }
 
-bool SameVertexLayout(const VertexLayout& a, const VertexLayout& b) noexcept {
-    if (a.stride != b.stride || a.attributeCount != b.attributeCount) { return false; }
-    for (uint32_t i = 0; i < a.attributeCount; ++i) {
-        if (a.attributes[i].location != b.attributes[i].location
-                || a.attributes[i].format != b.attributes[i].format
-                || a.attributes[i].offset != b.attributes[i].offset) {
-            return false;
-        }
-    }
-    return true;
-}
 
 // Everything both pipelines share, in the order the GPU walks it
 // ============================================================================

@@ -19,7 +19,7 @@
 // Contract: a field is not an attribute. VertexInput() declares only what the shader
 //           reads -- the layer warns about any extra. All four are read now.
 
-#include "Vulkan/Pipeline.h"   // VertexLayout
+#include "Vulkan/VertexLayout.h"
 
 struct Vertex {
     float position[3];   // location 0

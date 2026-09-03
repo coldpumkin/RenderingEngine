@@ -3,6 +3,7 @@
 #include "Vulkan/Attachments.h"
 #include "Vulkan/Device.h"
 #include "Vulkan/Shader.h"
+#include "Vulkan/VertexLayout.h"
 
 // ViewportY - one sign that decides two things
 // ============================================================================
@@ -43,55 +44,19 @@ enum class Blending {
 // ours and lives in CreateGraphicsPipeline. The rows are where each value comes
 // from, which is the whole reason this is a struct and not five arguments:
 //
-//   the shader requires   vertPath . fragPath . vertexInput
-//   the pass decides      viewportY
-//   the caller chooses    polygonMode . blending
-//   passed through        colorFormat . depthFormat . samples
+//   the mesh supplies     vertexLayout
+//   the pass decides      formats . viewportY
+//   the variant chooses   polygonMode . blending
+//
+// The shaders are not here: what they require is ShaderProgram, and several pipelines
+// share one. What is left is exactly what two pipelines from one program can differ
+// in, plus the two agreements a pass owns both sides of.
 //
 // cullMode is not here. It is dynamic state now, set at record time like the
 // viewport -- see the note on VkDynamicState in the .cpp.
 //
 // The last row decides nothing: it carries values from Attachments so both sides of
 // a baked-in contract read the same one.
-// VertexLayout - what a vertex buffer hands the vertex stage
-// ============================================================================
-//
-// The same kind of thing AttachmentFormats is, at the other end of the shader: a
-// resource-side description of a boundary, checked against what the .spv declares.
-// Not the same type and not merged with it -- what each one adds beyond
-// "location -> format" is its resource kind. A buffer needs where in it; an image
-// needs how many samples.
-//
-// A value rather than a pointer to a VkPipelineVertexInputStateCreateInfo the caller
-// keeps alive. Two things follow: the desc is entirely values, and a Mesh can be
-// compared against it.
-
-// One attribute: which shader location it feeds, in what format, at what byte offset
-// inside one vertex.
-struct VertexAttribute {
-    uint32_t location = 0;
-    VkFormat format = VK_FORMAT_UNDEFINED;
-    uint32_t offset = 0;
-};
-
-// stride 0 means no vertex buffer at all -- a shader that builds its own points. In
-// band the way AttachmentFormats says "no depth" with UNDEFINED: a flag beside it
-// would make "no buffer, but here are four attributes" expressible.
-struct VertexLayout {
-    uint32_t stride = 0;
-    uint32_t attributeCount = 0;
-    VertexAttribute attributes[kMaxVertexAttributes]{};
-};
-
-// Effect: true when both describe the same bytes -- same stride, same attributes in
-//         the same order.
-//
-// Not a subset test. A buffer carrying extra attributes the pipeline ignores would
-// still be read at the same stride, but nothing here produces one, and accepting it
-// would hide the mismatch this is for.
-bool SameVertexLayout(const VertexLayout& a, const VertexLayout& b) noexcept;
-
-
 struct GraphicsPipelineDesc {
 
     // stride 0 means no vertex buffer - the shader builds its points from
@@ -134,8 +99,9 @@ struct Pipeline {
     Pipeline& operator=(const Pipeline&) = delete;
 };
 
-// Effect: destroys pipeline and layout, leaves the struct empty. setLayouts are not
-//         touched -- only the destructor frees that. The destructor calls this; main
+// Effect: destroys the compiled object and leaves the struct empty. The layout and
+//         set layouts are the program's and are not touched -- that is what lets a
+//         rebuild keep every set already allocated. The destructor calls this; main
 //         calls it directly to rebuild in place when the surface format changes.
 //
 // Contract: every command buffer using this pipeline must have finished, so the
@@ -143,12 +109,12 @@ struct Pipeline {
 void DestroyPipeline(const VulkanDevice& dev, Pipeline* pipeline) noexcept;
 
 
-// Effect: builds one pipeline from desc. The push range, the set layout and the
-//         shader stages come out of the .spv; everything else is desc. An out that
-//         already carries a set layout keeps it, which is what a rebuild needs.
+// Effect: builds one pipeline from a program and a desc, after checking both ends of
+//         the shader boundary -- the layout against the vertex stage's inputs, the
+//         colour formats against the fragment stage's outputs.
 //
-// Contract: colorFormat, depthFormat and samples must be what the attachments
-//           actually are.
+// Contract: formats must be what the attachments actually are. Nothing here can see
+//           the images, so this is the one that stays a contract.
 //           LINE polygonMode needs fillModeNonSolid, which is no longer requested.
 bool CreateGraphicsPipeline(const VulkanDevice& dev,
                             const ShaderProgram& program,

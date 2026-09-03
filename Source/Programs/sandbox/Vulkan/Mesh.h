@@ -1,7 +1,7 @@
 ﻿#pragma once
 
 #include "Vulkan/Buffer.h"
-#include "Vulkan/Pipeline.h"   // VertexLayout: what these bytes were written as
+#include "Vulkan/VertexLayout.h"   // what these bytes were written as
 
 // Mesh - the two buffers a draw always binds together
 // ============================================================================
