@@ -590,18 +590,9 @@ int main() {
     const PhysicalDeviceSelection selection = PickPhysicalDevice(inst, window.surface);
     if (selection.gpu == VK_NULL_HANDLE) { return 1; }
 
-    // What we draw into. Two targets, so two questions, and the picked GPU answers
-    // both on its own -- no logical device, and neither creates anything to destroy.
-    //
-    //   formats        the off-screen target. A policy, not a property: the candidate
-    //                  list and its order are ours and the GPU only says which are
-    //                  supported. Asked here rather than inside PickPhysicalDevice so
-    //                  the device layer never sees this type.
-    //   surfaceFormat  the swapchain's, so this one needs the surface too. The format,
-    //                  not the images: vkGetPhysicalDeviceSurfaceFormatsKHR answers
-    //                  without a swapchain, and the pipelines below need the answer,
-    //                  not a place to draw. Securing that place happens again on every
-    //                  resize, which makes it the loop's business, not init's.
+    // Two questions the picked GPU answers alone -- no device, nothing to destroy.
+    // Formats, not images: the pipelines below need the answer, and securing a place
+    // to draw happens again on every resize, which makes it the loop's business.
     AttachmentFormats formats;
     if (!ChooseAttachmentFormats(inst, selection.gpu, &formats)) { return 1; }
     if (!SelectSurfaceFormat(inst, selection.gpu, &window)) { return 1; }
