@@ -41,8 +41,13 @@ Swapchain::~Swapchain() {
     if (handle == VK_NULL_HANDLE || dev == nullptr) { return; }
     const VulkanDevice& d = *dev;
 
-    // 스펙: 사용 중인 object 파괴는 금지다. GPU가 아직 이 image들을 쓸 수 있다.
-    d.table.vkDeviceWaitIdle(d.handle);
+    // **여기서 기다리지 않는다.** 소멸자가 device를 세우면 "놓는 것"과 "파괴하는 것"이
+    // 한 시점으로 붙고, 리사이즈마다 GPU가 멈춘다.
+    //
+    // Contract: 안전은 두 경로 중 하나가 보장한다 -
+    //   런타임  RetiredSwapchain의 셈이 끝났다 (AdvanceRetiredSwapchains)
+    //   종료    main이 vkDeviceWaitIdle을 먼저 부른다
+    // 어긋나면 검증 레이어가 "사용 중인 object 파괴"로 잡는다.
 
     for (SwapchainImage& img : images) {
         d.table.vkDestroySemaphore(d.handle, img.renderFinished, nullptr);
@@ -237,8 +242,6 @@ bool EnsureSwapchain(const VulkanDevice& dev, Window* window) noexcept {
         return true;
     }
 
-    dev.table.vkDeviceWaitIdle(dev.handle);
-
     // **Format을 다시 묻지 않는다.** window->surfaceFormat은 초기화 때 한 번 정해지고
     // 그대로 간다 - 언리얼의 FVulkanViewport도 PixelFormat을 들고 재생성할 때 그것을
     // 다시 넣는다(RecreateSwapchainFromRT).
@@ -259,8 +262,17 @@ bool EnsureSwapchain(const VulkanDevice& dev, Window* window) noexcept {
     const bool created = CreateSwapchain(*window->inst, dev, window->surface,
                                          window->surfaceFormat, retiring, fresh.get());
 
-    // **새것을 만든 뒤에** 이전 것을 놓는다. reset()이 소멸자를 부른다.
-    window->swapchain.reset();
+    // **새것을 만든 뒤에** 이전 것을 놓는다. 파괴는 여기서 일어나지 않는다 - present가
+    // 아직 옛 image를 읽고 있을 수 있어서 셈이 끝날 때까지 retired에 둔다.
+    //
+    // 셈의 크기는 옛 swapchain의 image 수다: 새것에서 그만큼 present가 더 일어나면
+    // 화면에 남아 있던 옛 image는 전부 교체됐다. 실패해서 새것이 없어도 옛것은 이미
+    // retire됐으므로(스펙) 똑같이 넘긴다.
+    if (window->swapchain != nullptr) {
+        const uint32_t frames =
+            static_cast<uint32_t>(window->swapchain->images.size()) + 1;
+        window->retired.push_back(RetiredSwapchain{std::move(window->swapchain), frames});
+    }
 
     // 실패하면 fresh가 여기서 파괴된다 - 반쯤 만들어진 것도 소멸자가 정리한다.
     // 그래서 CreateSwapchain의 중간 실패 경로에 되돌리기 코드가 하나도 없다.
@@ -270,4 +282,16 @@ bool EnsureSwapchain(const VulkanDevice& dev, Window* window) noexcept {
     window->swapchainOutOfDate = false;
 
     return window->swapchain != nullptr;
+}
+
+void AdvanceRetiredSwapchains(Window* window) noexcept {
+    // 뒤에서부터 지운다 - 앞에서 지우면 남은 것들이 앞으로 밀리면서 인덱스가 어긋난다.
+    for (size_t i = window->retired.size(); i > 0; --i) {
+        RetiredSwapchain& item = window->retired[i - 1];
+        if (item.framesLeft > 0) {
+            --item.framesLeft;
+            continue;
+        }
+        window->retired.erase(window->retired.begin() + static_cast<ptrdiff_t>(i - 1));
+    }
 }

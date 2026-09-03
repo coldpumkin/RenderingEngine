@@ -71,6 +71,11 @@ FrameResult BeginFrame(const VulkanDevice& dev,
         return FrameResult::Fatal;
     }
 
+    // A frame finished, so the retired swapchains are one frame closer to safe. Here
+    // rather than in the loop because this is where "a frame completed" is known, and
+    // it is the same fence that says it.
+    AdvanceRetiredSwapchains(window);
+
     uint32_t imageIndex = 0;
     const VkResult acquired = dev.table.vkAcquireNextImageKHR(
         dev.handle, swapchain.handle, UINT64_MAX,

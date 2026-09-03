@@ -4,6 +4,7 @@
 #include "Vulkan/Swapchain.h"
 
 #include <memory>
+#include <vector>
 
 struct GLFWwindow;
 
@@ -69,6 +70,10 @@ struct Window {
     // unique_ptr인 이유: 리사이즈마다 통째로 갈아끼운다. 값으로 두면 move 대입이
     // 필요하고, 포인터면 그게 공짜다. nullptr이 그대로 "지금 그릴 곳이 없다"를 뜻한다.
     std::unique_ptr<Swapchain> swapchain;
+
+    // 교체됐지만 아직 못 놓는 것들. 리사이즈를 빨리 반복하면 둘 이상이 겹치므로
+    // 배열이다. 비어 있는 것이 정상이고, 리사이즈 직후 몇 프레임만 찬다.
+    std::vector<RetiredSwapchain> retired;
 
     // 창마다 하나여야 한다. 한동안 전역이었는데, 그러면 창이 둘일 때 어느 창이
     // 바뀌었는지 구분할 수 없다.
