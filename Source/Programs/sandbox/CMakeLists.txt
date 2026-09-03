@@ -86,7 +86,7 @@ find_program(GLSLC_EXE glslc HINTS "$ENV{VULKAN_SDK}/Bin" REQUIRED)
 set(SHADER_BUILD_DIR "${CMAKE_CURRENT_BINARY_DIR}/Shaders")
 set(SPV_FILES "")
 
-foreach(SHADER shadow.vert shadow.frag mesh.vert mesh.frag fullscreen.vert fullscreen.frag gui.vert gui.frag)
+foreach(SHADER shadow.vert shadow.frag scene.vert scene.frag fullscreen.vert fullscreen.frag gui.vert gui.frag)
     set(SRC "${CMAKE_CURRENT_SOURCE_DIR}/Shaders/${SHADER}")
     set(SPV "${SHADER_BUILD_DIR}/${SHADER}.spv")
     add_custom_command(
@@ -118,7 +118,7 @@ add_custom_command(TARGET sandbox POST_BUILD
 # already what compiles them.
 set(SHADER_SOURCES
     Shaders/shadow.vert     Shaders/shadow.frag
-    Shaders/mesh.vert       Shaders/mesh.frag
+    Shaders/scene.vert      Shaders/scene.frag
     Shaders/fullscreen.vert Shaders/fullscreen.frag
     Shaders/gui.vert        Shaders/gui.frag
 )

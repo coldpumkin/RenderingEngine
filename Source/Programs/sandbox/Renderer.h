@@ -51,7 +51,7 @@ struct Renderer {
     //
     //   program   shaders                vertex          sets
     //   shadow    shadow.vert/frag       position (48)   0 the light's matrix
-    //   scene     mesh.vert/frag         Vertex (48)     0 frame, 1 material
+    //   scene     scene.vert/frag         Vertex (48)     0 frame, 1 material
     //   present   fullscreen.vert/frag   none            0 the scene's resolve
     //   gui       gui.vert/frag          ImDrawVert      0 the font atlas
     //

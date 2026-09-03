@@ -300,7 +300,7 @@ static void RecordShadowPass(const FrameSlot& slot, const ShadowPass& shadow,
     vk.vkCmdBeginRendering(cmd, &rendering);
 
     // Down, and here it settles one thing only: which way the map's v axis runs.
-    // mesh.frag reads it back as ndc * 0.5 + 0.5, which is this sign. The winding goes
+    // scene.frag reads it back as ndc * 0.5 + 0.5, which is this sign. The winding goes
     // out with it and has no effect, because the pass culls nothing.
     SetViewportAndWinding(vk, cmd, extent, ViewportY::Down);
 

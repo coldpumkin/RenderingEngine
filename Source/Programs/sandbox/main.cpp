@@ -55,7 +55,7 @@
 // CreateMesh and CreateTextureFromPixels take.
 //
 // Nothing here writes a Vertex by hand, and the loader is the only thing that fills
-// the array. Vertex answers to mesh.vert -- the shader declares the locations,
+// the array. Vertex answers to scene.vert -- the shader declares the locations,
 // spirv-reflect reports them, CheckVertexInterface compares the two -- and that check
 // sees whether a field is supplied, never whether it holds the right numbers. A
 // hand-written tangent is trigonometry nothing can verify; a loaded one is a field in
@@ -217,7 +217,7 @@ static void GenerateTangents(Vertex* vertices, size_t vertexCount,
             tangent = glm::cross(normal, axis);
         }
 
-        // Gram-Schmidt, the same step mesh.frag repeats after interpolation.
+        // Gram-Schmidt, the same step scene.frag repeats after interpolation.
         tangent = tangent - normal * glm::dot(normal, tangent);
         if (glm::dot(tangent, tangent) < 1e-16f) { tangent = glm::vec3{1.0f, 0.0f, 0.0f}; }
         tangent = glm::normalize(tangent);
@@ -340,7 +340,7 @@ static bool LoadGltf(const char* path,
             if (nrm == nullptr)      { missing = "NORMAL"; }
             else if (uv0 == nullptr) { missing = "TEXCOORD_0"; }
             if (missing != nullptr) {
-                LOG("[gltf] a primitive has no %s, and mesh.vert reads it\n", missing);
+                LOG("[gltf] a primitive has no %s, and scene.vert reads it\n", missing);
                 cgltf_free(data);
                 return false;
             }
@@ -625,7 +625,7 @@ int main() {
     // The program first: the shaders decide the set layouts and the push range, and a
     // pipeline only picks state on top of that. Two pipelines from one program share
     // every set already drawn from it.
-    if (!CreateShaderProgram(dev, "Shaders/mesh.vert.spv", "Shaders/mesh.frag.spv",
+    if (!CreateShaderProgram(dev, "Shaders/scene.vert.spv", "Shaders/scene.frag.spv",
                              &renderer.sceneProgram)) { return 1; }
 
     // Two lines, and they are the same two the shadow pipeline sets. What differs
@@ -1054,7 +1054,7 @@ int main() {
         // The centre is fixed rather than fitted to the camera. Fitting is what a real
         // one does (and what cascades are), and it needs the frustum's corners in
         // light space; a constant box is honest about covering this scene and nothing
-        // larger, and mesh.frag returns "lit" for anything outside it.
+        // larger, and scene.frag returns "lit" for anything outside it.
         //
         // lightDir points from the surface toward the light, so the eye is the centre
         // plus that. It never lines up with world up -- y is fixed at 0.5 while xz go

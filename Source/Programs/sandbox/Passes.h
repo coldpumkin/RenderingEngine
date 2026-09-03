@@ -73,8 +73,8 @@ constexpr uint32_t kMaterialSet = 1;   // what a surface looks like. One per mat
 // What the shaders read
 // ============================================================================
 //
-// Here rather than in Vulkan/Pipeline.h because the fields answer to mesh.vert and
-// mesh.frag, not to the API. The pipeline layer only needs their sizes, and it gets
+// Here rather than in Vulkan/Pipeline.h because the fields answer to scene.vert and
+// scene.frag, not to the API. The pipeline layer only needs their sizes, and it gets
 // those out of the .spv.
 
 // Contract: field order and types match the shader's Scene block. Written once per

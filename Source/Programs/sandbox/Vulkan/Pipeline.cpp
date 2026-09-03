@@ -63,7 +63,7 @@ static bool CheckVertexInterface(const GraphicsPipelineDesc& desc,
 
     // Walked from the shader's side, and the direction is the point. The layout
     // describes the buffer, which is one thing; the shaders reading it are several,
-    // and each reads the locations it needs. mesh.vert takes all four of ours,
+    // and each reads the locations it needs. scene.vert takes all four of ours,
     // shadow.vert takes position, and both are built from the same layout.
     //
     // So a layout supplying more than this shader reads is not an error -- Vulkan
@@ -234,7 +234,7 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     VkVertexInputBindingDescription binding{0, layout.stride, VK_VERTEX_INPUT_RATE_VERTEX};
 
     // What this stage reads, not everything the buffer holds. The layout describes one
-    // buffer and several shaders read it: mesh.vert takes all four of our attributes,
+    // buffer and several shaders read it: scene.vert takes all four of our attributes,
     // shadow.vert takes position. Declaring the rest here draws correctly and the
     // validation layer warns once per pipeline that the attribute is not consumed --
     // so the surplus is dropped rather than passed on.

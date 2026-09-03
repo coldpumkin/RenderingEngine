@@ -77,7 +77,7 @@ struct ViewOptions {
 // this way each has a name on both sides of the boundary instead of a bit position.
 // 0 or 1, and the shader compares against 0.5 so a half value is not a third state.
 //
-// Contract: field order matches the View block in mesh.frag.
+// Contract: field order matches the View block in scene.frag.
 struct ViewOptionsUniform {
     float normalMap;
     float baseColor;

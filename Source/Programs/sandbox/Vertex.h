@@ -3,7 +3,7 @@
 // Vertex - what one of our vertices is, and how a pipeline reads it
 // ============================================================================
 //
-// Outside Vulkan/ because these fields answer to mesh.vert's locations, not to the
+// Outside Vulkan/ because these fields answer to scene.vert's locations, not to the
 // API. Mesh takes a stride and stays layout-agnostic, so this is the only place that
 // knows which bytes are position.
 //

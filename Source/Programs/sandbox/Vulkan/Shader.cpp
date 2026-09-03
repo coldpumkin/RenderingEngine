@@ -92,7 +92,7 @@ bool Reflect(const std::vector<uint32_t>& code, const char* path,
     // Same enumeration on the other end of the boundary, and only for the stage where
     // that end is an attachment.
     //
-    // A vertex stage has outputs too -- mesh.vert declares four -- but they are
+    // A vertex stage has outputs too -- scene.vert declares four -- but they are
     // varyings bound for the next stage, the same SPIR-V storage class at a different
     // boundary. The comment here used to say a vertex stage reports none, which was
     // simply wrong; nothing read the number, so nothing said so. Checking those

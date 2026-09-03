@@ -12,13 +12,13 @@ layout(location = 3) in vec4 inTangent;   // xyz along +u, w = bitangent sign
 // Set 0 is the frame's, and this stage reads one thing out of it.
 //
 // The front of the block, not all of it. A program's interface is the union of what
-// its stages require, not one declaration copied into each -- mesh.frag names the
+// its stages require, not one declaration copied into each -- scene.frag names the
 // rest, and BuildSetLayout ors the two. Declaring fields this stage never reads made
 // the file look like it needed a light and four switches to place a vertex.
 //
 // Truncating is safe where reordering is not: std140 offsets are decided by what
 // comes before a field, so the first N fields sit where they sit. Reading a later one
-// means saying its offset, the way mesh.frag's push block does.
+// means saying its offset, the way scene.frag's push block does.
 //
 // Contract: viewProj is the first field of SceneUniform in Passes.h.
 layout(set = 0, binding = 0) uniform Scene {
