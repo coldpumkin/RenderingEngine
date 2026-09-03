@@ -11,7 +11,7 @@
 //
 // Stride 48, all float so no padding:
 //
-//   position  12   world space
+//   position  12   object space -- the push constant's model puts it in world
 //   normal    12   +z for a z=0 face wound CCW in y-up
 //   uv         8   (0,0) top-left, y down
 //   tangent   16   xyz, w = bitangent sign (glTF TANGENT)
