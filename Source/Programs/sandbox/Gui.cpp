@@ -100,26 +100,19 @@ void ShowPipeline(const char* name, const Pipeline* pipeline) noexcept {
 
 }   // namespace
 
-const VkPipelineVertexInputStateCreateInfo& GuiVertexInput() noexcept {
+VertexLayout GuiVertexInput() noexcept {
     // ImDrawVert is {ImVec2 pos, ImVec2 uv, ImU32 col} -- 20 bytes. Its offsets come
     // from offsetof for the same reason the scene's do: a field moving must not need
     // a second edit here.
-    static constexpr VkVertexInputBindingDescription binding{
-        0, sizeof(ImDrawVert), VK_VERTEX_INPUT_RATE_VERTEX};
-
-    static constexpr VkVertexInputAttributeDescription attributes[]{
-        {0, 0, VK_FORMAT_R32G32_SFLOAT,  offsetof(ImDrawVert, pos)},
-        {1, 0, VK_FORMAT_R32G32_SFLOAT,  offsetof(ImDrawVert, uv)},
-        // Four bytes, not four floats. UNORM is what turns 0..255 into the 0..1 the
-        // shader reads -- the conversion belongs to the format, not the shader.
-        {2, 0, VK_FORMAT_R8G8B8A8_UNORM, offsetof(ImDrawVert, col)},
-    };
-
-    static const VkPipelineVertexInputStateCreateInfo info{
-        VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO, nullptr, 0,
-        1, &binding,
-        static_cast<uint32_t>(std::size(attributes)), attributes};
-    return info;
+    VertexLayout layout;
+    layout.stride = sizeof(ImDrawVert);
+    layout.attributeCount = 3;
+    layout.attributes[0] = {0, VK_FORMAT_R32G32_SFLOAT,  offsetof(ImDrawVert, pos)};
+    layout.attributes[1] = {1, VK_FORMAT_R32G32_SFLOAT,  offsetof(ImDrawVert, uv)};
+    // Four bytes, not four floats. UNORM is what turns 0..255 into the 0..1 the
+    // shader reads -- the conversion belongs to the format, not the shader.
+    layout.attributes[2] = {2, VK_FORMAT_R8G8B8A8_UNORM, offsetof(ImDrawVert, col)};
+    return layout;
 }
 
 bool CreateGui(const VulkanDevice& dev, const Commands& commands,
@@ -283,7 +276,7 @@ void BuildGui(ViewOptions* options, const GuiFrameInfo& info) noexcept {
                         m.vertexCount, m.indexCount,
                         m.indexType == VK_INDEX_TYPE_UINT16 ? "uint16" : "uint32");
             ImGui::Text("         %u KB + %u KB in two buffers",
-                        (m.vertexCount * m.vertexStride) / 1024,
+                        (m.vertexCount * m.vertexLayout.stride) / 1024,
                         (m.indexCount * (m.indexType == VK_INDEX_TYPE_UINT16 ? 2u : 4u)) / 1024);
         }
 

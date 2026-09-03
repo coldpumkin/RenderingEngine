@@ -28,11 +28,10 @@ VkViewport MakeViewport(VkExtent2D extent, ViewportY y) noexcept {
 static bool CheckVertexInterface(const GraphicsPipelineDesc& desc,
                                  const ShaderInterface& vs,
                                  const char* vertPath) noexcept {
-    const uint32_t declared = desc.vertexInput != nullptr
-                            ? desc.vertexInput->vertexAttributeDescriptionCount : 0;
-    if (vs.inputCount != declared) {
-        LOG("[vk] %s reads %u vertex inputs, the pipeline declares %u\n",
-            vertPath, vs.inputCount, declared);
+    const VertexLayout& layout = desc.vertexLayout;
+    if (vs.inputCount != layout.attributeCount) {
+        LOG("[vk] %s reads %u vertex inputs, the layout supplies %u\n",
+            vertPath, vs.inputCount, layout.attributeCount);
         return false;
     }
     // A gap means a location is declared but never read. The layer catches it later;
@@ -41,6 +40,66 @@ static bool CheckVertexInterface(const GraphicsPipelineDesc& desc,
         LOG("[vk] %s has gaps in its input locations (%u inputs, highest is %u)\n",
             vertPath, vs.inputCount, vs.maxInputLocation);
         return false;
+    }
+
+    // The two tests above together say the shader's locations are exactly
+    // 0..inputCount-1. So the sides agree exactly when the layout's locations are a
+    // permutation of that range, which this checks without needing the shader's list.
+    //
+    // This is what the pointer could not do: the count matched and the locations were
+    // never looked at.
+    uint32_t seen = 0;
+    for (uint32_t i = 0; i < layout.attributeCount; ++i) {
+        const uint32_t location = layout.attributes[i].location;
+        if (location >= vs.inputCount) {
+            LOG("[vk] %s: layout feeds location %u, the shader reads only 0..%u\n",
+                vertPath, location, vs.inputCount - 1);
+            return false;
+        }
+        if ((seen & (1u << location)) != 0) {
+            LOG("[vk] %s: layout feeds location %u twice\n", vertPath, location);
+            return false;
+        }
+        seen |= 1u << location;
+    }
+    return true;
+}
+
+// The other end of the same boundary, checked the same way. Until this existed,
+// colorAttachmentCount was written as 1 and no shader was ever asked how many it
+// writes.
+static bool CheckOutputInterface(const GraphicsPipelineDesc& desc,
+                                 const ShaderInterface& fs,
+                                 const char* fragPath) noexcept {
+    if (fs.outputCount != fs.maxOutputLocation) {
+        LOG("[vk] %s has gaps in its output locations (%u outputs, highest is %u)\n",
+            fragPath, fs.outputCount, fs.maxOutputLocation);
+        return false;
+    }
+    // AttachmentFormats carries one colour format, so it can answer for exactly one
+    // output. The ceiling says so here rather than as a 1 written into the create
+    // info: a G-buffer shader stops on this line instead of drawing into one
+    // attachment and silently losing the rest.
+    if (fs.outputCount != 1) {
+        LOG("[vk] %s writes %u colour outputs; AttachmentFormats describes one\n",
+            fragPath, fs.outputCount);
+        return false;
+    }
+    if (desc.formats.color == VK_FORMAT_UNDEFINED) {
+        LOG("[vk] %s writes a colour output, but no colour format was given\n", fragPath);
+        return false;
+    }
+    return true;
+}
+
+bool SameVertexLayout(const VertexLayout& a, const VertexLayout& b) noexcept {
+    if (a.stride != b.stride || a.attributeCount != b.attributeCount) { return false; }
+    for (uint32_t i = 0; i < a.attributeCount; ++i) {
+        if (a.attributes[i].location != b.attributes[i].location
+                || a.attributes[i].format != b.attributes[i].format
+                || a.attributes[i].offset != b.attributes[i].offset) {
+            return false;
+        }
     }
     return true;
 }
@@ -67,7 +126,8 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     //
     // A rebuild reaches here with all of that already made, which is why the rebuild
     // does not strand the sets allocated from those layouts.
-    if (!CheckVertexInterface(desc, program.vertInterface, program.vertPath)) {
+    if (!CheckVertexInterface(desc, program.vertInterface, program.vertPath)
+            || !CheckOutputInterface(desc, program.fragInterface, program.fragPath)) {
         return false;
     }
 
@@ -84,9 +144,23 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     // --- Input: how bytes become vertices, vertices become primitives -------
     // Layout comes from desc. The topology is fixed for both.
 
-    // Used when desc gives none, which means no vertex buffer at all.
-    const VkPipelineVertexInputStateCreateInfo emptyVertexInput{
+    // Built here from the value, so nothing outlives this call. stride 0 leaves both
+    // counts at zero, which is what "no vertex buffer" is in Vulkan's terms.
+    const VertexLayout& layout = desc.vertexLayout;
+    VkVertexInputBindingDescription binding{0, layout.stride, VK_VERTEX_INPUT_RATE_VERTEX};
+    VkVertexInputAttributeDescription attributes[kMaxVertexAttributes]{};
+    for (uint32_t i = 0; i < layout.attributeCount; ++i) {
+        attributes[i] = {layout.attributes[i].location, 0,
+                         layout.attributes[i].format, layout.attributes[i].offset};
+    }
+    VkPipelineVertexInputStateCreateInfo vertexInput{
         VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    if (layout.stride != 0) {
+        vertexInput.vertexBindingDescriptionCount = 1;
+        vertexInput.pVertexBindingDescriptions = &binding;
+        vertexInput.vertexAttributeDescriptionCount = layout.attributeCount;
+        vertexInput.pVertexAttributeDescriptions = attributes;
+    }
 
     VkPipelineInputAssemblyStateCreateInfo inputAssembly{
         VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
@@ -182,7 +256,9 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
 
     VkPipelineRenderingCreateInfo pipelineRendering{
         VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-    pipelineRendering.colorAttachmentCount = 1;
+    // From the shader, not from here. CheckOutputInterface already refused anything
+    // AttachmentFormats cannot answer for, so this is one -- said by the .spv.
+    pipelineRendering.colorAttachmentCount = program.fragInterface.outputCount;
     pipelineRendering.pColorAttachmentFormats = &desc.formats.color;
     pipelineRendering.depthAttachmentFormat = desc.formats.depth;   // UNDEFINED = no depth
 
@@ -192,8 +268,7 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     info.pNext = &pipelineRendering;
     info.stageCount = 2;
     info.pStages = stages;
-    info.pVertexInputState =
-        desc.vertexInput != nullptr ? desc.vertexInput : &emptyVertexInput;
+    info.pVertexInputState = &vertexInput;
     info.pInputAssemblyState = &inputAssembly;
     info.pViewportState = &viewportState;
     info.pRasterizationState = &rasterization;

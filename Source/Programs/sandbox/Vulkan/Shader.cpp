@@ -59,6 +59,21 @@ bool Reflect(const std::vector<uint32_t>& code, const char* path,
         if (v->location + 1 > out->maxInputLocation) { out->maxInputLocation = v->location + 1; }
     }
 
+    // Same enumeration on the other end of the boundary. A vertex stage reports none,
+    // which is right: only the fragment stage writes attachments.
+    uint32_t outputCount = 0;
+    spvReflectEnumerateOutputVariables(&module, &outputCount, nullptr);
+    std::vector<SpvReflectInterfaceVariable*> outputs(outputCount);
+    if (outputCount != 0) {
+        spvReflectEnumerateOutputVariables(&module, &outputCount, outputs.data());
+    }
+    for (const SpvReflectInterfaceVariable* v : outputs) {
+        // gl_FragDepth and friends carry no location and are not attachments.
+        if (v->built_in != -1) { continue; }
+        out->outputCount += 1;
+        if (v->location + 1 > out->maxOutputLocation) { out->maxOutputLocation = v->location + 1; }
+    }
+
     uint32_t blockCount = 0;
     spvReflectEnumeratePushConstantBlocks(&module, &blockCount, nullptr);
     std::vector<SpvReflectBlockVariable*> blocks(blockCount);

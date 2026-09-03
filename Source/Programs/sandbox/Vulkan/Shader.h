@@ -19,6 +19,10 @@ constexpr uint32_t kMaxBindingsPerSet = 8;   // ceiling we impose, not a counted
 // the caller's business -- this layer only reports which sets a shader declared.
 constexpr uint32_t kMaxSets = 2;
 
+// Ceilings we impose. Our two vertex types declare four and three attributes; no
+// shader writes more than one colour.
+constexpr uint32_t kMaxVertexAttributes = 8;
+
 // What one set declares. types is indexed by binding number, so a gap stays a gap.
 struct SetInterface {
     uint32_t bindingCount = 0;
@@ -28,6 +32,12 @@ struct SetInterface {
 struct ShaderInterface {
     uint32_t inputCount = 0;         // vertex attributes, built-ins excluded
     uint32_t maxInputLocation = 0;   // highest location + 1, so gaps show up
+
+    // The other end of the same boundary, read the same way. A fragment stage's
+    // outputs answer to the colour attachments the way its inputs answer to the vertex
+    // buffer, and until now only one side of that was ever looked at.
+    uint32_t outputCount = 0;
+    uint32_t maxOutputLocation = 0;
 
     uint32_t pushSize = 0;                    // 0 when the stage declares no block
     VkShaderStageFlags pushStages = 0;        // the stage itself, if it reads one

@@ -483,7 +483,7 @@ int main() {
                              &renderer.sceneProgram)) { return 1; }
 
     GraphicsPipelineDesc opaqueDesc;
-    opaqueDesc.vertexInput = &VertexInput();
+    opaqueDesc.vertexLayout = VertexInput();
     opaqueDesc.formats = formats;
     opaqueDesc.viewportY = ViewportY::Up;            // our world is y-up
     opaqueDesc.polygonMode = VK_POLYGON_MODE_FILL;
@@ -514,7 +514,7 @@ int main() {
                              &renderer.guiProgram)) { return 1; }
 
     GraphicsPipelineDesc guiDesc;
-    guiDesc.vertexInput = &GuiVertexInput();
+    guiDesc.vertexLayout = GuiVertexInput();
     guiDesc.formats = AttachmentFormats{window.surfaceFormat.format};
     guiDesc.viewportY = ViewportY::Down;
     guiDesc.blending = Blending::Translucent;
@@ -606,9 +606,10 @@ int main() {
         }
     }
 
-    // stride is the one thing a mesh can say about its vertices; the pipeline says
-    // which bytes are what.
-    const MeshDesc meshDesc{sizeof(Vertex),
+    // The same layout the scene pipeline was built with, said once here and compared
+    // in CreateScenePass. It used to be sizeof(Vertex) alone, which agreed with the
+    // pipeline by habit rather than by anything.
+    const MeshDesc meshDesc{VertexInput(),
                             static_cast<uint32_t>(vertices.size()),
                             static_cast<uint32_t>(indices.size())};
     if (!CreateMesh(dev, commands, meshDesc, vertices.data(), indices.data(),
@@ -959,8 +960,8 @@ int main() {
         guiInfo.presentPipeline = &renderer.presentPipeline;
         guiInfo.uniformBytes = static_cast<uint32_t>(sizeof(SceneUniform));
         guiInfo.pushBytes = static_cast<uint32_t>(sizeof(PushConstants));
-        guiInfo.vertexStride = static_cast<uint32_t>(sizeof(Vertex));
-        guiInfo.vertexAttributes = VertexInput().vertexAttributeDescriptionCount;
+        guiInfo.vertexStride = renderer.mesh.desc.vertexLayout.stride;
+        guiInfo.vertexAttributes = renderer.mesh.desc.vertexLayout.attributeCount;
         guiInfo.framesInFlight = kFramesInFlight;
         guiInfo.mesh = &renderer.mesh;
         guiInfo.guiPipeline = &renderer.guiPipeline;

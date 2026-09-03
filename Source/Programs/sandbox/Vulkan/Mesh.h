@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include "Vulkan/Buffer.h"
+#include "Vulkan/Pipeline.h"   // VertexLayout: what these bytes were written as
 
 // Mesh - the two buffers a draw always binds together
 // ============================================================================
@@ -9,15 +10,15 @@
 //
 //   index value    -> a slot in this vertex buffer   the pair cannot be split
 //   indexType      -> element type of the indices
-//   vertex layout  -> the pipeline's vertexInput     open: only the stride matches up
+//   vertex layout  -> the pipeline's vertexLayout     compared, not assumed
 //
-// stride is what a mesh can say about its vertices: how many bytes one takes. Which
-// bytes are position and which are uv is the pipeline's, because that is what the
-// shader's locations answer to.
+// The layout is here rather than a bare stride because these bytes were written as
+// something, and the pipeline that reads them was built for something. Both sides now
+// say what, so CreateScenePass can compare them instead of hoping.
 //
 // No index range here: a span is "which object", which Vulkan/ does not know.
 struct MeshDesc {
-    uint32_t vertexStride = 0;   // sizeof(Vertex) at the call site
+    VertexLayout vertexLayout;   // VertexInput() at the call site
     uint32_t vertexCount = 0;
     uint32_t indexCount = 0;
     VkIndexType indexType = VK_INDEX_TYPE_UINT16;

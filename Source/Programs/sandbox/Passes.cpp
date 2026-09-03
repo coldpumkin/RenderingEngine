@@ -18,6 +18,14 @@ bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
     out->program = &program;
     out->pipeline = &pipeline;
 
+    // The bytes were written as one thing and are read as another unless these agree.
+    // Nobody else looks: the pipeline checked its layout against the shader, the mesh
+    // wrote its own, and the two only meet here.
+    if (!SameVertexLayout(mesh.desc.vertexLayout, pipeline.desc.vertexLayout)) {
+        LOG("[vk] the mesh and this pass's pipeline disagree about the vertex layout\n");
+        return false;
+    }
+
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
         ScenePass::PerFrame& frame = out->frames[i];
 

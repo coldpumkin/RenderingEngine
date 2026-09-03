@@ -19,7 +19,7 @@
 // Contract: a field is not an attribute. VertexInput() declares only what the shader
 //           reads -- the layer warns about any extra. All four are read now.
 
-#include "Vulkan/Core.h"
+#include "Vulkan/Pipeline.h"   // VertexLayout
 
 struct Vertex {
     float position[3];   // location 0
@@ -28,6 +28,6 @@ struct Vertex {
     float tangent[4];    // location 3
 };
 
-// The vertex layout for Vertex. Callers hand this to desc.vertexInput; a shader that
-// builds its own points (fullscreen) leaves that null.
-const VkPipelineVertexInputStateCreateInfo& VertexInput() noexcept;
+// The vertex layout for Vertex, as a value. Callers put it in desc.vertexLayout; a
+// shader that builds its own points (fullscreen) leaves that default, stride 0.
+VertexLayout VertexInput() noexcept;

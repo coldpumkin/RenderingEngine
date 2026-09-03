@@ -53,11 +53,50 @@ enum class Blending {
 //
 // The last row decides nothing: it carries values from Attachments so both sides of
 // a baked-in contract read the same one.
+// VertexLayout - what a vertex buffer hands the vertex stage
+// ============================================================================
+//
+// The same kind of thing AttachmentFormats is, at the other end of the shader: a
+// resource-side description of a boundary, checked against what the .spv declares.
+// Not the same type and not merged with it -- what each one adds beyond
+// "location -> format" is its resource kind. A buffer needs where in it; an image
+// needs how many samples.
+//
+// A value rather than a pointer to a VkPipelineVertexInputStateCreateInfo the caller
+// keeps alive. Two things follow: the desc is entirely values, and a Mesh can be
+// compared against it.
+
+// One attribute: which shader location it feeds, in what format, at what byte offset
+// inside one vertex.
+struct VertexAttribute {
+    uint32_t location = 0;
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    uint32_t offset = 0;
+};
+
+// stride 0 means no vertex buffer at all -- a shader that builds its own points. In
+// band the way AttachmentFormats says "no depth" with UNDEFINED: a flag beside it
+// would make "no buffer, but here are four attributes" expressible.
+struct VertexLayout {
+    uint32_t stride = 0;
+    uint32_t attributeCount = 0;
+    VertexAttribute attributes[kMaxVertexAttributes]{};
+};
+
+// Effect: true when both describe the same bytes -- same stride, same attributes in
+//         the same order.
+//
+// Not a subset test. A buffer carrying extra attributes the pipeline ignores would
+// still be read at the same stride, but nothing here produces one, and accepting it
+// would hide the mismatch this is for.
+bool SameVertexLayout(const VertexLayout& a, const VertexLayout& b) noexcept;
+
+
 struct GraphicsPipelineDesc {
 
-    // nullptr means no vertex buffer - the shader builds its points from
+    // stride 0 means no vertex buffer - the shader builds its points from
     // gl_VertexIndex.
-    const VkPipelineVertexInputStateCreateInfo* vertexInput = nullptr;
+    VertexLayout vertexLayout;
 
     // The same values the attachments were made from -- dynamic rendering bakes them
     // in, so a mismatch is caught at vkCmdBeginRendering. depth UNDEFINED = no depth.

@@ -41,7 +41,7 @@ struct Window;
 //
 // A second vertex type is a second layout and nothing else. The two never meet: each
 // is baked into its own pipeline.
-const VkPipelineVertexInputStateCreateInfo& GuiVertexInput() noexcept;
+VertexLayout GuiVertexInput() noexcept;
 
 // Pixels to clip space. No camera and no model matrix -- the panel is already in
 // window pixels, and this is the whole of an orthographic screen-space transform.

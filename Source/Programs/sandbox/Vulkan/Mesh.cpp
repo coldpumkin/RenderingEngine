@@ -7,7 +7,8 @@ bool CreateMesh(const VulkanDevice& dev,
                 Mesh* out) noexcept {
     out->desc = desc;
 
-    const VkDeviceSize vertexBytes = VkDeviceSize{desc.vertexStride} * desc.vertexCount;
+    const VkDeviceSize vertexBytes =
+        VkDeviceSize{desc.vertexLayout.stride} * desc.vertexCount;
     if (!CreateDeviceLocalBuffer(dev, commands, vertices, vertexBytes,
                                  VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &out->vertices)) {
         return false;
