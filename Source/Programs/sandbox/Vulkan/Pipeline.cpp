@@ -126,9 +126,27 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     viewportState.viewportCount = 1;
     viewportState.scissorCount = 1;
 
+    // Three items are not baked.
+    //
+    // viewport/scissor because they follow the window, and baking them would rebuild
+    // every pipeline on a resize.
+    //
+    // cullMode because the asset decides it per draw: glTF doubleSided is a material
+    // property, and Sponza has both kinds. Baking it meant a second pipeline that
+    // differed in one field -- two shader compiles for one register.
+    //
+    // The reason all three are cheap to leave out is the same: none of them changes
+    // the machine code. They are register values the driver sets before the draw.
+    // blending or the sample count would be a different answer -- those change what
+    // the fragment shader compiles to, and leaving them dynamic makes the compiler
+    // assume the worst.
+    //
+    // Contract: a dynamic state must be set before every draw with this pipeline.
+    //           Vulkan does not remember one across a command buffer.
     constexpr VkDynamicState kDynamicStates[] = {
         VK_DYNAMIC_STATE_VIEWPORT,
         VK_DYNAMIC_STATE_SCISSOR,
+        VK_DYNAMIC_STATE_CULL_MODE,   // core in Vulkan 1.3, which we require
     };
     VkPipelineDynamicStateCreateInfo dynamicState{
         VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
@@ -138,7 +156,7 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     VkPipelineRasterizationStateCreateInfo rasterization{
         VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
     rasterization.polygonMode = desc.polygonMode;
-    rasterization.cullMode = desc.cullMode;
+    // Ignored: VK_DYNAMIC_STATE_CULL_MODE is in the list above.
     // Derived, so it cannot disagree with the viewport sign (Pipeline.h).
     rasterization.frontFace = FrontFaceFor(desc.viewportY);
     rasterization.lineWidth = 1.0f;   // used by LINE only. Above 1.0 needs wideLines

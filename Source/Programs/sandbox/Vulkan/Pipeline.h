@@ -44,9 +44,12 @@ enum class Blending {
 // from, which is the whole reason this is a struct and not five arguments:
 //
 //   the shader requires   vertPath . fragPath . vertexInput
-//   the pass decides      viewportY . cullMode
+//   the pass decides      viewportY
 //   the caller chooses    polygonMode . blending
 //   passed through        colorFormat . depthFormat . samples
+//
+// cullMode is not here. It is dynamic state now, set at record time like the
+// viewport -- see the note on VkDynamicState in the .cpp.
 //
 // The last row decides nothing: it carries values from Attachments so both sides of
 // a baked-in contract read the same one.
@@ -63,7 +66,6 @@ struct GraphicsPipelineDesc {
     AttachmentFormats formats;
 
     ViewportY viewportY = ViewportY::Down;
-    VkCullModeFlags cullMode = VK_CULL_MODE_NONE;
 
     // FILL is the only value anything passes right now. LINE needs the device's
     // fillModeNonSolid, which we stopped requesting -- switching to it means adding

@@ -350,7 +350,6 @@ int main() {
     Window         window;        // holds the swapchain, so it dies before dev
     Commands       commands;
     Pipeline       opaque;        // each owns the set layouts its shaders declare
-    Pipeline       masked;        // same shaders, no culling. The asset asks for it
     Pipeline       present;
     Descriptors    descriptors;   // the pool, so it outlives the sets drawn from it
     std::vector<Texture>  textures;    // one per material the scene names, checker last
@@ -395,35 +394,21 @@ int main() {
     // Passes
     // ------------------------------------------------------------------------
     //
-    // Two for the scene pass, one for the post pass. That is not a rule about passes:
-    // a pass is a render-target configuration, and how many pipelines its draws use is
-    // whatever the scene asks for.
+    // One for the scene pass, one for the post pass -- not a rule about passes, just
+    // what this scene asks for. It was two until cull became dynamic state: the second
+    // differed in that one field, which is a register and not a shader.
     //
-    // viewportY is the pass's. cullMode was too, until the asset started answering it.
+    // viewportY stays baked. It decides frontFace, and both would have to move
+    // together -- nothing here asks for that.
     GraphicsPipelineDesc opaqueDesc;
     opaqueDesc.vertPath = "Shaders/mesh.vert.spv";
     opaqueDesc.fragPath = "Shaders/mesh.frag.spv";
     opaqueDesc.vertexInput = &VertexInput();
     opaqueDesc.formats = formats;
     opaqueDesc.viewportY = ViewportY::Up;            // our world is y-up
-    opaqueDesc.cullMode = VK_CULL_MODE_BACK_BIT;
     opaqueDesc.polygonMode = VK_POLYGON_MODE_FILL;
     opaqueDesc.blending = Blending::Opaque;
     if (!CreateGraphicsPipeline(dev, opaqueDesc, &opaque)) { return 1; }
-
-    // The same shaders and the same targets, differing in one value -- and that value
-    // is glTF's doubleSided. A leaf is one quad seen from both faces, so culling would
-    // throw half of them away, and no shader can switch cull: it is baked in.
-    //
-    // Cutting alphaMode MASK the same way would be a second pipeline for a number the
-    // shader can just compare against, so that one rides in the push constant instead.
-    //
-    // Set layouts are its own, built from the same .spv. Separately created layouts
-    // that are identically defined are compatible (spec: pipeline layout
-    // compatibility), so a material set drawn from opaque's layout binds here too.
-    GraphicsPipelineDesc maskedDesc = opaqueDesc;
-    maskedDesc.cullMode = VK_CULL_MODE_NONE;
-    if (!CreateGraphicsPipeline(dev, maskedDesc, &masked)) { return 1; }
 
     // The format was settled by SelectSurfaceFormat above and does not change, so this
     // pipeline is right from the start and nothing rebuilds it.
@@ -434,7 +419,6 @@ int main() {
     presentDesc.fragPath = "Shaders/fullscreen.frag.spv";
     presentDesc.formats = AttachmentFormats{window.surfaceFormat.format};
     presentDesc.viewportY = ViewportY::Down;   // the shader makes its own uv
-    presentDesc.cullMode = VK_CULL_MODE_BACK_BIT;
     if (!CreateGraphicsPipeline(dev, presentDesc, &present)) { return 1; }
 
     // Render resolution
@@ -517,8 +501,8 @@ int main() {
         // No material of their own: they take the checker, like a glTF primitive
         // that names no texture. Closed shapes, so they cull like the opaque ones.
         for (const glm::mat4& m : kPlacements) {
-            items.push_back(DrawItem{m, 1.0f, 0.0f, kSphereIndices, nullptr,
-                                     VK_NULL_HANDLE, 0});
+            items.push_back(DrawItem{m, 1.0f, 0.0f, kSphereIndices,
+                                     VK_CULL_MODE_BACK_BIT, VK_NULL_HANDLE, 0});
             itemMaterial.push_back(UINT32_MAX);
             itemDoubleSided.push_back(0);
         }
@@ -640,7 +624,8 @@ int main() {
     for (size_t i = 0; i < items.size(); ++i) {
         const uint32_t index = itemMaterial[i];
         items[i].material = materials[index == UINT32_MAX ? kNoTexture : index].set;
-        items[i].pipeline = itemDoubleSided[i] != 0 ? &masked : &opaque;
+        items[i].cullMode = itemDoubleSided[i] != 0 ? VK_CULL_MODE_NONE
+                                                    : VK_CULL_MODE_BACK_BIT;
     }
 
     // Frames
@@ -825,7 +810,6 @@ int main() {
         guiInfo.vertexStride = static_cast<uint32_t>(sizeof(Vertex));
         guiInfo.vertexAttributes = VertexInput().vertexAttributeDescriptionCount;
         guiInfo.framesInFlight = kFramesInFlight;
-        guiInfo.maskedPipeline = &masked;
         guiInfo.mesh = &mesh;
         guiInfo.slotIndex = slot.index;
         guiInfo.sceneColor = &scene.frames[slot.index].color;

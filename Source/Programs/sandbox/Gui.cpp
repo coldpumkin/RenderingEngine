@@ -81,9 +81,8 @@ void ShowTexture(const char* name, const Texture* texture) noexcept {
 void ShowPipeline(const char* name, const Pipeline* pipeline) noexcept {
     if (pipeline == nullptr) { return; }
     const GraphicsPipelineDesc& d = pipeline->desc;
-    ImGui::Text("%-8s cull %-5s  %-11s  %ux  %s",
+    ImGui::Text("%-8s %-11s  %ux  %s",
                 name,
-                d.cullMode == VK_CULL_MODE_NONE ? "none" : "back",
                 d.blending == Blending::Opaque ? "opaque" : "translucent",
                 static_cast<uint32_t>(d.formats.samples),
                 d.viewportY == ViewportY::Up ? "y-up" : "y-down");
@@ -318,8 +317,11 @@ void BuildGui(ViewOptions* options, const GuiFrameInfo& info) noexcept {
 
     if (ImGui::CollapsingHeader("pipelines")) {
         ShowPipeline("scene", info.scenePipeline);
-        ShowPipeline("masked", info.maskedPipeline);
         ShowPipeline("present", info.presentPipeline);
+        ImGui::Separator();
+        // The three the pipelines do not bake. Named here because the panel lists
+        // what was baked, and the absence is the interesting half.
+        ImGui::TextUnformatted("dynamic  viewport  scissor  cullMode");
     }
 
     ImGui::End();

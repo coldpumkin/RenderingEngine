@@ -217,10 +217,8 @@ static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
     scissor.extent = extent;
     vk.vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-    // Not bound here any more -- each item names its own below. What is still the
-    // pass's is the layout and the viewport sign, and every pipeline a draw can name
-    // shares them.
-    //
+    vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.handle);
+
     // Once, above the loop: it is this frame's, and every draw in the pass reads it.
     vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.layout,
                                kFrameSet, 1, &targets.set, 0, nullptr);
@@ -237,18 +235,21 @@ static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
     // Order is whatever the caller wrote into the array. This layer does not sort --
     // and now the order costs something: a material bind happens wherever two
     // neighbours differ, so the same items in another order bind more times.
+    // Two things change between draws and they do not change together: 89 of
+    // Sponza's primitives are single sided and 14 are not, while the texture changes
+    // far more often than that. Both are set only where two neighbours differ, which
+    // is what a sort key would be sorting.
+    //
+    // UINT32_MAX rather than a cull value: every real value is a legal starting
+    // state, so "not set yet" needs one that is not.
     VkDescriptorSet boundMaterial = VK_NULL_HANDLE;
-    const Pipeline* boundPipeline = nullptr;
+    VkCullModeFlags boundCull = UINT32_MAX;
     for (uint32_t i = 0; i < itemCount; ++i) {
         const DrawItem& item = items[i];
 
-        // Two binds, two conditions. They are separate because they do not change
-        // together: 89 of Sponza's primitives are opaque and 14 are masked, while its
-        // textures change far more often than that.
-        if (item.pipeline != boundPipeline) {
-            vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                 item.pipeline->handle);
-            boundPipeline = item.pipeline;
+        if (item.cullMode != boundCull) {
+            vk.vkCmdSetCullMode(cmd, item.cullMode);
+            boundCull = item.cullMode;
         }
 
         if (item.material != boundMaterial) {
@@ -343,6 +344,10 @@ static void RecordPostProcessPass(const FrameSlot& slot, const PostProcessPass& 
     vk.vkCmdSetScissor(cmd, 0, 1, &scissor);
 
     vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.handle);
+
+    // Dynamic now, so it has to be said even though it never changes here. One
+    // fullscreen triangle, wound to face us.
+    vk.vkCmdSetCullMode(cmd, VK_CULL_MODE_BACK_BIT);
 
     vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.layout,
                                0, 1, &post.sets[slot.index], 0, nullptr);

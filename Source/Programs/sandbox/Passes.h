@@ -171,20 +171,18 @@ struct IndexRange {
 
 // What differs between draws, once the pass has fixed everything else.
 //
-// The material arrived here the day a second texture did. Pipeline and camera have
-// not: there is still one of each, and they move in the same way when there are two.
+// The material arrived here the day a second texture did. The camera has not: there
+// is still one, and it moves in the same way when there are two.
 struct DrawItem {
     glm::mat4 model{1.0f};
     float alpha = 1.0f;
     float alphaCutoff = 0.0f;   // 0 = draw every texel
     IndexRange range{};
 
-    // Which pipeline draws this. The asset decides it: glTF doubleSided means
-    // cullMode NONE, and cull is baked into a pipeline, so a shader cannot switch it.
-    //
-    // Contract: every pipeline named here must share the pass's pipeline layout --
-    //           they are built from the same shaders, so they do.
-    const Pipeline* pipeline = nullptr;
+    // glTF doubleSided, as the value the API wants. A pipeline once, because cull
+    // was baked -- it is dynamic state now, so what varies per draw is a number
+    // again rather than a whole compiled object.
+    VkCullModeFlags cullMode = VK_CULL_MODE_BACK_BIT;
 
     // The set, not an index into a list the recorder would also have to be handed.
     // Bound only when it differs from the last one, so the order items are written in

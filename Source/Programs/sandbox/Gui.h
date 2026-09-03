@@ -98,7 +98,6 @@ struct GuiFrameInfo {
     const Texture* frameTarget = nullptr;    // the acquired swapchain image
 
     const Mesh* mesh = nullptr;
-    const Pipeline* maskedPipeline = nullptr;
 };
 
 // Effect: builds this frame's widgets and leaves them ready to record
