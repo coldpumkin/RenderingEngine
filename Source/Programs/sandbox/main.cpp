@@ -239,10 +239,15 @@ static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
 // Post-process pass
 //
 // Input:  the pass (its source and pipeline), the slot (cmd, which frame), and the
-//         swapchain image to draw into
-// Effect: appends commands that sample the scene pass's resolve into that image
+//         texture to draw into
+// Effect: appends commands that sample the scene pass's resolve into that texture
+//
+// A Texture, not a SwapchainImage: nothing here reads the index or the semaphore, and
+// those are what make an image the swapchain's. Drawing somewhere else -- the next
+// stage of an effect chain, a screenshot -- is then a different argument, not a
+// different function.
 static void RecordPostProcessPass(const FrameSlot& slot, const PostProcessPass& post,
-                                  const SwapchainImage& target) noexcept {
+                                  const Texture& target) noexcept {
     const VolkDeviceTable& vk = slot.dev->table;
     VkCommandBuffer cmd = slot.cmd;
     const Pipeline& pipeline = *post.pipeline;
@@ -250,7 +255,7 @@ static void RecordPostProcessPass(const FrameSlot& slot, const PostProcessPass& 
     // What the scene pass left behind. The set bound below names this same image,
     // and both are picked by slot.index.
     const Texture& source = post.source->frames[slot.index].colorResolve;
-    const Texture& dest = target.texture;
+    const Texture& dest = target;
     const VkExtent2D destExtent = dest.desc.extent;
 
     // Written as an attachment, read as a texture -- that is this whole pass. The
@@ -308,6 +313,10 @@ static void RecordPostProcessPass(const FrameSlot& slot, const PostProcessPass& 
 
     vk.vkCmdEndRendering(cmd);
 
+    // The one place this still assumes the target is a swapchain image. Drawing into
+    // an intermediate texture would want SHADER_READ_ONLY here instead, and which one
+    // it should be is the pass's output contract -- not written down anywhere yet.
+    //
     // dstAccess is 0, unlike every other barrier here: present is not a queue
     // operation and reads nothing through the memory model, so there is no access to
     // make visible. The semaphore SubmitFrame signals is what present actually waits
@@ -325,7 +334,7 @@ static void RecordPostProcessPass(const FrameSlot& slot, const PostProcessPass& 
 //
 // Takes the slot but never touches its fence or semaphore -- a rule, not a type.
 static bool RecordFrame(const FrameSlot& slot, const ScenePass& scene,
-                        const PostProcessPass& post, const SwapchainImage& target,
+                        const PostProcessPass& post, const Texture& target,
                         const DrawItem* items, uint32_t itemCount) noexcept {
     const VolkDeviceTable& vk = slot.dev->table;
 
@@ -885,7 +894,7 @@ int main() {
         // and one iteration later this frame would draw with the stale pipeline.
         if (!EnsurePostProcessPipeline(dev, post, target->texture)) { break; }
 
-        if (!RecordFrame(slot, scene, post, *target,
+        if (!RecordFrame(slot, scene, post, target->texture,
                          items.data(), static_cast<uint32_t>(items.size()))) {
             break;
         }

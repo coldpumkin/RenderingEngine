@@ -177,7 +177,9 @@ enum class FrameResult {
 };
 
 // Input:  dev, window, slot
-// Output: image, set only on Ready and untouched otherwise
+// Output: image. Cleared to null first, so Skip and Fatal leave it null rather than
+//         stale -- a caller that ignores the result dereferences null instead of an
+//         image from the frame before
 // Effect: rebuilds the swapchain if needed, waits for this slot, acquires an image
 //
 // The image is returned rather than stored: it belongs to the swapchain, which the

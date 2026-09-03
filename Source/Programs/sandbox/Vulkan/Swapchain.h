@@ -58,7 +58,9 @@ bool SelectSurfaceFormat(const VulkanInstance& inst,
                          Window* window) noexcept;
 
 // Effect: 낡았거나 없으면 window->swapchain을 다시 만든다
-// Output: false는 실패가 아니라 "지금은 그릴 곳이 없다"(최소화 중)
+// Output: false는 "지금 그릴 곳이 없다"이고, 그것이 실패인지는 **호출자가 정한다**.
+//         main의 초기화에서는 켤 수 없다는 뜻이라 치명적이고, BeginFrame에서는
+//         최소화 중이라는 뜻이라 그 프레임만 건너뛴다.
 //
 // Instance를 안 받는다 - window가 자기를 만든 instance를 들고 있다. 밖에서 또 받으면
 // 다른 instance를 넘길 수 있는 구멍이 생기고, 그건 컴파일러가 못 잡는다.
