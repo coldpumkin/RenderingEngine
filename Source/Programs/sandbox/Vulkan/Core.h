@@ -54,10 +54,14 @@ inline VkPhysicalDeviceVulkan13Features RequiredFeatures13() noexcept {
     return features;
 }
 
-// No core 1.0 feature is required. fillModeNonSolid was, for POLYGON_MODE_LINE, and
-// no pipeline uses that any more -- a GPU was being turned away over something nothing
-// asked for.
+// The core 1.0 features we require. One, and it is here because a pipeline uses it:
+// POLYGON_MODE_LINE needs fillModeNonSolid, and the wireframe variant of the scene
+// pipeline is built with it.
 //
-// Adding one back means editing here **and** the candidate check in Device.cpp: the
-// check and the enable have to read the same values, and out of step the device is
-// created and the draw is what dies.
+// Contract: the candidate check in Device.cpp reads this same function. Out of step,
+//           the device is created and the draw is what dies.
+inline VkPhysicalDeviceFeatures RequiredFeatures10() noexcept {
+    VkPhysicalDeviceFeatures features{};
+    features.fillModeNonSolid = VK_TRUE;   // POLYGON_MODE_LINE
+    return features;
+}

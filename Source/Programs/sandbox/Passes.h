@@ -368,13 +368,20 @@ struct ScenePass {
     // draw's rather than the pass's.
     const ShaderProgram* program = nullptr;
 
-    // The draws bring their own now; this one is what the pass itself needs -- the
-    // layout to bind set 0 with, and the viewport sign. Both are the same across
-    // every pipeline a draw can name, because they all come from these shaders.
+    // Two variants of the one program, and the pass picks between them at record
+    // time. They differ in polygonMode and in nothing else -- same shaders, same set
+    // layouts, same push range, same attachment formats.
     //
-    // It is still here because the pass owns both sides of a pair: the pipeline bakes
-    // in the attachment formats, and frames[].color is made from the same ones.
+    // That sameness is the point rather than a coincidence: every descriptor set this
+    // pass allocated was drawn from program's layouts, so switching between these two
+    // rebinds nothing. It is what "a pipeline is one variant of a program" means when
+    // there is finally more than one.
+    //
+    // Not on the DrawItem. Which pipeline is used is one answer for the whole pass,
+    // not something a draw decides -- and this asset gives no reason for it to be:
+    // 25 materials, 22 OPAQUE and 3 MASK, and MASK is a discard in the shader.
     const Pipeline* pipeline = nullptr;
+    const Pipeline* wirePipeline = nullptr;
 
     struct PerFrame {
         Texture color;         // multisample. Drawn into, then discarded
@@ -413,7 +420,8 @@ struct ScenePass {
 bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
                      VkExtent2D extent,
                      const Mesh& mesh, const ShaderProgram& program,
-                     const Pipeline& pipeline, const ShadowPass& shadow,
+                     const Pipeline& pipeline, const Pipeline& wirePipeline,
+                     const ShadowPass& shadow,
                      const Gui& gui, ScenePass* out) noexcept;
 
 

@@ -78,8 +78,13 @@ struct Renderer {
     //   pipeline   from             target          polygon   blend
     //   shadow     shadowProgram    depth only 1x   fill      opaque
     //   scene      sceneProgram     color 4x        fill      opaque
+    //   sceneWire  sceneProgram     color 4x        line      opaque
     //   present    presentProgram   swapchain 1x    fill      opaque
     //   gui        guiProgram       swapchain 1x    fill      translucent
+    //
+    // The middle two are the table earning its keep: one program, two rows, and the
+    // only column that differs is polygonMode. Every set drawn from sceneProgram fits
+    // both, so the scene pass swaps between them and rebinds nothing.
     //
     // "depth only" is a colour format of UNDEFINED, and it is checked rather than
     // assumed: a fragment stage with no outputs and a pass with no colour attachment
@@ -89,6 +94,7 @@ struct Renderer {
     // sceneProgram, so every set already allocated fits it.
     Pipeline shadowPipeline;
     Pipeline scenePipeline;
+    Pipeline sceneWirePipeline;
     Pipeline presentPipeline;
     Pipeline guiPipeline;
 

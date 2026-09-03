@@ -637,6 +637,14 @@ int main() {
     if (!CreateGraphicsPipeline(dev, renderer.sceneProgram, opaqueDesc,
                                 &renderer.scenePipeline)) { return 1; }
 
+    // The same desc with one field changed, which is the whole of what a second
+    // variant is. LINE needs fillModeNonSolid, requested in Core.h and checked when
+    // the GPU was picked.
+    GraphicsPipelineDesc wireDesc = opaqueDesc;
+    wireDesc.polygonMode = VK_POLYGON_MODE_LINE;
+    if (!CreateGraphicsPipeline(dev, renderer.sceneProgram, wireDesc,
+                                &renderer.sceneWirePipeline)) { return 1; }
+
     // The format was settled by SelectSurfaceFormat above and does not change, so this
     // pipeline is right from the start and nothing rebuilds it.
     //
@@ -898,6 +906,7 @@ int main() {
                           renderer.shadowPipeline, &renderer.shadowPass)) { return 1; }
     if (!CreateScenePass(dev, renderer.descriptors, kRenderExtent,
                          renderer.mesh, renderer.sceneProgram, renderer.scenePipeline,
+                         renderer.sceneWirePipeline,
                          renderer.shadowPass, renderer.guiPass,
                          &renderer.scenePass)) { return 1; }
     if (!CreatePostProcessPass(renderer.descriptors, renderer.scenePass,

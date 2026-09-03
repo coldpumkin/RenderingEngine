@@ -64,6 +64,10 @@ struct ViewOptions {
     bool specular = true;
     bool alphaMask = true;
     bool shadow = true;
+
+    // Unlike the five above, this one does not reach a shader. It picks which pipeline
+    // the scene pass binds, so it is read on the CPU and never enters the uniform.
+    bool wireframe = false;
 };
 
 // The same switches as the shader reads them.
@@ -231,6 +235,12 @@ void BuildGui(Gui* gui, const GuiFrameInfo& info) noexcept;
 //           a null handle there is a validation error at bind time.
 VkBuffer GuiOptionsBuffer(const Gui& gui, uint32_t frameIndex) noexcept;
 constexpr VkDeviceSize kGuiOptionsSize = sizeof(ViewOptionsUniform);
+
+// Output: whether the scene pass should bind its wireframe variant
+//
+// A function for the same reason GuiOptionsBuffer is one: what the pass needs is one
+// answer, and this is the whole of what it may know about the panel.
+bool GuiWireframe(const Gui& gui) noexcept;
 
 // Effect: copies this frame's switches into the buffer the scene pass will read
 //

@@ -78,11 +78,21 @@ bool CreateShadowPass(const VulkanDevice& dev, const Descriptors& descriptors,
 bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
                      VkExtent2D extent,
                      const Mesh& mesh, const ShaderProgram& program,
-                     const Pipeline& pipeline, const ShadowPass& shadow,
+                     const Pipeline& pipeline, const Pipeline& wirePipeline,
+                     const ShadowPass& shadow,
                      const Gui& gui, ScenePass* out) noexcept {
     out->mesh = &mesh;
     out->program = &program;
     out->pipeline = &pipeline;
+    out->wirePipeline = &wirePipeline;
+
+    // Both variants have to answer to the same set layouts, or the sets filled below
+    // fit one of them and not the other. Sharing a ShaderProgram is what guarantees
+    // it, and this is the line that says so out loud.
+    if (pipeline.program != &program || wirePipeline.program != &program) {
+        LOG("[vk] a scene pipeline was built from a different program\n");
+        return false;
+    }
 
     // Read off the pipeline, like the shadow pass above. The images below exist
     // because these three values say so: a colour format, a sample count above one,
@@ -350,11 +360,15 @@ static void RecordShadowPass(const FrameSlot& slot, const ShadowPass& shadow,
 }
 
 static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
-                            const DrawList& draws, DrawStats* stats) noexcept {
+                            const DrawList& draws, bool wireframe,
+                            DrawStats* stats) noexcept {
     const VolkDeviceTable& vk = slot.dev->table;
     VkCommandBuffer cmd = slot.cmd;
     const Mesh& mesh = *scene.mesh;
-    const Pipeline& pipeline = *scene.pipeline;
+
+    // One choice for the whole pass. Both were built from scene.program, so every set
+    // allocated for this pass fits either one and nothing below changes.
+    const Pipeline& pipeline = wireframe ? *scene.wirePipeline : *scene.pipeline;
 
     // Sets and push constants go through the pass's layout, not the pipeline's: every
     // pipeline a draw here can name was built from the same program, so this is the
@@ -643,7 +657,7 @@ bool RecordFrame(const FrameSlot& slot, const ShadowPass& shadow,
     // Shadow first, and the order is these lines. The scene pass's set already names
     // the map; what it cannot say is that the map has been drawn this frame.
     RecordShadowPass(slot, shadow, draws);
-    RecordScenePass(slot, scene, draws, stats);
+    RecordScenePass(slot, scene, draws, GuiWireframe(gui), stats);
     RecordPostProcessPass(slot, post, target);
     RecordGuiPass(slot, gui, target);
 

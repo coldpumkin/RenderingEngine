@@ -102,6 +102,13 @@ PhysicalDeviceSelection PickPhysicalDevice(const VulkanInstance& inst,
         VkPhysicalDeviceFeatures2 features2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
         features2.pNext = &features13;
         inst.table.vkGetPhysicalDeviceFeatures2(candidate, &features2);
+        // (b1) core 1.0. Read out of the same function CreateDevice enables from, so
+        //      the check and the enable cannot drift apart.
+        const VkPhysicalDeviceFeatures required10 = RequiredFeatures10();
+        if (required10.fillModeNonSolid == VK_TRUE
+                && features2.features.fillModeNonSolid != VK_TRUE) {
+            continue;
+        }
         if (features13.dynamicRendering != VK_TRUE || features13.synchronization2 != VK_TRUE) {
             continue;
         }
@@ -200,12 +207,19 @@ bool CreateDevice(const VulkanInstance& inst,
     if (families.HasTransfer()) { addQueue(families.transfer); }
 
     // Checking support is not enough -- a feature has to be **asked for** to be usable.
+    //
+    // Two structures because the features are from two versions. VkPhysicalDeviceFeatures2
+    // carries the core 1.0 set and chains the 1.3 one behind it, which is also how they
+    // were queried above.
     VkPhysicalDeviceVulkan13Features enable13 = RequiredFeatures13();
+    VkPhysicalDeviceFeatures2 enable2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+    enable2.pNext = &enable13;
+    enable2.features = RequiredFeatures10();
 
     VkDeviceCreateInfo info{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
-    info.pNext = &enable13;
-    // pEnabledFeatures stays null: nothing in core 1.0 is wanted. Filling it would
-    // rule out VkPhysicalDeviceFeatures2 in pNext -- the spec allows one or the other.
+    info.pNext = &enable2;
+    // pEnabledFeatures stays null, and has to: the spec allows either that field or a
+    // VkPhysicalDeviceFeatures2 in pNext, never both.
     info.queueCreateInfoCount = queueInfoCount;
     info.pQueueCreateInfos = queueInfos;
     info.enabledExtensionCount = static_cast<uint32_t>(std::size(kRequiredDeviceExtensions));

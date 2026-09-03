@@ -228,6 +228,10 @@ Gui::~Gui() {
     // the pool, which outlives this because it is declared before it.
 }
 
+bool GuiWireframe(const Gui& gui) noexcept {
+    return gui.options.wireframe;
+}
+
 VkBuffer GuiOptionsBuffer(const Gui& gui, uint32_t frameIndex) noexcept {
     return gui.frames[frameIndex].options.handle;
 }
@@ -256,6 +260,12 @@ void BuildGui(Gui* gui, const GuiFrameInfo& info) noexcept {
         ImGui::Checkbox("specular", &options->specular);
         ImGui::Checkbox("alpha mask", &options->alphaMask);
         ImGui::Checkbox("shadow", &options->shadow);
+
+        // Separated because it is a different kind of switch: the five above turn a
+        // term of the lighting off, this one swaps the pipeline the same draws go
+        // through.
+        ImGui::Separator();
+        ImGui::Checkbox("wireframe", &options->wireframe);
 
         ImGui::Separator();
         // Both numbers, because they answer different questions: the rate is what a
