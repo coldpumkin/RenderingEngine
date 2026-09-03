@@ -10,7 +10,7 @@
 // ============================================================================
 // UNDEFINED means none was usable. Any SRGB format will do -- the shader writes and
 // reads (r,g,b,a) whatever the byte order is, so only the colour space matters.
-VkSurfaceFormatKHR ChooseSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& available) noexcept {
+static VkSurfaceFormatKHR ChooseSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& available) noexcept {
     for (const VkSurfaceFormatKHR& f : available) {
         const bool srgb = f.format == VK_FORMAT_B8G8R8A8_SRGB
                        || f.format == VK_FORMAT_R8G8B8A8_SRGB
@@ -24,7 +24,7 @@ VkSurfaceFormatKHR ChooseSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& av
 //
 // FIFO와 달리 스펙이 지원을 보장하지 않아 확인하고 고른다. 지원 안 하는 값을 박으면
 // vkCreateSwapchainKHR이 실패하는데 그 실패 코드만으로는 원인을 알 수 없다.
-VkCompositeAlphaFlagBitsKHR ChooseCompositeAlpha(VkCompositeAlphaFlagsKHR supported) noexcept {
+static VkCompositeAlphaFlagBitsKHR ChooseCompositeAlpha(VkCompositeAlphaFlagsKHR supported) noexcept {
     constexpr VkCompositeAlphaFlagBitsKHR kPreferred[] = {
         VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
         VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR,
@@ -193,7 +193,7 @@ bool CreateSwapchain(const VulkanInstance& inst,
             dev.table.vkCreateImageView(dev.handle, &viewInfo, nullptr, &texture.image.view);
         if (viewResult != VK_SUCCESS) {
             LOG("[vk] vkCreateImageView failed on image %u (%d)\n", i, viewResult);
-                return false;
+            return false;
         }
 
         // image당 하나인 이유: 이 semaphore는 present가 기다리는데 present에는 완료를
@@ -213,7 +213,7 @@ bool CreateSwapchain(const VulkanInstance& inst,
                                         &sc.images[i].renderFinished);
         if (semResult != VK_SUCCESS) {
             LOG("[vk] vkCreateSemaphore failed on image %u (%d)\n", i, semResult);
-                return false;
+            return false;
         }
 
     }

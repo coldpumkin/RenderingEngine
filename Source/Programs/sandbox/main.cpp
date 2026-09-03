@@ -724,12 +724,14 @@ int main() {
 
         if (begun == FrameResult::Skip) { continue; }
 
+        // Everything from here breaks instead of continuing. The acquire already
+        // happened, and skipping the submit would leave a signalled semaphore and a
+        // reset fence with nobody left to wait on them.
+
         // Right after BeginFrame, not at the top: the swapchain is remade in there,
         // and one iteration later this frame would draw with the stale pipeline.
         if (!EnsurePostProcessPipeline(dev, post, target->texture)) { break; }
 
-        // These break instead of continue. After the acquire, skipping the submit
-        // leaves a signalled semaphore and a reset fence with nobody to wait on them.
         if (!RecordFrame(slot, scene, post, *target,
                          items, static_cast<uint32_t>(std::size(items)))) {
             break;

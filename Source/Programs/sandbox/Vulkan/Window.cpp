@@ -12,7 +12,7 @@
 // 창이 둘이 돼도 초기화는 한 번이고, glfwTerminate는 **모든** 창을 부순다.
 // 한 함수에 섞여 있으면 창이 둘 될 때 바로 어긋난다.
 
-void OnGlfwError(int code, const char* description) {
+static void OnGlfwError(int code, const char* description) {
     LOG("[glfw] error %d: %s\n", code, description);
 }
 
@@ -35,7 +35,7 @@ bool InitWindowSystem(WindowSystem* out) noexcept {
 }
 
 // ---------------------------------------------------------------------------
-void OnFramebufferResized(GLFWwindow* handle, int /*w*/, int /*h*/) {
+static void OnFramebufferResized(GLFWwindow* handle, int /*w*/, int /*h*/) {
     auto* window = static_cast<Window*>(glfwGetWindowUserPointer(handle));
     if (window != nullptr) {
         window->swapchainOutOfDate = true;

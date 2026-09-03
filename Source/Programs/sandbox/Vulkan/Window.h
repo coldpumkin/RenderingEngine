@@ -58,7 +58,10 @@ struct Window {
     // 창이 다른 모니터로 가거나 HDR이 켜지면 달라질 수 있다. 리사이즈만 놓고 보면
     // 맞는 말이지만 그 셋을 다 덮지는 못한다.
     //
-    // 그래서 EnsureSwapchain이 재생성할 때마다 다시 묻고, 바뀌면 아래 플래그를 세운다.
+    // 그래서 EnsureSwapchain이 재생성할 때마다 다시 묻는다. 바뀌었다고 따로 알리지는
+    // 않는다 - 새 swapchain image가 자기 format을 들고 가므로, pipeline이 구워둔 것과
+    // 다르면 그 차이 자체가 신호다(EnsurePostProcessPipeline). 세울 플래그도, 지우는 것을
+    // 잊을 플래그도 없다.
     VkSurfaceFormatKHR surfaceFormat{};
 
     // unique_ptr인 이유: 리사이즈마다 통째로 갈아끼운다. 값으로 두면 move 대입이
@@ -96,17 +99,5 @@ bool OpenWindow(const VulkanInstance& inst,
 // "frame을 아예 돌릴 것인가"는 창의 상태이지 BeginFrame이 답할 질문이 아니다.
 bool WindowHasDrawableSize(const Window& window) noexcept;
 
-// Effect: window->surfaceFormat을 채운다
-//
-// Logical device가 아니라 physical device를 받는다 - GPU에게 묻는 조회라
-// vkCreateDevice 전에도 부를 수 있다. 한때 VulkanDevice 전체를 받으면서 .gpu만 썼는데,
-// 그러면 "device가 있어야 한다"고 시그니처가 거짓말을 한다.
-// Output: what the post-process pass draws into. The swapchain decides it, unlike our own
-//         attachments; colorSpace stays behind because only swapchain creation reads it.
-inline AttachmentFormats WindowAttachment(const Window& window) noexcept {
-    return AttachmentFormats{window.surfaceFormat.format};
-}
-
-bool SelectSurfaceFormat(const VulkanInstance& inst,
-                         VkPhysicalDevice gpu,
-                         Window* window) noexcept;
+// SelectSurfaceFormat은 Swapchain.h에 있다 - 부르는 곳이 EnsureSwapchain 하나뿐이고,
+// 정의도 거기 있다.

@@ -48,6 +48,15 @@ bool CreateSwapchain(const VulkanInstance& inst,
                      VkSwapchainKHR oldSwapchain,
                      Swapchain* out) noexcept;
 
+// Effect: window->surfaceFormat을 채운다
+//
+// Logical device가 아니라 physical device를 받는다 - GPU에게 묻는 조회라
+// vkCreateDevice 전에도 부를 수 있다. 한때 VulkanDevice 전체를 받으면서 .gpu만 썼는데,
+// 그러면 "device가 있어야 한다"고 시그니처가 거짓말을 한다.
+bool SelectSurfaceFormat(const VulkanInstance& inst,
+                         VkPhysicalDevice gpu,
+                         Window* window) noexcept;
+
 // Effect: 낡았거나 없으면 window->swapchain을 다시 만든다
 // Output: false는 실패가 아니라 "지금은 그릴 곳이 없다"(최소화 중)
 //
