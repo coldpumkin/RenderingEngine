@@ -590,24 +590,25 @@ int main() {
     const PhysicalDeviceSelection selection = PickPhysicalDevice(inst, window.surface);
     if (selection.gpu == VK_NULL_HANDLE) { return 1; }
 
-    // What we draw into, on that GPU. A policy, not a property: the candidate list and
-    // its order are ours and the GPU only says which are supported. Asked here rather
-    // than inside PickPhysicalDevice so the device layer never sees this type.
+    // What we draw into. Two targets, so two questions, and the picked GPU answers
+    // both on its own -- no logical device, and neither creates anything to destroy.
+    //
+    //   formats        the off-screen target. A policy, not a property: the candidate
+    //                  list and its order are ours and the GPU only says which are
+    //                  supported. Asked here rather than inside PickPhysicalDevice so
+    //                  the device layer never sees this type.
+    //   surfaceFormat  the swapchain's, so this one needs the surface too. The format,
+    //                  not the images: vkGetPhysicalDeviceSurfaceFormatsKHR answers
+    //                  without a swapchain, and the pipelines below need the answer,
+    //                  not a place to draw. Securing that place happens again on every
+    //                  resize, which makes it the loop's business, not init's.
     AttachmentFormats formats;
     if (!ChooseAttachmentFormats(inst, selection.gpu, &formats)) { return 1; }
+    if (!SelectSurfaceFormat(inst, selection.gpu, &window)) { return 1; }
 
-    // selection is consumed here and not kept -- it lives only between these two calls.
+    // selection is absorbed here and not kept -- nothing below this line reads it.
     if (!CreateDevice(inst, selection, &dev)) { return 1; }
     if (!CreateCommands(dev, &commands)) { return 1; }
-
-    // The format, not the swapchain. vkGetPhysicalDeviceSurfaceFormatsKHR answers
-    // without one, which is why this takes a physical device -- and the pipeline built
-    // below needs the answer, not the images.
-    //
-    // Making the swapchain here instead would put "secure a place to draw" in init,
-    // where it does not belong: it has to happen again on every resize, and that is
-    // the loop's business.
-    if (!SelectSurfaceFormat(inst, dev.gpu, &window)) { return 1; }
 
     // Passes
     // ------------------------------------------------------------------------

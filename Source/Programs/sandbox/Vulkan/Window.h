@@ -1,6 +1,5 @@
 ﻿#pragma once
 
-#include "Vulkan/Attachments.h"
 #include "Vulkan/Instance.h"
 #include "Vulkan/Swapchain.h"
 
