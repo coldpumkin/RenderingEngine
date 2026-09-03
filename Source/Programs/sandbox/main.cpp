@@ -101,13 +101,24 @@ static void MakeSphere(uint32_t stacks, uint32_t slices, float radius,
     }
 }
 
+// What one material names, as file paths. A pair rather than two lists so the two
+// cannot drift apart, and so the dedup key is one comparison.
+//
+// Empty means the material named none, and the caller substitutes: a checker for the
+// base colour, a flat normal for the other.
+struct MaterialUris {
+    std::string baseColor;
+    std::string normal;
+};
+
 // A glTF file, flattened into the one mesh and the one item list this pass draws.
 //
 // Input:  path to a .gltf. Its .bin is opened from beside it
 // Output: vertices and indices appended end to end, one DrawItem per primitive,
-//         the base colour image each material names, which of those each item wants
-//         (UINT32_MAX means the primitive named none), and whether each item is
-//         double sided -- which the caller turns into a pipeline.
+//         one entry per distinct (base colour, normal) pair the materials name,
+//         which of those each item wants (UINT32_MAX means the primitive named
+//         neither), and whether each item is double sided -- which the caller turns
+//         into a pipeline.
 //         false means nothing was appended -- the caller falls back to MakeSphere
 //
 // The DrawItem cannot carry the material itself: a set does not exist until the pool
@@ -127,7 +138,7 @@ static bool LoadGltf(const char* path,
                      std::vector<DrawItem>* items,
                      std::vector<uint32_t>* itemMaterial,
                      std::vector<uint8_t>* itemDoubleSided,
-                     std::vector<std::string>* baseColorUris) noexcept {
+                     std::vector<MaterialUris>* materialUris) noexcept {
     cgltf_options options{};
     cgltf_data* data = nullptr;
 
@@ -206,13 +217,9 @@ static bool LoadGltf(const char* path,
                     static_cast<uint16_t>(cgltf_accessor_read_index(prim.indices, i)));
             }
 
-            // Which image this primitive's material names, as a position in a list
-            // built as we go. Deduplicated by uri rather than by cgltf_material
-            // pointer: two materials naming one image should be one texture, and
-            // Sponza has 25 materials over 69 images.
-            // Two more things the material says, and they land in different places:
-            // the cutoff is a number the shader compares against, cull is state a
-            // pipeline bakes in. Only the second one forces a second pipeline.
+            // Two things the material says that land in different places: the cutoff
+            // is a number the shader compares against, cull is state a pipeline bakes
+            // in. Only the second one forces a second pipeline.
             //
             // In this asset the two move together (all 3 MASK materials are also
             // double sided), but nothing in glTF says they must, so they are read
@@ -227,21 +234,38 @@ static bool LoadGltf(const char* path,
             }
             itemDoubleSided->push_back(doubleSided ? 1u : 0u);
 
+            // Which images this material names, as a position in a list built as we
+            // go. Keyed on the pair, not on cgltf_material and not on base colour
+            // alone: two materials naming the same two images should be one entry,
+            // and two that share a base colour but differ in normal map must not be.
             uint32_t material = UINT32_MAX;
-            if (prim.material != nullptr && prim.material->has_pbr_metallic_roughness) {
-                const cgltf_texture* tex =
-                    prim.material->pbr_metallic_roughness.base_color_texture.texture;
-                if (tex != nullptr && tex->image != nullptr && tex->image->uri != nullptr) {
-                    const char* uri = tex->image->uri;
-                    for (size_t m = 0; m < baseColorUris->size(); ++m) {
-                        if ((*baseColorUris)[m] == uri) {
+            if (prim.material != nullptr) {
+                MaterialUris named;
+                if (prim.material->has_pbr_metallic_roughness) {
+                    const cgltf_texture* tex =
+                        prim.material->pbr_metallic_roughness.base_color_texture.texture;
+                    if (tex != nullptr && tex->image != nullptr
+                            && tex->image->uri != nullptr) {
+                        named.baseColor = tex->image->uri;
+                    }
+                }
+                const cgltf_texture* nrm2 = prim.material->normal_texture.texture;
+                if (nrm2 != nullptr && nrm2->image != nullptr
+                        && nrm2->image->uri != nullptr) {
+                    named.normal = nrm2->image->uri;
+                }
+
+                if (!named.baseColor.empty() || !named.normal.empty()) {
+                    for (size_t m = 0; m < materialUris->size(); ++m) {
+                        if ((*materialUris)[m].baseColor == named.baseColor
+                                && (*materialUris)[m].normal == named.normal) {
                             material = static_cast<uint32_t>(m);
                             break;
                         }
                     }
                     if (material == UINT32_MAX) {
-                        material = static_cast<uint32_t>(baseColorUris->size());
-                        baseColorUris->push_back(uri);
+                        material = static_cast<uint32_t>(materialUris->size());
+                        materialUris->push_back(named);
                     }
                 }
             }
@@ -256,8 +280,8 @@ static bool LoadGltf(const char* path,
         }
     }
 
-    LOG("[gltf] %s: %zu primitives, %zu vertices, %zu indices, %zu base colours\n",
-        path, items->size(), vertices->size(), indices->size(), baseColorUris->size());
+    LOG("[gltf] %s: %zu primitives, %zu vertices, %zu indices, %zu materials\n",
+        path, items->size(), vertices->size(), indices->size(), materialUris->size());
 
     cgltf_free(data);
     return !items->empty();
@@ -282,12 +306,14 @@ static void MakeChecker(uint32_t size, uint8_t* pixels) noexcept {
 // 4 channels forced: the shader samples a vec4 and there is no guaranteed 8-bit
 // three-channel format. stb expands whatever the file stores.
 //
-// SRGB, like the checker it replaces: base colour is authored in sRGB, and reading it
-// as UNORM would light the scene with values that were never linear.
+// The format is the caller's, and it is not a preference. Base colour is authored in
+// sRGB and must say so. A normal map is a direction, not a colour: read as SRGB every
+// texel is bent toward the flat normal, nothing reports it, and the picture is just
+// quietly wrong.
 //
 // The pixels live only for this call -- CreateTextureFromPixels stages and blocks.
 static bool LoadTextureFile(const VulkanDevice& dev, const Commands& commands,
-                            const char* path, Texture* out) noexcept {
+                            const char* path, VkFormat format, Texture* out) noexcept {
     int width = 0;
     int height = 0;
     int channelsInFile = 0;
@@ -298,7 +324,7 @@ static bool LoadTextureFile(const VulkanDevice& dev, const Commands& commands,
     }
 
     const TextureDesc desc{{static_cast<uint32_t>(width), static_cast<uint32_t>(height)},
-                           VK_FORMAT_R8G8B8A8_SRGB, VK_SAMPLE_COUNT_1_BIT,
+                           format, VK_SAMPLE_COUNT_1_BIT,
                            VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT};
     const size_t byteCount = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
     const bool uploaded = CreateTextureFromPixels(dev, commands, desc, pixels,
@@ -437,14 +463,14 @@ int main() {
     // is the fallback, and it is also what says whether a blank screen is the loader's
     // fault or the renderer's.
     const char* const kScenePath = LAMBDA_ASSET_ROOT "/Sponza/Sponza.gltf";
-    std::vector<uint32_t> itemMaterial;      // one per item, indexing baseColorUris
+    std::vector<uint32_t> itemMaterial;      // one per item, indexing materialUris
     std::vector<uint8_t> itemDoubleSided;    // one per item, choosing the pipeline
-    std::vector<std::string> baseColorUris;
+    std::vector<MaterialUris> materialUris;
     bool loaded = false;
     if (std::FILE* probe = std::fopen(kScenePath, "rb")) {
         std::fclose(probe);
         loaded = LoadGltf(kScenePath, &vertices, &indices, &items,
-                          &itemMaterial, &itemDoubleSided, &baseColorUris);
+                          &itemMaterial, &itemDoubleSided, &materialUris);
     } else {
         LOG("[scene] no %s -- drawing the generated sphere instead\n", kScenePath);
     }
@@ -514,29 +540,62 @@ int main() {
     //
     // URIs are relative to the .gltf, per the spec, and Sponza keeps its images
     // beside it.
-    textures.resize(baseColorUris.size() + 1);
-    for (size_t i = 0; i < baseColorUris.size(); ++i) {
-        const std::string path = std::string(LAMBDA_ASSET_ROOT "/Sponza/")
-                               + baseColorUris[i];
-        if (!LoadTextureFile(dev, commands, path.c_str(), &textures[i])) { return 1; }
-    }
+    // Two per material, laid out in pairs, plus one extra material at the end for an
+    // item that named neither -- a primitive with no textures, or the sphere fallback.
+    //
+    // A material missing one gets a stand-in rather than a null. The set has two
+    // bindings and every one of them has to point somewhere; a null would be a
+    // validation error at bind time, and a branch in the shader would be a third way
+    // to say the same thing.
+    const uint32_t materialCount = static_cast<uint32_t>(materialUris.size()) + 1;
+    textures.resize(static_cast<size_t>(materialCount) * 2);
 
     // Code, not a file, so a machine without the asset still draws something that
     // shows whether uv and the sampler are right.
     //
     // SRGB: this is multiplied with the shader's output, so it must be in the same
     // space as the render target. UNORM here would brighten the result.
-    {
-        constexpr uint32_t kCheckerSize = 8;
-        uint8_t checkerPixels[kCheckerSize * kCheckerSize * 4]{};
-        MakeChecker(kCheckerSize, checkerPixels);
+    constexpr uint32_t kCheckerSize = 8;
+    uint8_t checkerPixels[kCheckerSize * kCheckerSize * 4]{};
+    MakeChecker(kCheckerSize, checkerPixels);
+    const TextureDesc checkerDesc{{kCheckerSize, kCheckerSize},
+                                  VK_FORMAT_R8G8B8A8_SRGB, VK_SAMPLE_COUNT_1_BIT,
+                                  VK_IMAGE_USAGE_TRANSFER_DST_BIT
+                                      | VK_IMAGE_USAGE_SAMPLED_BIT};
 
-        const TextureDesc checkerDesc{{kCheckerSize, kCheckerSize},
-                                      VK_FORMAT_R8G8B8A8_SRGB, VK_SAMPLE_COUNT_1_BIT,
-                                      VK_IMAGE_USAGE_TRANSFER_DST_BIT
-                                          | VK_IMAGE_USAGE_SAMPLED_BIT};
-        if (!CreateTextureFromPixels(dev, commands, checkerDesc, checkerPixels,
-                                     sizeof(checkerPixels), &textures.back())) {
+    // One texel, and the opposite space from the checker: (128,128,255) decodes to
+    // +z, which is the geometric normal unchanged. UNORM for the same reason the
+    // loaded ones are -- this is a direction.
+    const uint8_t flatNormalPixels[4]{128, 128, 255, 255};
+    const TextureDesc flatNormalDesc{{1, 1},
+                                     VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT,
+                                     VK_IMAGE_USAGE_TRANSFER_DST_BIT
+                                         | VK_IMAGE_USAGE_SAMPLED_BIT};
+
+    for (uint32_t i = 0; i < materialCount; ++i) {
+        const MaterialUris named =
+            i < materialUris.size() ? materialUris[i] : MaterialUris{};
+        Texture& base = textures[static_cast<size_t>(i) * 2];
+        Texture& normal = textures[static_cast<size_t>(i) * 2 + 1];
+
+        if (!named.baseColor.empty()) {
+            const std::string path = std::string(LAMBDA_ASSET_ROOT "/Sponza/")
+                                   + named.baseColor;
+            if (!LoadTextureFile(dev, commands, path.c_str(),
+                                 VK_FORMAT_R8G8B8A8_SRGB, &base)) { return 1; }
+        } else if (!CreateTextureFromPixels(dev, commands, checkerDesc, checkerPixels,
+                                            sizeof(checkerPixels), &base)) {
+            return 1;
+        }
+
+        if (!named.normal.empty()) {
+            const std::string path = std::string(LAMBDA_ASSET_ROOT "/Sponza/")
+                                   + named.normal;
+            if (!LoadTextureFile(dev, commands, path.c_str(),
+                                 VK_FORMAT_R8G8B8A8_UNORM, &normal)) { return 1; }
+        } else if (!CreateTextureFromPixels(dev, commands, flatNormalDesc,
+                                            flatNormalPixels, sizeof(flatNormalPixels),
+                                            &normal)) {
             return 1;
         }
     }
@@ -549,24 +608,33 @@ int main() {
     // of sets is no longer something this file knows in advance.
     //
     // Three claims, and the counts come from three different places -- frames in
-    // flight for the two frame sets, textures for the material set.
+    // flight for the two frame sets, materials for the material set. How many
+    // descriptors that is per set is not asked here: CreateDescriptors reads it off
+    // the layout, so the second binding a material grew did not reach this line.
     const SetRequest setRequests[] = {
         {&opaque.setLayouts[kFrameSet], kFramesInFlight},
-        {&opaque.setLayouts[kMaterialSet], static_cast<uint32_t>(textures.size())},
+        {&opaque.setLayouts[kMaterialSet], materialCount},
         {&present.setLayouts[kFrameSet], kFramesInFlight},
     };
     if (!CreateDescriptors(dev, setRequests,
                            static_cast<uint32_t>(std::size(setRequests)),
                            &descriptors)) { return 1; }
 
-    materials.resize(textures.size());
-    if (!CreateMaterials(descriptors, opaque, textures.data(),
-                         static_cast<uint32_t>(textures.size()),
+    // The pairs, as the two pointers a set is filled from. Built here rather than
+    // stored, because textures owns them and this is only a way of reading it.
+    std::vector<MaterialTextures> sources(materialCount);
+    for (uint32_t i = 0; i < materialCount; ++i) {
+        sources[i] = {&textures[static_cast<size_t>(i) * 2],
+                      &textures[static_cast<size_t>(i) * 2 + 1]};
+    }
+
+    materials.resize(materialCount);
+    if (!CreateMaterials(descriptors, opaque, sources.data(), materialCount,
                          materials.data())) { return 1; }
 
-    // Join the two halves the loader had to hand back separately. The checker is last,
-    // so it is what UINT32_MAX resolves to.
-    const uint32_t kNoTexture = static_cast<uint32_t>(materials.size()) - 1;
+    // Join the two halves the loader had to hand back separately. The stand-in pair is
+    // last, so it is what UINT32_MAX resolves to.
+    const uint32_t kNoTexture = materialCount - 1;
     for (size_t i = 0; i < items.size(); ++i) {
         const uint32_t index = itemMaterial[i];
         items[i].material = materials[index == UINT32_MAX ? kNoTexture : index].set;

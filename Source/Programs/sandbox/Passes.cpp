@@ -78,7 +78,7 @@ bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
 }
 
 bool CreateMaterials(const Descriptors& descriptors, const Pipeline& pipeline,
-                     const Texture* textures, uint32_t count,
+                     const MaterialTextures* sources, uint32_t count,
                      Material* out) noexcept {
     if (count == 0) { return true; }
 
@@ -91,8 +91,13 @@ bool CreateMaterials(const Descriptors& descriptors, const Pipeline& pipeline,
 
     for (uint32_t i = 0; i < count; ++i) {
         out[i].set = sets[i];
-        const BindingValue values[] = {{textures[i].image.view}};
-        UpdateSet(descriptors, pipeline.setLayouts[kMaterialSet], out[i].set, values, 1);
+        // Order is binding order, which the shader declares and reflection reports.
+        const BindingValue values[] = {
+            {sources[i].baseColor->image.view},   // 0
+            {sources[i].normal->image.view},      // 1
+        };
+        UpdateSet(descriptors, pipeline.setLayouts[kMaterialSet], out[i].set,
+                  values, static_cast<uint32_t>(std::size(values)));
     }
     return true;
 }

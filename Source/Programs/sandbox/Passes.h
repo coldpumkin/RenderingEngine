@@ -111,18 +111,29 @@ struct PushConstants {
 // many textures a scene has is the scene's business, and two materials naming the
 // same image is normal.
 //
-// One texture today. A second field (roughness, a normal map) is another binding in
-// the same set, not another set -- they are counted the same way.
+// Two bindings now, in the one set. The prediction written here held: a second thing
+// a material owns is another binding, not another set, because it is counted the same
+// way -- one per material. Roughness would be the third.
 struct Material {
     VkDescriptorSet set = VK_NULL_HANDLE;
 };
 
-// Effect: draws one set per texture and points each at its texture
+// What one material is made of, before it becomes a set. Pointers: the scene owns the
+// textures, and two materials naming one image share it.
+//
+// Neither may be null. A material the asset left without a normal map takes a flat
+// one, which is the caller's to supply -- this layer has no way to make a texture.
+struct MaterialTextures {
+    const Texture* baseColor = nullptr;
+    const Texture* normal = nullptr;
+};
+
+// Effect: draws one set per material and points each at its textures
 //
 // Contract: pipeline must be the one these will be bound with -- the set is drawn
 //           from its material layout.
 bool CreateMaterials(const Descriptors& descriptors, const Pipeline& pipeline,
-                     const Texture* textures, uint32_t count,
+                     const MaterialTextures* sources, uint32_t count,
                      Material* out) noexcept;
 
 

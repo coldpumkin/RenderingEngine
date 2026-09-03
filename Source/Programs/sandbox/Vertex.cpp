@@ -1,4 +1,4 @@
-#include "Vertex.h"
+﻿#include "Vertex.h"
 
 #include <iterator>   // std::size
 
@@ -16,6 +16,7 @@ const VkPipelineVertexInputStateCreateInfo& VertexInput() noexcept {
         {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position)},
         {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal)},
         {2, 0, VK_FORMAT_R32G32_SFLOAT,    offsetof(Vertex, uv)},
+        {3, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, tangent)},
     };
 
     static const VkPipelineVertexInputStateCreateInfo info{

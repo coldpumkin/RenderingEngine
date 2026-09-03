@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 // Vertex - what one of our vertices is, and how a pipeline reads it
 // ============================================================================
@@ -17,7 +17,7 @@
 //   tangent   16   xyz, w = bitangent sign (glTF TANGENT)
 //
 // Contract: a field is not an attribute. VertexInput() declares only what the shader
-//           reads -- the layer warns about any extra. tangent has none.
+//           reads -- the layer warns about any extra. All four are read now.
 
 #include "Vulkan/Core.h"
 
@@ -25,7 +25,7 @@ struct Vertex {
     float position[3];   // location 0
     float normal[3];     // location 1
     float uv[2];         // location 2
-    float tangent[4];    // no attribute yet
+    float tangent[4];    // location 3
 };
 
 // The vertex layout for Vertex. Callers hand this to desc.vertexInput; a shader that
