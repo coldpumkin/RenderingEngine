@@ -162,7 +162,7 @@ bool CreateShadowPass(const Descriptors& descriptors,
         // direction and colour that used to sit behind it are the scene pass's alone
         // and live in their own buffer now.
         const BindingValue values[] = {
-            {VK_NULL_HANDLE, shadows[i].buffer.handle, sizeof(ShadowUniform)},
+            {nullptr, &shadows[i].buffer},
         };
         UpdateSet(descriptors, program.setLayouts[kFrameSet], frame.set,
                   values, static_cast<uint32_t>(std::size(values)));
@@ -273,11 +273,11 @@ bool CreateScenePass(const Descriptors& descriptors,
         // others are: one per frame in flight, and that is the whole rule for which set
         // a binding belongs in.
         const BindingValue values[] = {
-            {VK_NULL_HANDLE, cameras[i].buffer.handle, sizeof(CameraUniform)},
-            {VK_NULL_HANDLE, lights[i].buffer.handle, sizeof(LightUniform)},
-            {VK_NULL_HANDLE, shadows[i].buffer.handle, sizeof(ShadowUniform)},
-            {shadowMaps[i]->view.handle, VK_NULL_HANDLE, 0},
-            {VK_NULL_HANDLE, GuiOptionsBuffer(gui, i), kGuiOptionsSize},
+            {nullptr, &cameras[i].buffer},
+            {nullptr, &lights[i].buffer},
+            {nullptr, &shadows[i].buffer},
+            {&shadowMaps[i]->view},
+            {nullptr, &GuiOptionsBuffer(gui, i)},
         };
         UpdateSet(descriptors, program.setLayouts[kFrameSet], frame.set,
                   values, static_cast<uint32_t>(std::size(values)));
@@ -334,10 +334,10 @@ bool CreateMaterials(const VulkanDevice& dev,
 
         // Order is binding order, which the shader declares and reflection reports.
         const BindingValue values[] = {
-            {sources[i].baseColor->view.handle},                              // 0
-            {sources[i].normal->view.handle},                                 // 1
-            {VK_NULL_HANDLE, out[i].params.handle, sizeof(MaterialParams)},   // 2
-            {sources[i].metallicRoughness->view.handle},                      // 3
+            {&sources[i].baseColor->view},           // 0
+            {&sources[i].normal->view},              // 1
+            {nullptr, &out[i].params},               // 2
+            {&sources[i].metallicRoughness->view},   // 3
         };
         UpdateSet(descriptors, layout, out[i].set,
                   values, static_cast<uint32_t>(std::size(values)));
@@ -348,7 +348,7 @@ bool CreateMaterials(const VulkanDevice& dev,
 void RefreshPostProcessPass(const Descriptors& descriptors,
                             PostProcessPass* post) noexcept {
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
-        const BindingValue values[] = {{post->source[i]->view.handle}};
+        const BindingValue values[] = {{&post->source[i]->view}};
         UpdateSet(descriptors, post->program->setLayouts[kFrameSet], post->sets[i],
                   values, 1);
     }
@@ -392,7 +392,7 @@ bool CreatePostProcessPass(const Descriptors& descriptors,
     // cannot come to disagree about which image frame i reads.
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
         out->source[i] = source[i];
-        const BindingValue values[] = {{source[i]->view.handle}};
+        const BindingValue values[] = {{&source[i]->view}};
         UpdateSet(descriptors, program.setLayouts[kFrameSet], out->sets[i], values, 1);
     }
     return true;

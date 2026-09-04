@@ -288,7 +288,7 @@ void BuildGui(Gui* gui, const GuiFrameInfo& info) noexcept;
 //
 // Contract: gui must already be created -- CreateScenePass fills its sets once, and
 //           a null handle there is a validation error at bind time.
-VkBuffer GuiOptionsBuffer(const Gui& gui, uint32_t frameIndex) noexcept;
+const Buffer& GuiOptionsBuffer(const Gui& gui, uint32_t frameIndex) noexcept;
 constexpr VkDeviceSize kGuiOptionsSize = sizeof(ViewOptionsUniform);
 
 // The three CPU-side answers the scene pass needs. Functions for the same reason

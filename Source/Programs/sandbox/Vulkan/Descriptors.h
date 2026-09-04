@@ -19,15 +19,20 @@
 // The set layouts are not here either: a shader declares them and the pipeline built
 // from that shader owns them. This only borrows them to size the pool.
 
-#include "Vulkan/Device.h"
+#include "Vulkan/Buffer.h"
+#include "Vulkan/Image.h"
 #include "Vulkan/Shader.h"
 
 // What to put in one binding. The layout's type decides which field is read, so a
 // caller filling the wrong one is caught by the validation layer, not here.
+//
+// The resources themselves and not their handles: a buffer knows how big it is, so
+// the range a descriptor covers is read off it rather than written beside it. Five
+// call sites used to pass sizeof(TheBlock) next to the handle, which is one value in
+// two places and nothing compared them.
 struct BindingValue {
-    VkImageView view = VK_NULL_HANDLE;   // image types
-    VkBuffer buffer = VK_NULL_HANDLE;    // buffer types
-    VkDeviceSize size = 0;
+    const ImageView* view = nullptr;   // image types
+    const Buffer* buffer = nullptr;    // buffer types
 };
 
 struct Descriptors {

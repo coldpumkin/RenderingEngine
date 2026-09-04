@@ -159,12 +159,20 @@ void UpdateSet(const Descriptors& descriptors, const DescriptorLayout& layout,
         write[used].descriptorType = type;
 
         if (type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) {
-            bufferInfo[used].buffer = values[i].buffer;
-            bufferInfo[used].range = values[i].size;
+            if (values[i].buffer == nullptr) {
+                LOG("[vk] binding %u wants a buffer and was given none\n", i);
+                return;
+            }
+            bufferInfo[used].buffer = values[i].buffer->handle;
+            bufferInfo[used].range = values[i].buffer->size;
             write[used].pBufferInfo = &bufferInfo[used];
         } else {
+            if (values[i].view == nullptr) {
+                LOG("[vk] binding %u wants an image and was given none\n", i);
+                return;
+            }
             imageInfo[used].sampler = descriptors.sampler;
-            imageInfo[used].imageView = values[i].view;
+            imageInfo[used].imageView = values[i].view->handle;
             imageInfo[used].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             write[used].pImageInfo = &imageInfo[used];
         }

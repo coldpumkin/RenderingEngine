@@ -213,7 +213,7 @@ bool CreateGuiSet(const Descriptors& descriptors, const ShaderProgram& program,
     if (!AllocateSets(descriptors, program.setLayouts[0], 1, &out->set)) {
         return false;
     }
-    const BindingValue values[] = {{out->font.view.handle}};
+    const BindingValue values[] = {{&out->font.view}};
     UpdateSet(descriptors, program.setLayouts[0], out->set, values, 1);
     return true;
 }
@@ -261,8 +261,8 @@ VkCullModeFlags GuiCullMode(const Gui& gui) noexcept {
     }
 }
 
-VkBuffer GuiOptionsBuffer(const Gui& gui, uint32_t frameIndex) noexcept {
-    return gui.frames[frameIndex].options.handle;
+const Buffer& GuiOptionsBuffer(const Gui& gui, uint32_t frameIndex) noexcept {
+    return gui.frames[frameIndex].options;
 }
 
 void UploadGuiOptions(const Gui& gui, uint32_t frameIndex) noexcept {
