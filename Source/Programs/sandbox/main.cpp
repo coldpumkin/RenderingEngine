@@ -1023,10 +1023,11 @@ int main() {
     // either would have to exist before its owner.
     if (!CreateFrameCameras(dev, renderer.cameras)) { return 1; }
     if (!CreateFrameLights(dev, renderer.lights)) { return 1; }
+    if (!CreateFrameShadows(dev, renderer.shadows)) { return 1; }
 
     if (!CreateShadowPass(dev, renderer.descriptors, kShadowExtent,
                           renderer.mesh, renderer.shadowProgram,
-                          renderer.shadowPipeline, renderer.lights,
+                          renderer.shadowPipeline, renderer.shadows,
                           &renderer.shadowPass)) { return 1; }
     // What the scene pass reads of the shadow pass, and the only thing it reads. The
     // array is written here rather than found in there, so the requirement is in the
@@ -1039,7 +1040,7 @@ int main() {
                          renderer.mesh, renderer.sceneProgram, renderer.scenePipeline,
                          renderer.sceneWirePipeline,
                          shadowMaps, renderer.cameras, renderer.lights,
-                         renderer.guiPass,
+                         renderer.shadows, renderer.guiPass,
                          &renderer.scenePass)) { return 1; }
     // The edge, as a value. Both readers of the scene's colour take it from here --
     // the post pass and the capture at the bottom of the loop -- so there is one place
@@ -1223,14 +1224,15 @@ int main() {
         // too, and one of the two would otherwise have to be kept in step by hand.
         FrameSlot& slot = renderer.slots[slotIndex];
 
-        // The light, into something main owns. It used to go into two passes, held in
-        // step by nothing but this local being assigned twice.
+        // Two writes where the light used to be one. What reaches a surface and where
+        // its shadow map was drawn from are different answers, and only the second is
+        // a viewpoint -- which is a fact about shadow mapping rather than about light.
         //
         // The camera waits until after the acquire below: its matrix carries proj, and
         // proj is what a resize changes.
         renderer.lights[slot.index].value =
-            {lightViewProj, glm::vec4{lightDir, 0.0f},
-             glm::vec4{1.0f, 0.95f, 0.9f, 0.15f}};
+            {glm::vec4{lightDir, 0.0f}, glm::vec4{1.0f, 0.95f, 0.9f, 0.15f}};
+        renderer.shadows[slot.index].value = {lightViewProj};
 
         // Draw it
         // --------------------------------------------------------------------
@@ -1303,7 +1305,8 @@ int main() {
         guiInfo.scenePipeline = &renderer.scenePipeline;
         guiInfo.presentPipeline = &renderer.presentPipeline;
         guiInfo.cameraBytes = static_cast<uint32_t>(sizeof(CameraUniform));
-        guiInfo.lightBytes = static_cast<uint32_t>(sizeof(LightUniform));
+        guiInfo.lightBytes = static_cast<uint32_t>(sizeof(LightUniform)
+                                                   + sizeof(ShadowUniform));
         guiInfo.pushBytes = static_cast<uint32_t>(sizeof(PushConstants));
         guiInfo.vertexStride = renderer.mesh.desc.vertexLayout.stride;
         guiInfo.vertexAttributes = renderer.mesh.desc.vertexLayout.attributeCount;
@@ -1323,7 +1326,7 @@ int main() {
         // Reset rather than declared here: the counters add up, and the panel above
         // read last frame's values before this line overwrites them.
         drawStats = DrawStats{};
-        if (!RecordFrame(slot, renderer.cameras, renderer.lights,
+        if (!RecordFrame(slot, renderer.cameras, renderer.lights, renderer.shadows,
                          renderer.shadowPass, renderer.scenePass,
                          renderer.postPass,
                          renderer.guiPass, *target.texture, drawList, &drawStats)) {

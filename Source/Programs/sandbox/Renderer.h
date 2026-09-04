@@ -139,6 +139,11 @@ struct Renderer {
     FrameCamera cameras[kFramesInFlight];
     FrameLight lights[kFramesInFlight];
 
+    // Apart from lights because the two answer different questions: what reaches a
+    // surface, and where the map that shadows it was drawn from. Read by two passes,
+    // which is why it is out here beside them rather than inside either.
+    FrameShadow shadows[kFramesInFlight];
+
     ShadowPass shadowPass;
     ScenePass scenePass;
     PostProcessPass postPass;

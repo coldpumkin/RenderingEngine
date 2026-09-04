@@ -110,15 +110,42 @@ struct CameraUniform {
     glm::vec4 viewPos;      // xyz = camera position
 };
 
-// Contract: field order and types match the shader's Light block, and lightViewProj
-//           is first -- shadow.vert declares only that much of it.
-struct LightUniform {
+// A light and the technique that shadows it are two things
+// ----------------------------------------------------------------------------
+//
+// These were one block, on the grounds that both are the light's. Counted in
+// scene.frag they are not: lightViewProj appears **once**, inside ShadowFactor, and
+// never in the lighting. What arrives at a surface is a direction and a colour, and
+// `dot(normal, toLight)` uses no matrix at all.
+//
+// So the light is a viewpoint only as far as shadow mapping makes it one. Ray-traced
+// shadows would delete the matrix and leave the other two untouched -- which is not
+// true of the camera, whose projection is what drawing is. The panel already shows
+// the asymmetry: turn shadows off and lightViewProj is dead while direction and
+// colour are not.
+//
+// Two of the three grounds for splitting, the same score as the splits already made
+// today. Readers differ -- the matrix is read by the shadow pass and the scene pass,
+// the other two only by the scene pass -- and so do the reasons to change: the matrix
+// answers to kShadowRadius and the map's shape as well as to where the light points.
+// The third does not hold; both are written once a frame.
+//
+// **And this is not built for a second light.** It is a statement of one removed. The
+// day there are N lights and M of them cast, those are different numbers, and a block
+// holding both would have to be taken apart first.
+
+// Contract: field order and types match the shader's Shadow block. One field, and the
+//           whole of what shadow.vert declares -- there is nothing to truncate now.
+struct ShadowUniform {
     // The same world from the light's side, which is what turns a depth in the shadow
     // map into a comparison with this fragment. The shadow pass draws the map with
     // this matrix and the scene pass compares against it, which is why one buffer
     // rather than two: they cannot disagree about a value there is one of.
     glm::mat4 lightViewProj;
+};
 
+// Contract: field order and types match the shader's Light block.
+struct LightUniform {
     glm::vec4 direction;   // xyz = surface toward the light, w unused
     glm::vec4 color;       // rgb = colour, a = ambient
 };
@@ -149,10 +176,11 @@ struct LightUniform {
 // large (an array of lights) or recording moves off this thread, that is the trade
 // changing rather than a new idea.
 //
-// Two structs and not one template. What repeats is a pattern -- a value and its GPU
-// copy -- and it is already on its third instance counting Texture's desc and image.
-// Naming it would turn FrameCamera into FrameUniform<CameraUniform>, which is a name
-// traded for a type argument.
+// Three structs and not one template. What repeats is a pattern -- a value and its
+// GPU copy -- already on its fourth instance counting Texture's desc and image.
+// Naming it would turn FrameCamera into FrameUniform<CameraUniform>, a name traded
+// for a type argument, and all four have names worth keeping. A fifth with no name of
+// its own would be the thing that changes that.
 struct FrameCamera {
     CameraUniform value{};
     Buffer buffer;
@@ -163,9 +191,17 @@ struct FrameLight {
     Buffer buffer;
 };
 
+// Read by two passes, which is why it outlives both of them here rather than living
+// in the one that draws with it.
+struct FrameShadow {
+    ShadowUniform value{};
+    Buffer buffer;
+};
+
 // Effect: creates one mapped uniform buffer per frame in flight
 bool CreateFrameCameras(const VulkanDevice& dev, FrameCamera* out) noexcept;
 bool CreateFrameLights(const VulkanDevice& dev, FrameLight* out) noexcept;
+bool CreateFrameShadows(const VulkanDevice& dev, FrameShadow* out) noexcept;
 
 // Rides inside the command buffer: no pool, no set, no lifetime. The spec guarantees
 // only 128 bytes, so what goes here is what changes per draw and nothing else.
@@ -404,7 +440,7 @@ struct ShadowPass {
 bool CreateShadowPass(const VulkanDevice& dev, const Descriptors& descriptors,
                       VkExtent2D extent,
                       const Mesh& mesh, const ShaderProgram& program,
-                      const Pipeline& pipeline, const FrameLight* lights,
+                      const Pipeline& pipeline, const FrameShadow* shadows,
                       ShadowPass* out) noexcept;
 
 
@@ -546,15 +582,16 @@ struct ScenePass {
 bool ResizeScenePass(const VulkanDevice& dev, VkExtent2D extent,
                      ScenePass* pass) noexcept;
 
-// Contract: cameras and lights hold kFramesInFlight entries and outlive this pass.
-//           lights is the same array the shadow pass was given, which is what makes
-//           the matrix in binding 1 the one that drew the map in binding 2.
+// Contract: cameras, lights and shadows hold kFramesInFlight entries and outlive this
+//           pass. shadows is the same array the shadow pass was given, which is what
+//           makes the matrix in binding 2 the one that drew the map in binding 3.
 bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
                      VkExtent2D extent,
                      const Mesh& mesh, const ShaderProgram& program,
                      const Pipeline& pipeline, const Pipeline& wirePipeline,
                      const Texture* const shadowMaps[kFramesInFlight],
                      const FrameCamera* cameras, const FrameLight* lights,
+                     const FrameShadow* shadows,
                      const Gui& gui, ScenePass* out) noexcept;
 
 
@@ -636,6 +673,7 @@ struct DrawStats {
 // and those belong to getting the frame out, not to drawing it.
 bool RecordFrame(const FrameSlot& slot,
                  const FrameCamera* cameras, const FrameLight* lights,
+                 const FrameShadow* shadows,
                  const ShadowPass& shadow, const ScenePass& scene,
                  const PostProcessPass& post, Gui& gui, const Texture& target,
                  const DrawList& draws, DrawStats* stats = nullptr) noexcept;

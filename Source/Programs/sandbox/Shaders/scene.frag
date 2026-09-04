@@ -26,36 +26,40 @@ layout(set = 0, binding = 0) uniform Camera {
     layout(offset = 64) vec4 viewPos;
 } camera;
 
-// Binding 1, the light. All three read here, so the block is spelled out in order.
+// Binding 1, the light -- what arrives at a surface. No matrix: what this does to a
+// pixel is dot(normal, toLight) and a multiply by a colour, and neither needs to know
+// where the light looks from.
 //
 // Contract: same fields as LightUniform in Passes.h.
 layout(set = 0, binding = 1) uniform Light {
-    // The same world, seen from the light. Here rather than in the push block for the
-    // reason the camera is: one light for every draw in the pass.
-    mat4 lightViewProj;
-
     vec4 direction;   // xyz = surface toward the light
     vec4 color;       // rgb = colour, a = ambient
 } light;
 
-// Binding 2: the depth the shadow pass wrote, counted the same way the two above are
-// -- one per frame in flight, because each frame draws its own.
+// Bindings 2 and 3, the shadowing of that light -- one fact in two halves. The matrix
+// puts this fragment where the map was drawn from, and the map says what was nearest
+// there. **Neither is used outside ShadowFactor**, which is why they are apart from
+// the block above: a light is a direction and a colour, and its being a viewpoint is
+// something shadow mapping needs rather than something the light has.
 //
-// Next to the light on purpose. lightViewProj and this map are one fact in two halves:
-// the matrix has to be the one that drew the map, or every shadow lands somewhere
-// else. Nothing checks it -- main writes both from one local.
+// The two cannot disagree by construction: binding 2 is the buffer the shadow pass was
+// handed, so the matrix is the one that drew the map beside it.
 //
 // A plain sampler2D, so this reads the stored depth and compares it here. A
 // comparison sampler would do the test in hardware and give free 2x2 filtering, and
 // that is what the first soft edge will ask for.
-layout(set = 0, binding = 2) uniform sampler2D shadowMap;
+layout(set = 0, binding = 2) uniform Shadow {
+    mat4 lightViewProj;
+} shadow;
 
-// Binding 3: what to leave out, so a feature can be compared against its own absence
-// without rebuilding. Counted per frame in flight like the three above, and owned by
-// the panel -- nothing the scene computes decides any of it.
+layout(set = 0, binding = 3) uniform sampler2D shadowMap;
+
+// Binding 4: what to leave out, so a feature can be compared against its own absence
+// without rebuilding. Counted per frame in flight like the rest, and owned by the
+// panel -- nothing the scene computes decides any of it.
 //
 // Contract: field order matches ViewOptionsUniform in Gui.h.
-layout(set = 0, binding = 3) uniform View {
+layout(set = 0, binding = 4) uniform View {
     float useNormalMap;
     float useBaseColor;
     float useSpecular;
@@ -125,7 +129,7 @@ layout(location = 0) out vec4 outColor;
 // shadow texel, so it needs more slack than one facing the light does. Without it the
 // choice is between acne on the flat surfaces and a gap under every object.
 float ShadowFactor(vec3 worldPos, float ndotl) {
-    const vec4 clip = light.lightViewProj * vec4(worldPos, 1.0);
+    const vec4 clip = shadow.lightViewProj * vec4(worldPos, 1.0);
 
     // The light is directional, so its projection is orthographic and w is 1. Divided
     // anyway -- this line is what would have to change for a spot light, and it should
