@@ -13,6 +13,25 @@
 //   heap        free        forbidden
 //   log         free        floods if the condition persists
 //   failure     unwind      drop the frame or recover
+//
+// The sections below, in order. It is also the order things depend on each other, so
+// nothing here can be moved up past what it reads.
+//
+//   file scope    Scene data     the loader, and the plain arrays it hands back
+//                 Capture        one frame to a file, for comparing two builds
+//
+//   main, once    Declarations   in destruction order, which is not the fill order
+//                 Ask            what the GPU and the surface answer before anything
+//                 Targets        what we render into, and the lens each one answers to
+//                 Passes         programs, then a pipeline per variant
+//                 Scene          the mesh and the draw list
+//                 Textures       the images the materials name
+//                 Descriptors    the pool, sized by what the scene turned out to be
+//                 Frames         per-frame values, then the passes, then the slots
+//                 Frame state    what the loop carries across frames
+//
+//   main, loop    What to draw   clock, camera, light. Touches no GPU call
+//                 Draw it        acquire, resize if asked, record, submit, present
 
 
 #include "Config.h"
@@ -526,10 +545,9 @@ static bool LoadTextureFile(const VulkanDevice& dev, const Commands& commands,
 }
 
 int main() {
-    // Declarations, in destruction order. The fill order below is different.
+    // Declarations -- in destruction order, which is not the fill order
     // ========================================================================
     //
-    // Creation and destruction cannot be a single line:
     //   create   window/surface before device -- the surface picks the GPU
     //   destroy  the window's swapchain before device -- the device made it
     WindowSystem   windowSystem;   // dies last: glfwTerminate follows every window
@@ -543,13 +561,11 @@ int main() {
     // order inside it is a destruction contract, not a preference.
     Renderer       renderer;
 
-    // Ask, then build
+    // Ask -- what the GPU and the surface answer before anything is built
     // ========================================================================
     //
-    //   ask     instance and surface are inputs to the questions, not results
-    //   build   device -> commands and descriptors -> what needs them
-    //
-    // Command buffers divide by when they run, descriptor sets by what they name.
+    // The instance and the surface are inputs to these questions, not results of them.
+    // Everything after answers to what comes back here.
 
     // glfwInit is first only because windowSystem is declared first and so dies last.
     if (!InitWindowSystem(&windowSystem)) { return 1; }
@@ -570,11 +586,11 @@ int main() {
     // performs; the offscreen colour does not follow from it (Attachments.cpp).
     if (!SelectSurfaceFormat(inst, selection.gpu, &window)) { return 1; }
 
-    // What we render into, and the lens each target answers to
+    // Targets -- what we render into, and the lens each one answers to
     // ------------------------------------------------------------------------
     //
-    // A target's shape and its lens together, because the aspect joins them: it comes
-    // out of an extent and goes into a projection.
+    // Together because the aspect joins them: it comes out of an extent and goes into
+    // a projection.
 
     // The render chain's colour, not the scene pass's -- every target in the chain is
     // made of it. R8G8B8A8 because WriteBmp reads red first; SRGB so blending and the
@@ -626,12 +642,12 @@ int main() {
     // one's set before it is created, and the font it points at is uploaded in here.
     if (!CreateGui(dev, commands, window, &renderer.guiPass)) { return 1; }
 
-    // Passes
+    // Passes -- a program per pair of shaders, a pipeline per variant of one
     // ------------------------------------------------------------------------
     //
-    // One for the scene pass, one for the post pass -- not a rule about passes, just
-    // what this scene asks for. It was two until cull became dynamic state: the second
-    // differed in that one field, which is a register and not a shader.
+    // Four programs and five pipelines: the scene has two, fill and line, and they
+    // differ in polygonMode, which is compiled in. Anything that is a register instead
+    // is dynamic state and costs no second pipeline.
     //
     // The depth-only pass, first because the scene pass reads what it draws.
     //
@@ -723,7 +739,7 @@ int main() {
     if (!CreateGraphicsPipeline(dev, renderer.guiProgram, guiDesc,
                                 &renderer.guiPipeline)) { return 1; }
 
-    // Scene
+    // Scene -- the mesh and the draw list, from one file
     // ------------------------------------------------------------------------
     //
     // Heap, not the stack: Sponza is 192,496 vertices, which is 8.8 MB as Vertex[48].
@@ -762,7 +778,7 @@ int main() {
         return 1;
     }
 
-    // Textures
+    // Textures -- the images the materials name
     // ------------------------------------------------------------------------
     //
     // Two per material, laid out in pairs. One pair per material the file named and
@@ -861,12 +877,11 @@ int main() {
         }
     }
 
-    // Descriptors
+    // Descriptors -- the pool, sized by what the scene turned out to be
     // ------------------------------------------------------------------------
     //
-    // Here, not up with the pipelines, because the pool cannot be sized until the
-    // scene has been counted. That is what a material being data means: the number
-    // of sets is no longer something this file knows in advance.
+    // Here and not up with the pipelines: the pool cannot be sized until the materials
+    // have been counted, which is what a material being data costs.
     //
     // Three claims, and the counts come from three different places -- frames in
     // flight for the two frame sets, materials for the material set. How many
@@ -951,12 +966,11 @@ int main() {
     const DrawList drawList{items.data(), static_cast<uint32_t>(items.size()),
                             renderer.materials.data(), materialCount};
 
-    // Frames
+    // Frames -- per-frame values, then the passes that read them, then the slots
     // ------------------------------------------------------------------------
     //
-    // Passes first, in dependency order: the scene pass's sets name the shadow maps,
-    // the post pass's name what the scene pass made. A slot owns none of that -- it
-    // only knows which frame it is.
+    // In dependency order: the scene pass's sets name the shadow maps, the post pass's
+    // name what the scene pass made. A slot owns none of it and only knows its index.
     // No formats here. Each pass reads them off its pipeline, which is the thing that
     // baked them in -- passing them again would only make a second value to disagree.
     // Before the passes that read them: the shadow pass is created first, so a buffer
@@ -1000,11 +1014,11 @@ int main() {
 
     LOG("close the window to exit. The panel switches features off.\n");
 
-    // Frame state
+    // Frame state -- what the loop carries across frames
     // ------------------------------------------------------------------------
     //
-    // Everything the loop carries across frames. Not a struct: only lookAt reads the
-    // camera values, so grouping would enforce nothing.
+    // Not a struct: only lookAt reads the camera values, so grouping would enforce
+    // nothing.
     uint32_t slotIndex = 0;       // which slot this frame borrows
     double lastTime = glfwGetTime();
 
@@ -1050,8 +1064,8 @@ int main() {
         // What to draw
         // --------------------------------------------------------------------
         //
-        // Nothing here touches the GPU, so it could run while minimized. What comes
-        // out is state -- camera, light, items -- and the next section sends it.
+        // No GPU call in any of it, so it could run while minimized. What comes out is
+        // state -- a camera, a light, a list -- and the next section sends it.
 
         // Clock
         //
@@ -1062,9 +1076,7 @@ int main() {
         const float dt = static_cast<float>(now - lastTime);
         lastTime = now;
 
-        // Input -> camera
-        //
-        // --------------------------------------------------------------------
+        // Camera -- input to a view
         //
         // glfwGetKey polls the state glfwPollEvents cached, so this block reads the same
         // value wherever it sits. A callback suits an event; holding a key is a state.
@@ -1149,6 +1161,10 @@ int main() {
 
         // Draw it
         // --------------------------------------------------------------------
+        //
+        // Acquire, resize if the policy asks, record four passes, submit, present.
+        // From the acquire on, a failure breaks rather than continues: the semaphore
+        // and the fence are already spoken for.
 
         // Where this frame goes. Lives until present and no further, and the loop
         // only carries it -- BeginFrame is what pairs it with this slot.
@@ -1158,8 +1174,7 @@ int main() {
 
         if (begun == FrameResult::Skip) { continue; }
 
-        // What we render into, if the policy says it should be something else
-        // --------------------------------------------------------------------
+        // Resize -- if the policy says the targets should be another size
         //
         // After the acquire, because that is where the window's size is known.
         //
@@ -1188,10 +1203,6 @@ int main() {
 
         // After the resize, so it carries this frame's proj.
         renderer.cameras[slot.index].value = {proj * view, glm::vec4{eye, 0.0f}};
-
-        // Everything from here breaks instead of continuing. The acquire already
-        // happened, and skipping the submit would leave a signalled semaphore and a
-        // reset fence with nobody left to wait on them.
 
         // The panel, after the acquire because it reports the image this frame got.
         // Nothing here touches the GPU -- it only fills a draw list that
