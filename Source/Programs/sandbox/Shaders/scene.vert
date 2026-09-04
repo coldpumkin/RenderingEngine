@@ -1,13 +1,41 @@
 #version 450
 
+// The spaces a vertex passes through, and which arrow this file owns
+// ============================================================================
+//
+//   object    what the file says. Vertex.position, straight out of the glTF
+//   world     pc.model puts it here. **The only space where things can be compared**
+//   clip      scene.viewProj takes it here, and gl_Position is where it leaves
+//   ndc       clip / w, done by the hardware
+//   screen    the viewport decides, and its sign is RasterState::viewportY
+//
+// This stage owns two arrows of that chain -- object to world, then world to clip.
+// Everything after gl_Position belongs to the hardware.
+//
+// **World exists because more than one thing has to meet.** Drawing a single object
+// needs none of it: object straight to clip would do. It appears the moment a fragment
+// asks about something that is not itself, and scene.frag asks three times -- where
+// the camera is, where the light is, and where this surface sits in the light's own
+// projection. Two things can only be compared in a space both of them are in.
+//
+// That is also why pc.model rides the draw while viewProj, lightViewProj and viewPos
+// sit in the frame's uniform. model is "how to put *this* object into the shared
+// space"; the rest are defined *on* that shared space and belong to no object.
+//
+// uv is not on the chain at all -- it is a coordinate on the surface, and no transform
+// here touches it. That is why it sits last on both sides below.
+
 // Contract: offsets and stride match Vertex, whose VertexInput() in Vertex.cpp is the
 //           other side. That half is unchecked -- no compiler reads both.
 //           The locations and the kind of number each carries are checked, at pipeline
 //           creation, against this file's own SPIR-V.
-layout(location = 0) in vec3 inPosition;   // object space. pc.model puts it in world
+//
+// Ordered by space and then by what the value is: an object-space position, two
+// object-space directions, and the one that is in no space at all.
+layout(location = 0) in vec3 inPosition;
 layout(location = 1) in vec3 inNormal;
-layout(location = 2) in vec2 inUV;
-layout(location = 3) in vec4 inTangent;   // xyz along +u, w = bitangent sign
+layout(location = 2) in vec4 inTangent;   // xyz along +u, w = bitangent sign
+layout(location = 3) in vec2 inUV;
 
 // Set 0 is the frame's, and this stage reads one thing out of it.
 //
@@ -42,10 +70,13 @@ layout(push_constant) uniform Push {
     vec4 normal2;
 } pc;
 
-layout(location = 0) out vec3 fragNormal;
-layout(location = 1) out vec2 fragUV;
-layout(location = 2) out vec3 fragWorldPos;
-layout(location = 3) out vec4 fragTangent;   // w carried through untouched
+// The same four in the same order, one space further along. Reading the two lists
+// against each other is what this stage does: three values move object to world, and
+// uv is handed over untouched.
+layout(location = 0) out vec3 fragWorldPos;
+layout(location = 1) out vec3 fragNormal;
+layout(location = 2) out vec4 fragTangent;   // w carried through untouched
+layout(location = 3) out vec2 fragUV;
 
 void main() {
     // World first, because specular needs the surface point and the clip position

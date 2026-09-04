@@ -12,7 +12,7 @@ VertexLayout VertexInput() noexcept {
     layout.attributeCount = 4;
     layout.attributes[0] = {0, VK_FORMAT_R32G32B32_SFLOAT,    offsetof(Vertex, position)};
     layout.attributes[1] = {1, VK_FORMAT_R32G32B32_SFLOAT,    offsetof(Vertex, normal)};
-    layout.attributes[2] = {2, VK_FORMAT_R32G32_SFLOAT,       offsetof(Vertex, uv)};
-    layout.attributes[3] = {3, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, tangent)};
+    layout.attributes[2] = {2, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, tangent)};
+    layout.attributes[3] = {3, VK_FORMAT_R32G32_SFLOAT,       offsetof(Vertex, uv)};
     return layout;
 }

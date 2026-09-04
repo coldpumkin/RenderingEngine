@@ -1,9 +1,11 @@
 #version 450
 
-layout(location = 0) in vec3 fragNormal;
-layout(location = 1) in vec2 fragUV;
-layout(location = 2) in vec3 fragWorldPos;
-layout(location = 3) in vec4 fragTangent;
+// All world space but the last, which is on the surface rather than in the scene.
+// The order is scene.vert's, and the two files agree on it by location.
+layout(location = 0) in vec3 fragWorldPos;
+layout(location = 1) in vec3 fragNormal;
+layout(location = 2) in vec4 fragTangent;
+layout(location = 3) in vec2 fragUV;
 
 // Declared in the order the values are decided: the frame's, then the material's,
 // then this draw's. A set is a set because of how its contents are counted, so that
