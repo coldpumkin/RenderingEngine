@@ -93,6 +93,23 @@ struct RasterState {
 // One call and not seven, so a pass cannot set some and inherit the rest. extent is
 // separate because it is the frame's rather than the pass's preference -- the same
 // RasterState is right at any size.
+//
+// The viewport built from extent is the one place in this program where a coordinate
+// stops being a fraction and becomes a pixel. Two contracts meet on that line, they
+// are separate, and nothing checks either -- both come out as a stretched picture and
+// neither says a word.
+//
+// Contract: 3D -> 2D. viewport.width / |viewport.height| equals the aspect the
+//           projection behind these primitives was built with. The shadow pass holds
+//           it by being square (its ortho box is), the scene pass by proj and this
+//           extent both reading kRenderExtent.
+//
+// Contract: 2D -> 2D. A pass that draws an image rather than geometry owes the same
+//           thing with two extents -- what it samples against what it draws into --
+//           and it is a separate question, because there is no projection here to
+//           agree with. The post pass does not hold it: a kRenderExtent source into
+//           whatever size the window is. Stretch, letterbox or crop is a policy that
+//           has not been chosen.
 void SetRasterState(const VolkDeviceTable& vk, VkCommandBuffer cmd,
                     VkExtent2D extent, const RasterState& raster) noexcept;
 
