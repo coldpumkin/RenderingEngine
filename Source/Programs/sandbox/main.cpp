@@ -935,15 +935,19 @@ int main() {
     if (!CreateFrameLights(dev, renderer.lights)) { return 1; }
     if (!CreateFrameShadows(dev, renderer.shadows)) { return 1; }
 
-    if (!CreateShadowPass(dev, renderer.descriptors, shadowTarget,
+    // The shadow map, made here from the desc written at the top and handed to both
+    // passes that touch it -- the one that draws it and the one that samples it. The
+    // edge between them is this array, not a walk into whichever pass owned the image.
+    const Texture* shadowMaps[kFramesInFlight]{};
+    for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+        if (!CreateTexture(dev, shadowTarget, &renderer.shadowMaps[i])) { return 1; }
+        shadowMaps[i] = &renderer.shadowMaps[i];
+    }
+
+    if (!CreateShadowPass(renderer.descriptors, shadowMaps,
                           renderer.mesh, renderer.shadowProgram,
                           renderer.shadowPipeline, renderer.shadows,
                           &renderer.shadowPass)) { return 1; }
-    // What the scene pass reads of the shadow pass, and the only thing it reads.
-    const Texture* shadowMaps[kFramesInFlight]{};
-    for (uint32_t i = 0; i < kFramesInFlight; ++i) {
-        shadowMaps[i] = &renderer.shadowPass.frames[i].depth;
-    }
     if (!CreateScenePass(dev, renderer.descriptors, sceneTargets,
                          renderer.mesh, renderer.sceneProgram, renderer.scenePipeline,
                          renderer.sceneWirePipeline,

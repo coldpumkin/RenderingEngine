@@ -118,8 +118,8 @@ VkImageUsageFlags DepthTargetUsage() noexcept {
          | MakeShadowTarget(VkExtent2D{}, VK_FORMAT_UNDEFINED).usage;
 }
 
-bool CreateShadowPass(const VulkanDevice& dev, const Descriptors& descriptors,
-                      const TextureDesc& mapDesc,
+bool CreateShadowPass(const Descriptors& descriptors,
+                      const Texture* const maps[kFramesInFlight],
                       const Mesh& mesh, const ShaderProgram& program,
                       const Pipeline& pipeline, const FrameShadow* shadows,
                       ShadowPass* out) noexcept {
@@ -135,23 +135,19 @@ bool CreateShadowPass(const VulkanDevice& dev, const Descriptors& descriptors,
         return false;
     }
 
-    // The map below and the pipeline above, from one description. Both arrive from the
-    // caller and only meet here; without this the images could be made from a format
-    // the pipeline did not bake, and the first vkCmdBeginRendering would say so at
-    // runtime instead of this saying so now.
-    if (!SameAttachmentFormats(AttachmentFormatsOf(nullptr, 0, &mapDesc),
-                               pipeline.formats)) {
-        LOG("[vk] the shadow map and its pipeline disagree about the formats\n");
-        return false;
-    }
-
+    // Every map against the pipeline, which is also every map against every other.
+    // They are made elsewhere and only meet the pipeline here; without this an image
+    // could be made from a format the pipeline did not bake, and the first
+    // vkCmdBeginRendering would say so at runtime instead of this saying so now.
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
         ShadowPass::PerFrame& frame = out->frames[i];
+        frame.depth = maps[i];
 
-        if (!CreateTexture(dev, mapDesc, &frame.depth)) {
+        if (!SameAttachmentFormats(AttachmentFormatsOf(nullptr, 0, &maps[i]->desc),
+                                   pipeline.formats)) {
+            LOG("[vk] shadow map %u and its pipeline disagree about the formats\n", i);
             return false;
         }
-
     }
 
     VkDescriptorSet sets[kFramesInFlight]{};
@@ -432,12 +428,12 @@ static void RecordShadowPass(const FrameSlot& slot, const ShadowPass& shadow,
     const VolkDeviceTable& vk = slot.dev->table;
     VkCommandBuffer cmd = slot.cmd;
     const ShadowPass::PerFrame& frame = shadow.frames[slot.index];
-    const VkExtent2D extent = frame.depth.desc.extent;
+    const VkExtent2D extent = frame.depth->desc.extent;
 
     // oldLayout UNDEFINED: loadOp CLEAR overwrites, and the last frame's map is spent.
     // The image was left SHADER_READ_ONLY by the frame before, and discarding that is
     // exactly what UNDEFINED means.
-    RecordLayoutTransition(vk, cmd, frame.depth.image.handle, VK_IMAGE_ASPECT_DEPTH_BIT,
+    RecordLayoutTransition(vk, cmd, frame.depth->image.handle, VK_IMAGE_ASPECT_DEPTH_BIT,
                            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                            VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT
                                | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
@@ -447,7 +443,7 @@ static void RecordShadowPass(const FrameSlot& slot, const ShadowPass& shadow,
 
     // storeOp STORE, unlike the scene pass's depth: this one is the product.
     VkRenderingAttachmentInfo depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-    depth.imageView = frame.depth.view.handle;
+    depth.imageView = frame.depth->view.handle;
     depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
     depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     depth.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -502,7 +498,7 @@ static void RecordShadowPass(const FrameSlot& slot, const ShadowPass& shadow,
     // Handed over here rather than at the top of the scene pass. The pass that wrote
     // an image is what knows when it stopped writing, and this keeps the scene pass
     // from having to name a pass it only reads through a descriptor.
-    RecordLayoutTransition(vk, cmd, frame.depth.image.handle, VK_IMAGE_ASPECT_DEPTH_BIT,
+    RecordLayoutTransition(vk, cmd, frame.depth->image.handle, VK_IMAGE_ASPECT_DEPTH_BIT,
                            VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
                            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
                            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,

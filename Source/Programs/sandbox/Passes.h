@@ -529,28 +529,32 @@ struct ShadowPass {
     // Per frame in flight for the reason the scene's attachments are: the GPU still
     // reads the previous frame's map while the next is drawn.
     struct PerFrame {
-        // DEPTH_STENCIL_ATTACHMENT to draw into and SAMPLED to be read afterwards.
-        // One sample: multisampling a visibility test would average depths that were
-        // never on the same surface.
-        Texture depth;
+        // **Borrowed.** main makes it and hands the same array to this pass and to the
+        // scene pass, so the one image has one name that both can say.
+        //
+        // Its desc asks for DEPTH_STENCIL_ATTACHMENT to draw into and SAMPLED to be
+        // read afterwards, at one sample -- multisampling a visibility test would
+        // average depths no surface was ever at. Checked below against the pipeline.
+        const Texture* depth = nullptr;
 
-        // Names the FrameLight of the same index. No buffer beside it any more.
+        // Names the FrameShadow of the same index.
         VkDescriptorSet set = VK_NULL_HANDLE;
     };
     PerFrame frames[kFramesInFlight];
 };
 
-// Effect: creates each frame's depth map and the set naming its matrix
+// Effect: takes the maps it draws into and makes the set naming its matrix
 //
-// The formats come out of pipeline. They used to be an argument beside it with a
-// contract saying the two must agree and nothing checking it; a pipeline already
-// carries what it was compiled for, so the second copy was only a way to disagree.
+// It made those maps until 09-05, from a TextureDesc handed in. main owns them now,
+// which is what lets the scene pass be handed the same array instead of walking into
+// frames[i] to find them -- and is why there is no VulkanDevice argument left: this
+// creates nothing but descriptor sets, and the pool knows its device.
 //
-// Contract: mapDesc.extent is square, because the light's box is.
-// Contract: shadows holds kFramesInFlight entries and outlives this pass -- each set
-//           names the buffer of the same index.
-bool CreateShadowPass(const VulkanDevice& dev, const Descriptors& descriptors,
-                      const TextureDesc& mapDesc,
+// Contract: maps and shadows each hold kFramesInFlight entries and outlive this pass.
+//           Each set names the buffer of the same index; each map is drawn into by
+//           the frame of the same index.
+bool CreateShadowPass(const Descriptors& descriptors,
+                      const Texture* const maps[kFramesInFlight],
                       const Mesh& mesh, const ShaderProgram& program,
                       const Pipeline& pipeline, const FrameShadow* shadows,
                       ShadowPass* out) noexcept;

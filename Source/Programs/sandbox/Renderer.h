@@ -144,6 +144,13 @@ struct Renderer {
     // which is why it is out here beside them rather than inside either.
     FrameShadow shadows[kFramesInFlight];
 
+    // The shadow map, and the first resource here that no pass owns. One pass draws
+    // it and another samples it, so making it inside either would put a name only
+    // that one can say -- which is how main came to reach into frames[i] for it.
+    //
+    // Before the passes, so it outlives both: their sets name its view.
+    Texture shadowMaps[kFramesInFlight];
+
     ShadowPass shadowPass;
     ScenePass scenePass;
     PostProcessPass postPass;
