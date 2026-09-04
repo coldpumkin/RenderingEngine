@@ -409,16 +409,17 @@ bool CreateShadowPass(const VulkanDevice& dev, const Descriptors& descriptors,
 //
 //   owns       the images it draws into. That is the whole list.
 //
-//   receives   the camera and the light   main assigns into frames[i] from outside
+//   receives   the light                  an argument, one buffer per frame
+//              the shadow maps            an argument, one image per frame
 //              the raster switches        an argument to RecordScenePass
-//              the shadow map             walked:  shadow.frames[i].depth
-//              the panel's buffer         walked:  GuiOptionsBuffer(gui, i)
+//              the camera                 main assigns into frames[i] from outside
+//              the panel's buffer         asked for: GuiOptionsBuffer(gui, i)
 //
-// **Four things arriving four different ways, and nothing about them asks for the
-// difference.** gui alone comes in by two of the four -- its buffer is walked to at
-// creation, its switches handed in at recording. The post-process pass was a fifth
-// route until it was given its images instead of the pass that made them, and what
-// that bought is the shape the other four have not taken yet.
+// Three of the five now say what they are in the signature. The camera does not --
+// main reaches in and writes it -- and the panel is deliberately different: it is a
+// tool for making features comparable while they are understood, not a dependency of
+// the same kind, and asking a Gui for its buffer is not the same as reaching into a
+// pass for an image.
 //
 // This is written as a list and not as a type on purpose. Naming what a pass owns is
 // what has to happen before anything derives from it, and a struct now would fix the
@@ -495,11 +496,21 @@ struct ScenePass {
 // pass's three and the shadow pass's one, which is why neither takes them as an
 // argument any more.
 //
-// Contract: shadow must already be created -- each frame's set names its depth map,
-//           frame for frame. Taken by value at set-fill time and not stored: the
-//           barrier that makes it readable belongs to the pass that writes it.
-// Contract: gui must already be created, for the same reason: binding 3 of each set
-//           names the buffer its checkboxes write into.
+// shadowMaps and not a ShadowPass, which is the whole of the change: what this
+// needs is one depth image per frame, and naming the pass that owns them let this
+// function reach anything a shadow pass has. A signature is meant to state the
+// requirement, not a place the requirement can be found in.
+//
+// gui stays a whole Gui on purpose. It is not a dependency of the same kind -- the
+// panel exists to make features comparable while they are being understood, and it
+// is deliberately a black box to whoever reads main. Its buffer already arrives
+// through an accessor, which is asking rather than reaching in.
+//
+// Contract: shadowMaps holds kFramesInFlight entries, each an image the shadow pass
+//           has created, frame for frame. Read at set-fill time and not stored: the
+//           barrier that makes one readable belongs to the pass that writes it.
+// Contract: gui must already be created -- binding 3 of each set names the buffer its
+//           checkboxes write into.
 // Contract: lights holds kFramesInFlight entries and outlives this pass. The same
 //           array the shadow pass was given, which is what makes the matrix in
 //           binding 1 the one that drew the map in binding 2.
@@ -507,7 +518,8 @@ bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
                      VkExtent2D extent,
                      const Mesh& mesh, const ShaderProgram& program,
                      const Pipeline& pipeline, const Pipeline& wirePipeline,
-                     const ShadowPass& shadow, const FrameLight* lights,
+                     const Texture* const shadowMaps[kFramesInFlight],
+                     const FrameLight* lights,
                      const Gui& gui, ScenePass* out) noexcept;
 
 

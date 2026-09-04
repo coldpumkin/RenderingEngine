@@ -91,7 +91,8 @@ bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
                      VkExtent2D extent,
                      const Mesh& mesh, const ShaderProgram& program,
                      const Pipeline& pipeline, const Pipeline& wirePipeline,
-                     const ShadowPass& shadow, const FrameLight* lights,
+                     const Texture* const shadowMaps[kFramesInFlight],
+                     const FrameLight* lights,
                      const Gui& gui, ScenePass* out) noexcept {
     out->mesh = &mesh;
     out->program = &program;
@@ -194,7 +195,7 @@ bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
         const BindingValue values[] = {
             {VK_NULL_HANDLE, frame.cameraUniform.handle, sizeof(CameraUniform)},
             {VK_NULL_HANDLE, lights[i].buffer.handle, sizeof(LightUniform)},
-            {shadow.frames[i].depth.view.handle, VK_NULL_HANDLE, 0},
+            {shadowMaps[i]->view.handle, VK_NULL_HANDLE, 0},
             {VK_NULL_HANDLE, GuiOptionsBuffer(gui, i), kGuiOptionsSize},
         };
         UpdateSet(descriptors, program.setLayouts[kFrameSet], frame.set,

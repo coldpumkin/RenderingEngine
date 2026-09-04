@@ -122,11 +122,14 @@ struct Renderer {
     // dependency: scenePass's sets name shadowPass's depth maps, postPass reads what
     // scenePass wrote.
     //
-    // Two of the edges are written down now: main hands postPass the images it reads
-    // and hands both light-reading passes the same lights[], so those are values
-    // rather than paths. scenePass still walks to shadow.frames[i].depth, and gui's
-    // option buffer is a third that runs the other way -- the open trigger in
-    // CLAUDE.md.
+    // The edges between these are values now, not paths: main hands postPass the
+    // images it reads, hands both light-reading passes the same lights[], and hands
+    // scenePass the shadow maps rather than the pass that owns them.
+    //
+    // What is left is gui's option buffer, which scenePass asks for through an
+    // accessor -- and which runs the other way, from a pass that draws later to one
+    // that draws first. Deliberately left as it is: the panel is a tool for comparing
+    // features while they are understood, not a dependency of the same kind.
     //
     // Declared before the passes so it outlives them: their sets name these buffers,
     // and members are destroyed in reverse.

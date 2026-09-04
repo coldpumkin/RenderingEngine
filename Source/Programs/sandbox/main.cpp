@@ -955,10 +955,17 @@ int main() {
                           renderer.mesh, renderer.shadowProgram,
                           renderer.shadowPipeline, renderer.lights,
                           &renderer.shadowPass)) { return 1; }
+    // What the scene pass reads of the shadow pass, and the only thing it reads. The
+    // array is written here rather than found in there, so the requirement is in the
+    // signature instead of in the body -- the same trade sceneColor below makes.
+    const Texture* shadowMaps[kFramesInFlight]{};
+    for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+        shadowMaps[i] = &renderer.shadowPass.frames[i].depth;
+    }
     if (!CreateScenePass(dev, renderer.descriptors, kRenderExtent,
                          renderer.mesh, renderer.sceneProgram, renderer.scenePipeline,
                          renderer.sceneWirePipeline,
-                         renderer.shadowPass, renderer.lights, renderer.guiPass,
+                         shadowMaps, renderer.lights, renderer.guiPass,
                          &renderer.scenePass)) { return 1; }
     // The edge, as a value. Both readers of the scene's colour take it from here --
     // the post pass and the capture at the bottom of the loop -- so there is one place
