@@ -713,7 +713,7 @@ bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
 // **It takes the images, not the pass that made them.** Everything this pass needs of
 // its input is what a Texture already says -- extent, format, one sample -- and none
 // of those three is the scene's to decide. A multisample image cannot be sampled, so
-// the resolve exists for this reader; the format has to mean what fullscreen.frag
+// the resolve exists for this reader; the format has to mean what post.frag
 // assumes of it; and the extent it carries is the aspect the projection was built
 // from. The producer answers to the consumer here, which is the other way round from
 // how the two are named.

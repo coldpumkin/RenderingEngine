@@ -52,7 +52,7 @@ struct Renderer {
     //   program   shaders                vertex          sets
     //   shadow    shadow.vert/frag       position (48)   0 the light's matrix
     //   scene     scene.vert/frag         Vertex (48)     0 frame, 1 material
-    //   present   fullscreen.vert/frag   none            0 the scene's resolve
+    //   post      fullscreen.vert + post.frag   none            0 the scene's resolve
     //   gui       gui.vert/frag          ImDrawVert      0 the font atlas
     //
     // The shadow row reads the same buffer over the same stride as the scene row and
@@ -67,7 +67,7 @@ struct Renderer {
     // every descriptor set was drawn from one of their layouts.
     ShaderProgram shadowProgram;
     ShaderProgram sceneProgram;
-    ShaderProgram presentProgram;
+    ShaderProgram postProgram;
     ShaderProgram guiProgram;
 
     // --- HOW to draw ------------------------------------------------------
@@ -79,7 +79,7 @@ struct Renderer {
     //   shadow     shadowProgram    depth only 1x   fill      opaque
     //   scene      sceneProgram     color 4x        fill      opaque
     //   sceneWire  sceneProgram     color 4x        line      opaque
-    //   present    presentProgram   swapchain 1x    fill      opaque
+    //   post       postProgram   swapchain 1x    fill      opaque
     //   gui        guiProgram       swapchain 1x    fill      translucent
     //
     // The middle two are the table earning its keep: one program, two rows, and the
@@ -95,7 +95,7 @@ struct Renderer {
     Pipeline shadowPipeline;
     Pipeline scenePipeline;
     Pipeline sceneWirePipeline;
-    Pipeline presentPipeline;
+    Pipeline postPipeline;
     Pipeline guiPipeline;
 
     // --- WHAT the shaders may reach ---------------------------------------

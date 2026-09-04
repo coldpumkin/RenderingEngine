@@ -249,10 +249,10 @@ struct GuiFrameInfo {
     // Both halves, because the panel shows both: what the shaders require (the
     // program's set layouts) and what one variant baked (the pipeline's desc).
     const ShaderProgram* sceneProgram = nullptr;
-    const ShaderProgram* presentProgram = nullptr;
+    const ShaderProgram* postProgram = nullptr;
     const ShaderProgram* guiProgram = nullptr;
     const Pipeline* scenePipeline = nullptr;
-    const Pipeline* presentPipeline = nullptr;
+    const Pipeline* postPipeline = nullptr;
     const Pipeline* guiPipeline = nullptr;
 
     // sizeof on our side of the boundary. The shader's side is in the .spv and the

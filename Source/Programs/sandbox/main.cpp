@@ -629,14 +629,14 @@ int main() {
 
     // The post pass. No vertex input, no depth, 1 sample -- MSAA ends at the resolve.
     if (!CreateShaderProgram(dev, "Shaders/fullscreen.vert.spv",
-                             "Shaders/fullscreen.frag.spv",
-                             &renderer.presentProgram)) { return 1; }
+                             "Shaders/post.frag.spv",
+                             &renderer.postProgram)) { return 1; }
 
-    GraphicsPipelineDesc presentDesc;
-    presentDesc.color[0] = &swapchainTarget;
-    presentDesc.colorCount = 1;
-    if (!CreateGraphicsPipeline(dev, renderer.presentProgram, presentDesc,
-                                &renderer.presentPipeline)) { return 1; }
+    GraphicsPipelineDesc postDesc;
+    postDesc.color[0] = &swapchainTarget;
+    postDesc.colorCount = 1;
+    if (!CreateGraphicsPipeline(dev, renderer.postProgram, postDesc,
+                                &renderer.postPipeline)) { return 1; }
 
     // The panel, on top of what the post pass leaves -- the same image, so the same
     // desc. The only one of the five that blends: a window has to be see-through to be
@@ -889,7 +889,7 @@ int main() {
         {&renderer.shadowProgram.setLayouts[kFrameSet], kFramesInFlight},
         {&renderer.sceneProgram.setLayouts[kFrameSet], kFramesInFlight},
         {&renderer.sceneProgram.setLayouts[kMaterialSet], materialCount},
-        {&renderer.presentProgram.setLayouts[kFrameSet], kFramesInFlight},
+        {&renderer.postProgram.setLayouts[kFrameSet], kFramesInFlight},
         // One, and counted by neither of the other two reasons: there is one font.
         {&renderer.guiProgram.setLayouts[0], 1},
     };
@@ -1000,7 +1000,7 @@ int main() {
         sceneColor[i] = &renderer.scenePass.frames[i].colorResolve;
     }
     if (!CreatePostProcessPass(renderer.descriptors, sceneColor,
-                               renderer.presentProgram, renderer.presentPipeline,
+                               renderer.postProgram, renderer.postPipeline,
                                &renderer.postPass)) {
         return 1;
     }
@@ -1230,10 +1230,10 @@ int main() {
         guiInfo.cullChanges = drawStats.cullChanges;
         guiInfo.descriptors = &renderer.descriptors;
         guiInfo.sceneProgram = &renderer.sceneProgram;
-        guiInfo.presentProgram = &renderer.presentProgram;
+        guiInfo.postProgram = &renderer.postProgram;
         guiInfo.guiProgram = &renderer.guiProgram;
         guiInfo.scenePipeline = &renderer.scenePipeline;
-        guiInfo.presentPipeline = &renderer.presentPipeline;
+        guiInfo.postPipeline = &renderer.postPipeline;
         guiInfo.cameraBytes = static_cast<uint32_t>(sizeof(CameraUniform));
         guiInfo.lightBytes = static_cast<uint32_t>(sizeof(LightUniform)
                                                    + sizeof(ShadowUniform));

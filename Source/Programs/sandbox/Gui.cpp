@@ -68,7 +68,7 @@ void ShowTexture(const char* name, const Texture* texture) noexcept {
 // Up to the last set that has bindings, not up to kMaxSets. Vulkan numbers sets by
 // position, so a set 0 with nothing in it is real when a set 1 is used -- that hole
 // still gets a line. Past the last used one there is no set at all, and printing
-// "(empty)" there said the present and gui shaders declare two.
+// "(empty)" there said the post and gui shaders declare two.
 void ShowSetLayouts(const char* name, const ShaderProgram* program) noexcept {
     if (program == nullptr) { return; }
 
@@ -375,7 +375,7 @@ void BuildGui(Gui* gui, const GuiFrameInfo& info) noexcept {
         ImGui::Separator();
 
         ShowSetLayouts("scene", info.sceneProgram);
-        ShowSetLayouts("present", info.presentProgram);
+        ShowSetLayouts("post", info.postProgram);
         ShowSetLayouts("gui", info.guiProgram);
     }
 
@@ -428,7 +428,7 @@ void BuildGui(Gui* gui, const GuiFrameInfo& info) noexcept {
 
     if (ImGui::CollapsingHeader("pipelines")) {
         ShowPipeline("scene", info.scenePipeline);
-        ShowPipeline("present", info.presentPipeline);
+        ShowPipeline("post", info.postPipeline);
         ShowPipeline("gui", info.guiPipeline);
         ImGui::Separator();
         // The three the pipelines do not bake. Named here because the panel lists
