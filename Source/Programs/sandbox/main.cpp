@@ -595,43 +595,36 @@ int main() {
     // performs; the offscreen colour does not follow from it (Attachments.cpp).
     if (!SelectSurfaceFormat(inst, selection.gpu, &window)) { return 1; }
 
-    // Targets -- what we render into, and the lens each one answers to
+    // Targets -- what we render into
     // ------------------------------------------------------------------------
     //
-    // Together because the aspect joins them: it comes out of an extent and goes into
-    // a projection.
+    // Three kinds of value, in this order and for that reason: what we choose, what
+    // is answered, and what follows from both. The display's own answer came earlier,
+    // from SelectSurfaceFormat.
 
-    // The render chain's colour, not the scene pass's -- every target in the chain is
-    // made of it. R8G8B8A8 because WriteBmp reads red first; SRGB so blending and the
-    // MSAA resolve happen in linear space. Not the swapchain's: only the swapchain's
-    // own format decides what reaches the screen (Attachments.cpp counts it out).
+    // Chosen
     //
-    // Tone mapping is what changes this -- it wants a float format, and the capture
-    // above refuses one.
-    constexpr VkFormat kRenderColorFormat = VK_FORMAT_R8G8B8A8_SRGB;
-
-    // A value, because how big these are is a policy. The panel switches between two:
-    // fixed, and following the window. Unreal keeps three behind
-    // r.SceneRenderTargetResizeMethod and calls the trade memory against allocation
-    // stalls.
+    // kRenderColorFormat is the render chain's, not the swapchain's -- they hold the
+    // same value here and stop the day post tone-maps, which wants a float format.
+    // R8G8B8A8 because WriteBmp reads red first; SRGB so blending and the MSAA
+    // resolve run in linear space.
     //
-    // Fixed to start with, whatever the panel says: the surface has not been asked its
-    // size yet, and the loop's first turn corrects this if the switch is on.
-    VkExtent2D renderExtent = DesiredRenderExtent(window, false);
-
-    // Contract: square, because lightProj below is a box with equal sides.
+    // renderExtent is a policy, switched in the panel between fixed and following the
+    // window. It starts fixed whatever the switch says, because the surface has not
+    // been asked its size yet, and the loop's first turn corrects it.
+    //
+    // Contract: kShadowExtent is square, because lightProj is a box with equal sides.
+    constexpr VkFormat   kRenderColorFormat = VK_FORMAT_R8G8B8A8_SRGB;
+    VkExtent2D           renderExtent       = DesiredRenderExtent(window, false);
     constexpr VkExtent2D kShadowExtent{kShadowResolution, kShadowResolution};
 
-    // No camera and no light here. A camera keeps the desc it is made from (Passes.h)
-    // and the loop builds it; the light's own values are with the light, above the
-    // loop that moves it.
-
-    // The two values a caller cannot decide. Everything else about a target is ours.
+    // Answered -- the two a caller cannot decide, plus a check on the colour above
     TargetCapabilities caps;
     if (!QueryTargetCapabilities(inst, selection.gpu, kRenderColorFormat,
                                  kDesiredSampleCount, &caps)) { return 1; }
 
-    // What each pass draws into, written here beside everything else a pass is handed.
+    // Follows
+
     // A TextureDesc says four things where AttachmentFormats says two, and the two it
     // adds are the ones that were missing: the extent a projection answers to, and
     // usage -- in which **SAMPLED marks an edge**. Exactly two of these four images
