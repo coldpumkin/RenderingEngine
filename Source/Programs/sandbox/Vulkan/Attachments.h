@@ -40,6 +40,14 @@ struct AttachmentFormats {
     VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
 };
 
+// The comparison the pass creations make: the descs they were handed, projected, and
+// what their pipeline actually baked. Nobody else can see both ends.
+inline bool SameAttachmentFormats(const AttachmentFormats& a,
+                                  const AttachmentFormats& b) noexcept {
+    return a.color == b.color && a.depth == b.depth && a.samples == b.samples;
+}
+
+
 // What only the device can answer about our render targets
 //
 // The two values a caller cannot decide: which depth format exists here, and how many

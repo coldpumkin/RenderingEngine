@@ -691,13 +691,6 @@ int main() {
                                                      caps.depthFormat, caps.samples);
     const TextureDesc shadowTarget = MakeShadowTarget(kShadowExtent, caps.depthFormat);
 
-    // Derived, not decided. Every field is one of the descs', so the images and the
-    // pipelines compiled for them cannot come to disagree.
-    const AttachmentFormats sceneFormats{sceneTargets.color.format,
-                                         sceneTargets.depth.format,
-                                         sceneTargets.color.samples};
-    const AttachmentFormats shadowFormats{.depth = shadowTarget.format};
-
     // Render passes -- the two that draw into targets of ours
     // ------------------------------------------------------------------------
     //
@@ -722,13 +715,12 @@ int main() {
     // One sample: the default, and averaging a visibility test would produce a depth
     // no surface was ever at.
     //
-    // It goes into the pipeline and nowhere else. CreateShadowPass reads it back out
-    // of there, so this value is written once and the images cannot be made from a
-    // different one.
+    // Projected from the desc above rather than written out again, and CreateShadowPass
+    // makes the same call to check what it was handed against what this baked.
 
     GraphicsPipelineDesc shadowDesc;
     shadowDesc.vertexLayout = VertexInput();
-    shadowDesc.formats = shadowFormats;
+    shadowDesc.formats = ShadowAttachmentFormats(shadowTarget);
     if (!CreateGraphicsPipeline(dev, renderer.shadowProgram, shadowDesc,
                                 &renderer.shadowPipeline)) { return 1; }
 
@@ -743,7 +735,7 @@ int main() {
     // that goes with it are set where the pass is recorded.
     GraphicsPipelineDesc opaqueDesc;
     opaqueDesc.vertexLayout = VertexInput();
-    opaqueDesc.formats = sceneFormats;
+    opaqueDesc.formats = SceneAttachmentFormats(sceneTargets);
     if (!CreateGraphicsPipeline(dev, renderer.sceneProgram, opaqueDesc,
                                 &renderer.scenePipeline)) { return 1; }
 
