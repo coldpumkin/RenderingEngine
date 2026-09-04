@@ -23,8 +23,9 @@
 //   main, once    Declarations   in destruction order, which is not the fill order
 //                 Display        a window, a GPU for it, and the format it takes
 //                 Device         and past it, everything that draws rather than shows
+//                 Display passes the two compiled against the format above
 //                 Targets        what we render into -- ours, none of it the display's
-//                 Passes         programs, then a pipeline per variant
+//                 Render passes  the two compiled against a target below
 //                 Scene          the mesh and the draw list
 //                 Textures       the images the materials name
 //                 Descriptors    the pool, sized by what the scene turned out to be
@@ -596,12 +597,6 @@ int main() {
     // A format and not an image: images are made again on every resize.
     if (!SelectSurfaceFormat(inst, selection.gpu, &window)) { return 1; }
 
-    // What the last pass writes into, and the end of what a display settles. Asked for
-    // rather than assembled -- every field of it is the presentation engine's answer,
-    // which is the opposite of the render targets below, and the same type carries
-    // both, so the call is what says which.
-    const AttachmentFormats swapchainFormats = SwapchainAttachmentFormats(window);
-
     // Device -- and past it, everything that draws rather than shows
     // ========================================================================
 
@@ -612,6 +607,48 @@ int main() {
     // Here, not with the passes below: the descriptor pool has to be told about this
     // one's set before it is created, and the font it points at is uploaded in here.
     if (!CreateGui(dev, commands, window, &renderer.guiPass)) { return 1; }
+
+    // Display passes -- the two that draw into a swapchain image
+    // ------------------------------------------------------------------------
+    //
+    // Above the targets and not below, because neither of these reads one. What they
+    // are compiled against is the answer the display gave before there was a device,
+    // and it does not change while the program runs -- so both are right from the
+    // start and nothing rebuilds them.
+    //
+    // Four programs and five pipelines in all; the other two are below. The scene has
+    // two variants, fill and line, which differ in polygonMode and so are two compiled
+    // objects. Anything that is a register instead is dynamic state and costs nothing.
+    //
+    // The post pass. No vertex input, no depth, 1 sample -- MSAA ends at the resolve.
+    if (!CreateShaderProgram(dev, "Shaders/fullscreen.vert.spv",
+                             "Shaders/fullscreen.frag.spv",
+                             &renderer.presentProgram)) { return 1; }
+
+    // Asked for here and nowhere else -- this is where the presentation engine's own
+    // answer enters, and every field of it is theirs. That is the opposite of the
+    // targets below, where the same type carries what we decided, and the type does
+    // not say which, so the call does.
+    GraphicsPipelineDesc presentDesc;
+    presentDesc.formats = SwapchainAttachmentFormats(window);
+    if (!CreateGraphicsPipeline(dev, renderer.presentProgram, presentDesc,
+                                &renderer.presentPipeline)) { return 1; }
+
+    // The panel. A different vertex type, a different set layout, and the only one of
+    // the five that blends -- a window has to be see-through to be over anything.
+    // y-down because ImGui works in window pixels with the origin at the top left.
+    if (!CreateShaderProgram(dev, "Shaders/gui.vert.spv", "Shaders/gui.frag.spv",
+                             &renderer.guiProgram)) { return 1; }
+
+    // Read back out of the present pipeline rather than asked for a second time: this
+    // pass draws on top of what that one leaves, so it is the same image, and taking
+    // the value from there is what stops the two from ever disagreeing.
+    GraphicsPipelineDesc guiDesc;
+    guiDesc.vertexLayout = GuiVertexInput();
+    guiDesc.formats = renderer.presentPipeline.desc.formats;
+    guiDesc.blending = Blending::Translucent;
+    if (!CreateGraphicsPipeline(dev, renderer.guiProgram, guiDesc,
+                                &renderer.guiPipeline)) { return 1; }
 
     // Targets -- what we render into
     // ------------------------------------------------------------------------
@@ -661,12 +698,10 @@ int main() {
                                          sceneTargets.color.samples};
     const AttachmentFormats shadowFormats{.depth = shadowTarget.format};
 
-    // Passes -- a program per pair of shaders, a pipeline per variant of one
+    // Render passes -- the two that draw into targets of ours
     // ------------------------------------------------------------------------
     //
-    // Four programs and five pipelines: the scene has two, fill and line, and they
-    // differ in polygonMode, which is compiled in. Anything that is a register instead
-    // is dynamic state and costs no second pipeline.
+    // Below the targets, because both are compiled against one.
     //
     // The depth-only pass, first because the scene pass reads what it draws.
     //
@@ -719,36 +754,6 @@ int main() {
     wireDesc.polygonMode = VK_POLYGON_MODE_LINE;
     if (!CreateGraphicsPipeline(dev, renderer.sceneProgram, wireDesc,
                                 &renderer.sceneWirePipeline)) { return 1; }
-
-    // The format was settled by SelectSurfaceFormat above and does not change, so this
-    // pipeline is right from the start and nothing rebuilds it.
-    //
-    // No vertex input, no depth, 1 sample -- MSAA ended at the resolve.
-    if (!CreateShaderProgram(dev, "Shaders/fullscreen.vert.spv",
-                             "Shaders/fullscreen.frag.spv",
-                             &renderer.presentProgram)) { return 1; }
-
-    // swapchainFormats and not a format of ours: both passes that draw into the
-    // swapchain image take it, the post pass first and the gui pass on top.
-    GraphicsPipelineDesc presentDesc;
-    presentDesc.formats = swapchainFormats;
-    if (!CreateGraphicsPipeline(dev, renderer.presentProgram, presentDesc,
-                                &renderer.presentPipeline)) { return 1; }
-
-    // The panel. A different vertex type, a different set layout, and the only one
-    // of the three that blends -- a window has to be see-through to be over anything.
-    //
-    // Same target as present, so the same format and 1 sample. y-down because ImGui
-    // works in window pixels with the origin at the top left.
-    if (!CreateShaderProgram(dev, "Shaders/gui.vert.spv", "Shaders/gui.frag.spv",
-                             &renderer.guiProgram)) { return 1; }
-
-    GraphicsPipelineDesc guiDesc;
-    guiDesc.vertexLayout = GuiVertexInput();
-    guiDesc.formats = swapchainFormats;
-    guiDesc.blending = Blending::Translucent;
-    if (!CreateGraphicsPipeline(dev, renderer.guiProgram, guiDesc,
-                                &renderer.guiPipeline)) { return 1; }
 
     // Scene -- the mesh and the draw list, from one file
     // ------------------------------------------------------------------------
