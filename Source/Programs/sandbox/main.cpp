@@ -668,10 +668,10 @@ int main() {
     // R8G8B8A8 because WriteBmp reads red first; SRGB so blending and the MSAA
     // resolve run in linear space.
     //
-    // renderExtent is a policy, and Config.h holds which way it goes. A value rather
-    // than a constant because the loop remakes it when the window moves under it.
+    // How big the render targets are is a policy, and Config.h holds which way it
+    // goes. Not kept in a variable of its own: it goes into the descs below and they
+    // are what everything asks afterwards.
     constexpr VkFormat   kRenderColorFormat = VK_FORMAT_R8G8B8A8_SRGB;
-    VkExtent2D           renderExtent = DesiredRenderExtent(window);
     constexpr VkExtent2D kShadowExtent{kShadowResolution, kShadowResolution};
 
     // Answered -- the two a caller cannot decide. Not a check on the colour above:
@@ -687,7 +687,8 @@ int main() {
     // adds are the ones that were missing: the extent a projection answers to, and
     // usage -- in which **SAMPLED marks an edge**. Exactly two of these four images
     // carry it, and those are the two another pass reads.
-    SceneTargetDescs sceneTargets = MakeSceneTargets(renderExtent, kRenderColorFormat,
+    SceneTargetDescs sceneTargets = MakeSceneTargets(DesiredRenderExtent(window),
+                                                     kRenderColorFormat,
                                                      caps.depthFormat, caps.samples);
     const TextureDesc shadowTarget = MakeShadowTarget(kShadowExtent, caps.depthFormat);
 
@@ -1027,11 +1028,16 @@ int main() {
     // Orthographic because the light is directional: parallel rays have no eye point
     // to project from, only a box, and the box decides how much world one texel covers.
     //
-    // Contract: kShadowExtent is square, because this box is.
+    // Its aspect comes from the map it lands on, the way the camera's comes from the
+    // image the scene lands on. The map is square, so this is 1 -- what it replaces is
+    // a Contract comment saying the map had to stay square, and a map that is not
+    // square is now drawn correctly rather than skewed.
     constexpr glm::vec3 kSceneCenter{0.0f, 3.0f, 0.0f};
+    const float shadowAspect = static_cast<float>(shadowTarget.extent.width)
+                             / static_cast<float>(shadowTarget.extent.height);
     const glm::mat4 lightProj =
-        glm::ortho(-kShadowRadius, kShadowRadius, -kShadowRadius, kShadowRadius,
-                   0.1f, kShadowDistance * 2.0f);
+        glm::ortho(-kShadowRadius * shadowAspect, kShadowRadius * shadowAspect,
+                   -kShadowRadius, kShadowRadius, 0.1f, kShadowDistance * 2.0f);
 
     // What the item order costs in state changes. Outside the loop because the panel
     // is built before RecordFrame fills it, so what it shows is the last frame's --
@@ -1086,20 +1092,23 @@ int main() {
         // belong to every slot.
         const VkExtent2D wanted = DesiredRenderExtent(window);
 
-        if (wanted.width != renderExtent.width || wanted.height != renderExtent.height) {
+        // Compared against the desc and not against a copy of it: the desc is where
+        // the current size lives, so there is no second number to keep in step.
+        const VkExtent2D current = sceneTargets.color.extent;
+
+        if (wanted.width != current.width || wanted.height != current.height) {
             dev.table.vkDeviceWaitIdle(dev.handle);
 
             // Described again at the new size, by the same call that described them
             // the first time. Only the extent differs.
-            renderExtent = wanted;
-            sceneTargets = MakeSceneTargets(renderExtent, kRenderColorFormat,
+            sceneTargets = MakeSceneTargets(wanted, kRenderColorFormat,
                                             caps.depthFormat, caps.samples);
 
             if (!ResizeScenePass(dev, sceneTargets, &renderer.scenePass)) { break; }
 
             // The only sets that name what was just destroyed.
             RefreshPostProcessPass(renderer.descriptors, &renderer.postPass);
-            LOG("[render] targets now %ux%u\n", renderExtent.width, renderExtent.height);
+            LOG("[render] targets now %ux%u\n", wanted.width, wanted.height);
         }
 
         // What to draw
@@ -1182,7 +1191,7 @@ int main() {
         // center is eye + forward: an absolute target would pin the gaze and rotation
         // would stop working. viewPos comes out of the desc rather than being copied
         // beside it -- one camera, one place its position is written down.
-        const Camera camera = MakeCamera(CameraDesc{renderExtent,
+        const Camera camera = MakeCamera(CameraDesc{sceneTargets.color.extent,
                                                     kFovDegrees, kNearPlane, kFarPlane,
                                                     eye, forward, kWorldUp});
         renderer.cameras[slot.index].value =
