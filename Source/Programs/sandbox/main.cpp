@@ -586,9 +586,20 @@ int main() {
     // about this pass: colour is our constant and the sample count is the scene's
     // alone. That is why the shadow pass takes .depth out of here and nothing else,
     // and why a second reader of it would be the reason to ask the device separately.
+    // The display first, and then what we draw into. The order is the direction the
+    // constraint runs: whatever these render targets are made of is worth nothing if
+    // the surface cannot present, and the surface is also where the one thing that
+    // decides whether the picture is right gets settled -- it must be sRGB, because
+    // that is the encode nobody else in the chain performs.
+    //
+    // The offscreen colour format does not follow from it. Attachments.cpp counts the
+    // chain out; the short version is that only the swapchain's format changes what
+    // reaches the screen, and the coupling between the two ends runs through the post
+    // pass rather than around it.
+    if (!SelectSurfaceFormat(inst, selection.gpu, &window)) { return 1; }
+
     AttachmentFormats sceneFormats;
     if (!ChooseAttachmentFormats(inst, selection.gpu, &sceneFormats)) { return 1; }
-    if (!SelectSurfaceFormat(inst, selection.gpu, &window)) { return 1; }
 
     // selection is absorbed here and not kept -- nothing below this line reads it.
     if (!CreateDevice(inst, selection, &dev)) { return 1; }

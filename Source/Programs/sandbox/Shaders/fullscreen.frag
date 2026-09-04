@@ -15,5 +15,11 @@ layout(location = 0) out vec4 outColor;
 void main() {
     // Passed through for now. **This is where post-processing goes** -- tone mapping,
     // colour grading and vignette are all edits to this one line.
+    //
+    // Being a pass-through is also what keeps the two ends of the chain apart. Nothing
+    // here encodes: the swapchain's sRGB format does that on write, which is why
+    // SelectSurfaceFormat refuses a surface without one. Change this line to tone-map
+    // and the source has to hold values outside [0,1] -- a float format -- and what is
+    // written here starts answering to the swapchain's.
     outColor = texture(sceneColor, uv);
 }
