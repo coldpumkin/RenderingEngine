@@ -8,7 +8,10 @@
 #include <vector>     // one handle per material, counted at load time
 #include <iterator>   // std::size
 
-#include <glm/matrix.hpp>   // inverse, transpose
+#include <glm/matrix.hpp>                  // inverse, transpose
+#include <glm/ext/matrix_clip_space.hpp>    // perspective
+#include <glm/ext/matrix_transform.hpp>     // lookAt
+#include <glm/trigonometric.hpp>            // radians
 
 // HOST_VISIBLE + MAPPED, like every uniform here: one memcpy a frame, so a staging
 // buffer and a copy command would buy nothing.
@@ -16,6 +19,18 @@
 // Two functions and not one taking a size, because the only thing they would share is
 // the four flags below -- and those are the same for every uniform in this program,
 // not something these two agree on in particular.
+Camera MakeCamera(const CameraDesc& desc) noexcept {
+    Camera out;
+    out.desc = desc;
+    out.view = glm::lookAt(desc.eye, desc.eye + desc.forward, desc.up);
+
+    // No proj[1][1] *= -1: the viewport height is already negative.
+    // Depth lands in [0,1] thanks to GLM_FORCE_DEPTH_ZERO_TO_ONE on the CMake target.
+    out.proj = glm::perspective(glm::radians(desc.fovDegrees), CameraAspect(desc),
+                                desc.nearPlane, desc.farPlane);
+    return out;
+}
+
 bool CreateFrameCameras(const VulkanDevice& dev, FrameCamera* out) noexcept {
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
         if (!CreateBuffer(dev, sizeof(CameraUniform),

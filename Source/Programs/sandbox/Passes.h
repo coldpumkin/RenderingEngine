@@ -100,6 +100,55 @@ constexpr uint32_t kMaterialSet = 1;   // what a surface looks like. One per mat
 // vec4 rather than vec3: std140 aligns a vec3 to 16 bytes anyway, so naming the
 // leftover beats hiding it.
 
+// A camera, kept the way a Texture is
+// ----------------------------------------------------------------------------
+//
+// Texture keeps the TextureDesc it was made from, and that is the only reason
+// ReadTexturePixels can refuse a format it cannot read: the description outlives the
+// making. No matrix here kept anything. proj was built from a field of view, a near
+// and a far plane and an aspect, and all four vanished into the product, so nothing
+// downstream could ask what shape of target it was built for.
+//
+// That question came up three times and was answered three different ways -- a
+// Contract comment on the shadow pass, a shared name for the scene, LetterboxInto for
+// the post pass. All three are the same comparison, and none of them could be a
+// comparison, because one side of it had been multiplied away.
+//
+// So: the same shape as Texture. What it was made from, then what was made.
+struct CameraDesc {
+    // Where the aspect comes from. The projection answers to the image it lands on,
+    // and this is that image's size.
+    VkExtent2D target{};
+
+    float fovDegrees = 0.0f;
+    float nearPlane = 0.0f;
+    float farPlane = 0.0f;
+
+    glm::vec3 eye{};
+    glm::vec3 forward{};
+    glm::vec3 up{0.0f, 1.0f, 0.0f};
+};
+
+struct Camera {
+    CameraDesc desc;
+    glm::mat4 view{1.0f};
+    glm::mat4 proj{1.0f};
+};
+
+// Output: the aspect the projection is built with, from the target it lands on
+constexpr float CameraAspect(const CameraDesc& desc) noexcept {
+    return static_cast<float>(desc.target.width)
+         / static_cast<float>(desc.target.height);
+}
+
+// Output: both matrices, from the desc that makes them
+//
+// Built every frame, which the 09-01 note about proj is not an argument against: that
+// value was rebuilt in a loop while nothing said what it depended on. Here the
+// dependency is the desc, and remaking from it is what keeps proj and target from
+// being two variables that have to be updated in step.
+Camera MakeCamera(const CameraDesc& desc) noexcept;
+
 // Contract: field order and types match the shader's Camera block, and viewPos sits at
 //           64 -- scene.frag names that offset rather than declaring the matrix.
 struct CameraUniform {

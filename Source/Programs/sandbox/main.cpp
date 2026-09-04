@@ -610,17 +610,10 @@ int main() {
     // Contract: square, because lightProj below is a box with equal sides.
     constexpr VkExtent2D kShadowExtent{kShadowResolution, kShadowResolution};
 
-    // A lens sits with the target it lands on, not with the eye that moves. aspect is
-    // the only part that moves, and only when the target is remade; the views these
-    // pair with are in the loop, with the input and the clock.
+    // The camera is not here. It keeps the desc it is made from (Passes.h), so its
+    // lens and the target that shapes it cannot become two values that drift apart --
+    // the loop builds it below the acquire, from whatever renderExtent is by then.
     //
-    // No proj[1][1] *= -1: the viewport height is already negative.
-    // Depth lands in [0,1] thanks to GLM_FORCE_DEPTH_ZERO_TO_ONE on the CMake target.
-    float aspect = static_cast<float>(renderExtent.width)
-                 / static_cast<float>(renderExtent.height);
-    glm::mat4 proj =
-        glm::perspective(glm::radians(kFovDegrees), aspect, kNearPlane, kFarPlane);
-
     // Orthographic because the light is directional: parallel rays have no eye point
     // to project from, only a box, and the box decides how much world one texel covers.
     // Every argument is a constant, so this is built once.
@@ -710,14 +703,13 @@ int main() {
                              "Shaders/fullscreen.frag.spv",
                              &renderer.presentProgram)) { return 1; }
 
-    // What both swapchain passes draw into. One value because it is one target: the
-    // gui pass draws on top of what this one leaves, in the same image. Built here
-    // rather than twice, so a change to the surface format cannot reach one and miss
-    // the other.
+    // What both swapchain passes draw into -- one value, because it is one image: the
+    // gui pass draws on top of what the post pass leaves.
     //
-    // No depth and one sample, both by default. Neither shader declares a depth test,
-    // and MSAA ended at the scene pass's resolve.
-    const AttachmentFormats swapchainFormats{window.surfaceFormat.format};
+    // Asked for rather than assembled. Every field of it is the presentation engine's
+    // answer, which is the opposite of sceneFormats above, and the same type carries
+    // both -- so the call is what says which.
+    const AttachmentFormats swapchainFormats = SwapchainAttachmentFormats(window);
 
     GraphicsPipelineDesc presentDesc;
     presentDesc.formats = swapchainFormats;
@@ -1112,9 +1104,6 @@ int main() {
         if (held(GLFW_KEY_E)) { eye += kWorldUp * kMoveSpeed * dt; }
         if (held(GLFW_KEY_Q)) { eye -= kWorldUp * kMoveSpeed * dt; }
 
-        // center is eye + forward. An absolute target would pin the gaze to one point
-        // and rotation would stop working.
-        const glm::mat4 view = glm::lookAt(eye, eye + forward, kWorldUp);
 
         // Light
         //
@@ -1193,16 +1182,23 @@ int main() {
             // The only sets that name what was just destroyed.
             RefreshPostProcessPass(renderer.descriptors, &renderer.postPass);
 
+            // The camera follows on its own: it is built from renderExtent below, so
+            // there is no second value here to remember to update.
             renderExtent = wanted;
-            aspect = static_cast<float>(renderExtent.width)
-                   / static_cast<float>(renderExtent.height);
-            proj = glm::perspective(glm::radians(kFovDegrees), aspect,
-                                    kNearPlane, kFarPlane);
             LOG("[render] targets now %ux%u\n", renderExtent.width, renderExtent.height);
         }
 
-        // After the resize, so it carries this frame's proj.
-        renderer.cameras[slot.index].value = {proj * view, glm::vec4{eye, 0.0f}};
+        // Below the resize, so the target it is built from is this frame's. center is
+        // eye + forward: an absolute target would pin the gaze and rotation would stop
+        // working.
+        //
+        // viewPos comes out of the desc rather than being copied beside it -- one
+        // camera, one place its position is written down.
+        const Camera camera = MakeCamera(CameraDesc{renderExtent,
+                                                    kFovDegrees, kNearPlane, kFarPlane,
+                                                    eye, forward, kWorldUp});
+        renderer.cameras[slot.index].value =
+            {camera.proj * camera.view, glm::vec4{camera.desc.eye, 0.0f}};
 
         // The panel, after the acquire because it reports the image this frame got.
         // Nothing here touches the GPU -- it only fills a draw list that
