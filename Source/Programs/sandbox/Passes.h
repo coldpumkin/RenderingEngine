@@ -383,6 +383,34 @@ bool CreateShadowPass(const VulkanDevice& dev, const Descriptors& descriptors,
 // No texture here any more. It was one because there was one, and the moment a second
 // arrived it stopped being a property of the pass -- it is a Material now, and the
 // DrawItem says which.
+//
+// What the pass owns, and what reaches it from outside
+// ----------------------------------------------------------------------------
+//
+// Sorted by that question rather than by type, because the answer is lopsided:
+//
+//   owns       the images it draws into. That is the whole list.
+//
+//   receives   the camera and the light   main assigns into frames[i] from outside
+//              the raster switches        an argument to RecordScenePass
+//              the shadow map             walked:  shadow.frames[i].depth
+//              the panel's buffer         walked:  GuiOptionsBuffer(gui, i)
+//
+// **Four things arriving four different ways, and nothing about them asks for the
+// difference.** gui alone comes in by two of the four -- its buffer is walked to at
+// creation, its switches handed in at recording. The post-process pass was a fifth
+// route until it was given its images instead of the pass that made them, and what
+// that bought is the shape the other four have not taken yet.
+//
+// This is written as a list and not as a type on purpose. Naming what a pass owns is
+// what has to happen before anything derives from it, and a struct now would fix the
+// answer while three of the four routes still have no reason to be what they are.
+//
+// The line is also not a partition. "The pass owns this" says nothing about what a
+// draw owns, and the tempting reading -- everything else is the draw's -- would settle
+// a question the asset is currently answering. The pipeline below is the case: it is
+// the pass's because no material in Sponza asks for a second one, not because a pass
+// is the thing that holds a pipeline.
 struct ScenePass {
     const Mesh* mesh = nullptr;
 
