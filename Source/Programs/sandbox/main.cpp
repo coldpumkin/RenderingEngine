@@ -21,11 +21,10 @@
 //                 Capture        one frame to a file, for comparing two builds
 //
 //   main, once    Declarations   in destruction order, which is not the fill order
-//                 Display        a window, a GPU for it, and the format it takes
-//                 Device         and past it, everything that draws rather than shows
-//                 Display passes the two compiled against the format above
-//                 Targets        what we render into -- ours, none of it the display's
-//                 Render passes  the two compiled against a target below
+//                 Display        a window and a GPU that can drive it
+//                 Targets        what each pass draws into, all four, before a device
+//                 Device         and past it, everything that needs one
+//                 Passes         a program per shader pair, a pipeline per variant
 //                 Scene          the mesh and the draw list
 //                 Textures       the images the materials name
 //                 Descriptors    the pool, sized by what the scene turned out to be
@@ -571,11 +570,8 @@ int main() {
     // order inside it is a destruction contract, not a preference.
     Renderer       renderer;
 
-    // Display -- a window, a GPU that can drive it, and the format it takes
+    // Display -- a window, and a GPU that can drive it
     // ========================================================================
-    //
-    // No device yet, and nothing here needs one. This is the whole of what showing a
-    // window settles; what we draw before we show it is decided below.
 
     // glfwInit is first only because windowSystem is declared first and so dies last.
     if (!InitWindowSystem(&windowSystem)) { return 1; }
@@ -584,136 +580,85 @@ int main() {
         return 1;
     }
 
-    // What the hardware is asked: which GPU, and which of its queue families. Nothing
-    // about what we intend to draw -- that is the next question and ours to answer.
+    // Which GPU, and which of its queue families. Nothing about what we draw.
     const PhysicalDeviceSelection selection = PickPhysicalDevice(inst, window.surface);
     if (selection.gpu == VK_NULL_HANDLE) { return 1; }
 
-    // The one target format we do not choose. It must be sRGB: that encode is
-    // performed nowhere else in the chain, and the offscreen colour still does not
-    // follow from it (Attachments.cpp counts the cases).
-    //
-    // A format and not an image: images are made again on every resize.
+    // Must be sRGB: that encode happens nowhere else in the chain. The offscreen
+    // colour still does not follow from it -- Attachments.cpp counts the cases.
     if (!SelectSurfaceFormat(inst, selection.gpu, &window)) { return 1; }
 
-    // How big it is, asked here so the render targets below can follow it from the
-    // first frame rather than from the second. Not checked: false means minimized,
-    // and nothing built below needs a size -- the loop asks again every frame.
+    // Not checked: false means minimized, and nothing below needs a size. The loop
+    // asks again every frame.
     QuerySurfaceExtent(inst, selection.gpu, &window);
 
-    // What the last pass writes into. A TextureDesc like the targets below, and the
-    // only one of the four we do not write ourselves.
+    // Targets -- what each pass draws into, all four described before anything exists
+    // ========================================================================
+    //
+    // Still no device: describing a target needs none, and every pass below points at
+    // one of these. Three kinds of value, in this order because each needs the last --
+    // received, chosen, answered.
+    //
+    // A TextureDesc says four things and a pipeline bakes two of them. The two it
+    // leaves are the two that mattered: the extent a projection answers to, and usage,
+    // in which **SAMPLED marks an edge** -- exactly two of these images carry it, and
+    // those are the two another pass reads.
+
+    // Received -- the one of the four we do not write ourselves.
     const TextureDesc swapchainTarget = SwapchainTargetDesc(window);
 
-    // Device -- and past it, everything that draws rather than shows
-    // ========================================================================
-
-    // selection is absorbed here and not kept -- nothing below this line reads it.
-    if (!CreateDevice(inst, selection, &dev)) { return 1; }
-    if (!CreateCommands(dev, &commands)) { return 1; }
-
-    // Here, not with the passes below: the descriptor pool has to be told about this
-    // one's set before it is created, and the font it points at is uploaded in here.
-    if (!CreateGui(dev, commands, window, &renderer.guiPass)) { return 1; }
-
-    // Display passes -- the two that draw into a swapchain image
-    // ------------------------------------------------------------------------
-    //
-    // Above the targets and not below, because neither of these reads one. What they
-    // are compiled against is the answer the display gave before there was a device,
-    // and swapchainTarget does not change while the program runs, so nothing rebuilds
-    // them.
-    //
-    // Four programs and five pipelines in all; the other two are below.
-
-    // The post pass. No vertex input, no depth, 1 sample -- MSAA ends at the resolve.
-    if (!CreateShaderProgram(dev, "Shaders/fullscreen.vert.spv",
-                             "Shaders/post.frag.spv",
-                             &renderer.postProgram)) { return 1; }
-
-    GraphicsPipelineDesc postDesc;
-    postDesc.color[0] = &swapchainTarget;
-    postDesc.colorCount = 1;
-    if (!CreateGraphicsPipeline(dev, renderer.postProgram, postDesc,
-                                &renderer.postPipeline)) { return 1; }
-
-    // The panel, on top of what the post pass leaves -- the same image, so the same
-    // desc. The only one of the five that blends: a window has to be see-through to be
-    // over anything. y-down because ImGui works in window pixels from the top left.
-    if (!CreateShaderProgram(dev, "Shaders/gui.vert.spv", "Shaders/gui.frag.spv",
-                             &renderer.guiProgram)) { return 1; }
-
-    GraphicsPipelineDesc guiDesc;
-    guiDesc.vertexLayout = GuiVertexInput();
-    guiDesc.color[0] = &swapchainTarget;
-    guiDesc.colorCount = 1;
-    guiDesc.blending = Blending::Translucent;
-    if (!CreateGraphicsPipeline(dev, renderer.guiProgram, guiDesc,
-                                &renderer.guiPipeline)) { return 1; }
-
-    // Targets -- what we render into
-    // ------------------------------------------------------------------------
-    //
-    // Ours, all of it. What a display settles was settled above without a device;
-    // a shadow map is the plainest case of what is left -- nothing about it reaches
-    // the screen.
-    //
-    // Three kinds of value, in this order and for that reason: what we choose, what
-    // is answered, and what follows from both.
-
-    // Chosen
-    //
-    // kRenderColorFormat is the render chain's, not the swapchain's -- they hold the
-    // same value here and stop the day post tone-maps, which wants a float format.
-    // R8G8B8A8 because WriteBmp reads red first; SRGB so blending and the MSAA
-    // resolve run in linear space.
-    //
-    // How big the render targets are is a policy, and Config.h holds which way it
-    // goes. Not kept in a variable of its own: it goes into the descs below and they
-    // are what everything asks afterwards.
+    // Chosen. kRenderColorFormat is the render chain's, not the swapchain's: they hold
+    // the same value today and part the day post tone-maps, which wants a float
+    // format. R8G8B8A8 because WriteBmp reads red first; SRGB so blending and the
+    // resolve run in linear space. How big is a policy, and Config.h holds it.
     constexpr VkFormat   kRenderColorFormat = VK_FORMAT_R8G8B8A8_SRGB;
     constexpr VkExtent2D kShadowExtent{kShadowResolution, kShadowResolution};
 
-    // Answered -- the two a caller cannot decide. Not a check on the colour above:
-    // whether a format can do what an image asks is CreateImage2D's question now, put
-    // to every image from its own usage.
+    // Answered -- the two a caller cannot decide. Not a check on the colour: whether a
+    // format can do what an image asks is CreateImage2D's question, put to every image
+    // from its own usage.
     TargetCapabilities caps;
-    if (!QueryTargetCapabilities(inst, dev.gpu, DepthTargetUsage(),
+    if (!QueryTargetCapabilities(inst, selection.gpu, DepthTargetUsage(),
                                  kDesiredSampleCount, &caps)) { return 1; }
 
-    // Follows
-
-    // A TextureDesc says four things where AttachmentFormats says two, and the two it
-    // adds are the ones that were missing: the extent a projection answers to, and
-    // usage -- in which **SAMPLED marks an edge**. Exactly two of these four images
-    // carry it, and those are the two another pass reads.
     SceneTargetDescs sceneTargets = MakeSceneTargets(DesiredRenderExtent(window),
                                                      kRenderColorFormat,
                                                      caps.depthFormat, caps.samples);
     const TextureDesc shadowTarget = MakeShadowTarget(kShadowExtent, caps.depthFormat);
 
-    // Render passes -- the two that draw into targets of ours
-    // ------------------------------------------------------------------------
-    //
-    // Below the targets, because both are compiled against one. Both take the same
-    // vertex layout: it describes the buffer, and each vertex stage reads out of it
-    // the locations it declares -- CheckVertexInterface reads that from the .spv.
+    // Device -- and past it, everything that needs one
+    // ========================================================================
 
-    // The depth-only pass, first because the scene pass reads what it draws.
+    // selection is absorbed here and not kept -- nothing below reads it.
+    if (!CreateDevice(inst, selection, &dev)) { return 1; }
+    if (!CreateCommands(dev, &commands)) { return 1; }
+
+    // Here and not with the passes: the descriptor pool has to be told about this
+    // one's set before it is created, and the font it points at is uploaded here.
+    if (!CreateGui(dev, commands, window, &renderer.guiPass)) { return 1; }
+
+    // Passes -- a program per pair of shaders, a pipeline per variant of one
+    // ========================================================================
+    //
+    // In the order a frame records them, and each names the target it draws into.
+    // Four programs, five pipelines: the scene has two variants differing in
+    // polygonMode, which is compiled in. Anything that is a register instead is
+    // dynamic state and costs no second pipeline.
+
+    // Depth only, and first because the scene pass reads what it draws. No colour:
+    // shadow.frag declares none, and CreateGraphicsPipeline refuses the pair where
+    // one side says colour and the other does not.
     if (!CreateShaderProgram(dev, "Shaders/shadow.vert.spv", "Shaders/shadow.frag.spv",
                              &renderer.shadowProgram)) { return 1; }
 
-    // No colour, which shadow.frag settles by declaring no output --
-    // CreateGraphicsPipeline refuses the pair where one side says colour and the other
-    // does not.
     GraphicsPipelineDesc shadowDesc;
     shadowDesc.vertexLayout = VertexInput();
     shadowDesc.depth = &shadowTarget;
     if (!CreateGraphicsPipeline(dev, renderer.shadowProgram, shadowDesc,
                                 &renderer.shadowPipeline)) { return 1; }
 
-    // The program first: the shaders decide the set layouts and the push range. Two
-    // pipelines from one program share every set already drawn from it.
+    // The same vertex layout as the shadow pass: it describes the buffer, and each
+    // vertex stage reads out of it the locations it declares.
     if (!CreateShaderProgram(dev, "Shaders/scene.vert.spv", "Shaders/scene.frag.spv",
                              &renderer.sceneProgram)) { return 1; }
 
@@ -728,11 +673,39 @@ int main() {
                                 &renderer.scenePipeline)) { return 1; }
 
     // The same desc with one field changed, which is the whole of what a second
-    // variant is. LINE needs fillModeNonSolid, requested in Core.h.
+    // variant is. Two pipelines from one program share every set drawn from it.
+    // LINE needs fillModeNonSolid, requested in Core.h.
     GraphicsPipelineDesc wireDesc = opaqueDesc;
     wireDesc.polygonMode = VK_POLYGON_MODE_LINE;
     if (!CreateGraphicsPipeline(dev, renderer.sceneProgram, wireDesc,
                                 &renderer.sceneWirePipeline)) { return 1; }
+
+    // No vertex input, no depth, one sample -- MSAA ends at the resolve this reads.
+    // fullscreen.vert keeps its name because it is the half that is not post's: a
+    // lighting pass will pair the same module with a different fragment stage.
+    if (!CreateShaderProgram(dev, "Shaders/fullscreen.vert.spv",
+                             "Shaders/post.frag.spv",
+                             &renderer.postProgram)) { return 1; }
+
+    GraphicsPipelineDesc postDesc;
+    postDesc.color[0] = &swapchainTarget;
+    postDesc.colorCount = 1;
+    if (!CreateGraphicsPipeline(dev, renderer.postProgram, postDesc,
+                                &renderer.postPipeline)) { return 1; }
+
+    // The panel, on top of what the post pass leaves -- the same image, so the same
+    // desc. The only one of the five that blends: a window has to be see-through to
+    // be over anything. y-down because ImGui works in window pixels from the top left.
+    if (!CreateShaderProgram(dev, "Shaders/gui.vert.spv", "Shaders/gui.frag.spv",
+                             &renderer.guiProgram)) { return 1; }
+
+    GraphicsPipelineDesc guiDesc;
+    guiDesc.vertexLayout = GuiVertexInput();
+    guiDesc.color[0] = &swapchainTarget;
+    guiDesc.colorCount = 1;
+    guiDesc.blending = Blending::Translucent;
+    if (!CreateGraphicsPipeline(dev, renderer.guiProgram, guiDesc,
+                                &renderer.guiPipeline)) { return 1; }
 
     // Scene -- the mesh and the draw list, from one file
     // ------------------------------------------------------------------------
@@ -776,20 +749,14 @@ int main() {
     // Textures -- the images the materials name
     // ------------------------------------------------------------------------
     //
-    // Two per material, laid out in pairs. One pair per material the file named and
-    // no extra: every primitive names a material, which the loader now insists on.
+    // Three per material in runs: base colour, normal, metallic-roughness. One run
+    // per material the file named -- every primitive names one, which the loader
+    // insists on.
     //
-    // A material missing one image gets a neutral texture rather than a null. The set
-    // has bindings that all have to point somewhere; a null would be a validation
-    // error at bind time, and a branch in the shader would be a third way to say the
-    // same thing.
+    // A material missing an image gets a neutral texture and not a null: every binding
+    // in the set has to point somewhere, and a null is a validation error at bind time.
     //
-    // URIs are relative to the .gltf, per the spec, and Sponza keeps its images
-    // beside it.
-    //
-    // Three per material, laid out in runs: base colour, normal, metallic-roughness.
-    // The count is here rather than spelled out at each index, because the day a
-    // fourth arrives this is the line that changes.
+    // URIs are relative to the .gltf, per the spec.
     constexpr size_t kTexturesPerMaterial = 3;
     const uint32_t materialCount = static_cast<uint32_t>(materialSources.size());
     renderer.textures.resize(static_cast<size_t>(materialCount) * kTexturesPerMaterial);
@@ -875,13 +842,12 @@ int main() {
     // Descriptors -- the pool, sized by what the scene turned out to be
     // ------------------------------------------------------------------------
     //
-    // Here and not up with the pipelines: the pool cannot be sized until the materials
-    // have been counted, which is what a material being data costs.
+    // Here and not with the pipelines: the pool cannot be sized until the materials
+    // are counted.
     //
-    // Three claims, and the counts come from three different places -- frames in
-    // flight for the two frame sets, materials for the material set. How many
-    // descriptors that is per set is not asked here: CreateDescriptors reads it off
-    // the layout, so the second binding a material grew did not reach this line.
+    // Three claims from three different counts -- frames in flight for the two frame
+    // sets, materials for the material set. How many descriptors each set holds is
+    // read off the layout by CreateDescriptors, not written here.
     const SetRequest setRequests[] = {
         {&renderer.shadowProgram.setLayouts[kFrameSet], kFramesInFlight},
         {&renderer.sceneProgram.setLayouts[kFrameSet], kFramesInFlight},
@@ -931,20 +897,16 @@ int main() {
         items[i].material = itemMaterial[i];
     }
 
-    // The draw order, now that both things a bind depends on hang off one pointer.
+    // The draw order. Only grouping matters, not which group leads: a bind happens
+    // where two neighbours differ, so any order putting equal materials together
+    // reaches the same count. Indices and not addresses, so two runs sort alike.
     //
-    // Only grouping matters, not which group comes first: a bind happens where two
-    // neighbours differ, so any total order that puts equal materials together reaches
-    // the same count. Comparing the indices is enough, and unlike the addresses they
-    // replaced they are an order we chose -- two runs sort the same way.
+    // Cull first, even though it is a function of the material. Sorting on the
+    // material alone leaves the cull groups interleaved, and a material never
+    // straddles two cull modes, so the coarser key costs nothing.
     //
-    // Cull first, even though it is a function of the material and so adds no
-    // information. It adds an ordering: sorting on the material alone leaves the cull
-    // groups interleaved, and grouping by the coarser value first costs nothing,
-    // because a material never straddles two cull modes.
-    //
-    // Stable, so items that tie keep the order the file gave them. Nothing depends on
-    // it yet -- blending is off, so no draw has to come after another.
+    // Stable, so ties keep the file's order. Nothing depends on it yet -- blending is
+    // off, so no draw has to come after another.
     const std::vector<Material>& materials = renderer.materials;
     std::stable_sort(items.begin(), items.end(),
                      [&materials](const DrawItem& a, const DrawItem& b) noexcept {
@@ -966,10 +928,9 @@ int main() {
     //
     // In dependency order: the scene pass's sets name the shadow maps, the post pass's
     // name what the scene pass made. A slot owns none of it and only knows its index.
-    // No formats here. Each pass reads them off its pipeline, which is the thing that
-    // baked them in -- passing them again would only make a second value to disagree.
-    // Before the passes that read them: the shadow pass is created first, so a buffer
-    // owned by either pass would have to exist before its owner.
+    //
+    // The buffers come before both passes that read them, which is also why neither
+    // owns them -- the shadow pass is created first and would have to outlive itself.
     if (!CreateFrameCameras(dev, renderer.cameras)) { return 1; }
     if (!CreateFrameLights(dev, renderer.lights)) { return 1; }
     if (!CreateFrameShadows(dev, renderer.shadows)) { return 1; }
@@ -1017,21 +978,14 @@ int main() {
     uint32_t slotIndex = 0;       // which slot this frame borrows
     double lastTime = glfwGetTime();
 
-    // The light's half that does not move. The direction turns with the clock inside
-    // the loop; the box it is seen through and the point it looks at do not.
+    // The light's half that does not move -- the loop turns its direction, not these.
     //
-    // The centre is fixed rather than fitted to the camera. Fitting is what a real one
-    // does, and what cascades are: it needs the frustum's corners in light space. A
-    // constant box is honest about covering this scene and nothing larger, and
-    // scene.frag returns "lit" for anything outside it.
+    // The centre is fixed rather than fitted to the camera, so the box covers this
+    // scene and nothing larger; scene.frag returns "lit" outside it. Orthographic
+    // because the light is directional: parallel rays have no eye point, only a box,
+    // and the box decides how much world one texel covers.
     //
-    // Orthographic because the light is directional: parallel rays have no eye point
-    // to project from, only a box, and the box decides how much world one texel covers.
-    //
-    // Its aspect comes from the map it lands on, the way the camera's comes from the
-    // image the scene lands on. The map is square, so this is 1 -- what it replaces is
-    // a Contract comment saying the map had to stay square, and a map that is not
-    // square is now drawn correctly rather than skewed.
+    // Its aspect comes from the map, the way the camera's comes from its target.
     constexpr glm::vec3 kSceneCenter{0.0f, 3.0f, 0.0f};
     const float shadowAspect = static_cast<float>(shadowTarget.extent.width)
                              / static_cast<float>(shadowTarget.extent.height);
@@ -1068,14 +1022,13 @@ int main() {
     while (glfwWindowShouldClose(window.handle) == 0) {
         glfwPollEvents();
 
-        // Sleep until an event arrives while minimized.
+        // The window's size, asked of the surface, and the minimize check with it:
+        // 0x0 is what a minimized surface reports. Skipping here is what keeps
+        // EnsureSwapchain from waiting and recreating every iteration with no present
+        // to pace it.
         //
-        // Reset the clock after waking: the sleep is not a frame, and counting it
-        // would make the next dt jump and teleport the camera.
-        // The window's size, asked of the surface. Also the minimize check: 0x0 is
-        // what a minimized surface reports, and skipping here is what keeps
-        // EnsureSwapchain from retrying a device wait and a creation every iteration
-        // with no present to pace it.
+        // The clock resets after waking: the sleep is not a frame, and counting it
+        // would teleport the camera on the next dt.
         if (!QuerySurfaceExtent(inst, dev.gpu, &window)) {
             glfwWaitEvents();
             lastTime = glfwGetTime();
@@ -1084,12 +1037,9 @@ int main() {
 
         // Resize -- if the policy says the targets should be another size
         //
-        // Above the acquire, because the size no longer arrives with an image: the
-        // query above is where a window's size comes from now. That is what lets the
-        // camera be built with the rest of the frame's state rather than after it.
-        //
-        // vkDeviceWaitIdle and not a fence: a fence covers one slot, and these images
-        // belong to every slot.
+        // Above the acquire, because the query above is where a window's size comes
+        // from. vkDeviceWaitIdle and not a fence: a fence covers one slot, and these
+        // images belong to every slot.
         const VkExtent2D wanted = DesiredRenderExtent(window);
 
         // Compared against the desc and not against a copy of it: the desc is where
@@ -1165,14 +1115,9 @@ int main() {
 
         // Light
         //
-        // One directional light, circling so the brightness visibly changes -- the
-        // objects turn about z, which leaves their normals fixed.
-        // y is 3.0, not the 0.5 it was before there was a shadow, and it was measured
-        // rather than chosen: at 0.5 and at 1.4 the arcades block the sun before it
-        // reaches the open middle and the whole scene reads as one flat dark mass.
-        // From here the light comes down the courtyard and the columns cast across it.
-        //
-        // xz still turn with t, so what moves is the direction the shadows fall.
+        // One directional light, circling in xz so the shadows sweep. y is fixed at
+        // 3.0: measured, not chosen -- at 0.5 and 1.4 the arcades cut the sun off
+        // before the courtyard and the scene reads as one flat dark mass.
         const glm::vec3 lightDir = glm::normalize(
             glm::vec3{std::cos(t) * 0.7f, 3.0f, std::sin(t) * 0.7f});
 
