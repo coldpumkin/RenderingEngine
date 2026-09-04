@@ -72,9 +72,21 @@ struct ImageView {
     ImageView& operator=(ImageView&& other) noexcept;
 };
 
+// Output: the optimal-tiling format features an image with this usage needs
+//
+// One usage bit to one feature bit, which is Vulkan's own mapping. It exists so the
+// question "can this GPU do that" is asked from the usage a caller already wrote
+// down. It used to be one hardcoded pair of bits in QueryTargetCapabilities, which is
+// a guess made away from the image: it missed the shadow map's SAMPLED and the
+// resolve's TRANSFER_SRC, and demanded SAMPLED of a multisample colour image that
+// cannot have it.
+VkFormatFeatureFlags RequiredFormatFeatures(VkImageUsageFlags usage) noexcept;
+
 // Input:  samples is the MSAA sample count (1_BIT means no MSAA)
 //         usage is what this image is for (attachment / sampled / copy destination)
-// Output: an Image with no view. CreateImageView makes those.
+// Output: an Image with no view. CreateImageView makes those. false also means the
+//         format cannot do what usage asks of it, checked here because this is where
+//         both are known.
 //
 // Contract: samples must equal the rasterizationSamples of every pipeline that draws
 //           into this. The validation layer says so at vkCmdBeginRendering.

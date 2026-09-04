@@ -109,6 +109,15 @@ TextureDesc MakeShadowTarget(VkExtent2D extent, VkFormat depth) noexcept {
                            | VK_IMAGE_USAGE_SAMPLED_BIT};
 }
 
+VkImageUsageFlags DepthTargetUsage() noexcept {
+    // The arguments do not reach usage, so any values will do. Calling the real
+    // functions is the point -- a hand-written union here would drift the day one of
+    // them changes what it asks for.
+    return MakeSceneTargets(VkExtent2D{}, VK_FORMAT_UNDEFINED, VK_FORMAT_UNDEFINED,
+                            VK_SAMPLE_COUNT_1_BIT).depth.usage
+         | MakeShadowTarget(VkExtent2D{}, VK_FORMAT_UNDEFINED).usage;
+}
+
 AttachmentFormats SceneAttachmentFormats(const SceneTargetDescs& targets) noexcept {
     // The multisample colour and not the resolve: what a pipeline bakes is what it
     // draws into, and the resolve is what leaves afterwards.

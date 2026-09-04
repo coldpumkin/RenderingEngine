@@ -79,6 +79,12 @@ struct VulkanDevice {
     VolkDeviceTable table{};
     VkDevice handle = VK_NULL_HANDLE;
 
+    // The instance this was made from, non-owning -- the same way every type below
+    // holds its device. It is what lets device-level code ask an instance-level
+    // question about the GPU it is running on, which image creation needs: whether a
+    // format can do what a usage declares.
+    const VulkanInstance* inst = nullptr;
+
     // What the selection found, absorbed here. Nothing to destroy, so nothing owned.
     VkPhysicalDevice gpu = VK_NULL_HANDLE;
     QueueFamilies families;
@@ -87,10 +93,9 @@ struct VulkanDevice {
     // function that destroys one.
     Queues queues;
 
-    // This GPU's memory types. Settled at creation, never changing, and meaningless
-    // once the device is gone -- which is what puts it here. Asking again would need
-    // an instance, because the query is instance level, and carrying one into every
-    // buffer creation is worse than keeping the answer.
+    // This GPU's memory types. Kept rather than asked for again because there is one
+    // answer and it never changes, not because the query is out of reach -- inst above
+    // is what makes it reachable.
     VkPhysicalDeviceMemoryProperties memoryProperties{};
 
     // No attachment format here, and none in the selection either: the candidate list

@@ -676,9 +676,11 @@ int main() {
     VkExtent2D           renderExtent       = DesiredRenderExtent(window, false);
     constexpr VkExtent2D kShadowExtent{kShadowResolution, kShadowResolution};
 
-    // Answered -- the two a caller cannot decide, plus a check on the colour above
+    // Answered -- the two a caller cannot decide. Not a check on the colour above:
+    // whether a format can do what an image asks is CreateImage2D's question now, put
+    // to every image from its own usage.
     TargetCapabilities caps;
-    if (!QueryTargetCapabilities(inst, dev.gpu, kRenderColorFormat,
+    if (!QueryTargetCapabilities(inst, dev.gpu, DepthTargetUsage(),
                                  kDesiredSampleCount, &caps)) { return 1; }
 
     // Follows

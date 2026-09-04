@@ -1,5 +1,7 @@
 ﻿#include "Vulkan/Attachments.h"
 
+#include "Vulkan/Image.h"     // RequiredFormatFeatures
+
 #include <initializer_list>   // the candidate loops below
 
 // Where sRGB actually matters, counted rather than assumed
@@ -22,36 +24,25 @@
 // that format works, which depth format exists, and how many samples.
 
 bool QueryTargetCapabilities(const VulkanInstance& inst, VkPhysicalDevice gpu,
-                             VkFormat colourFormat, uint32_t desiredSamples,
+                             VkImageUsageFlags depthUsage, uint32_t desiredSamples,
                              TargetCapabilities* out) noexcept {
     TargetCapabilities& formats = *out;
-
-    // Both bits, because this image is two things: drawn into by the pass that owns it
-    // and sampled by whatever reads it next. A format supporting one and not the other
-    // would fail at the second image rather than here.
-    {
-        VkFormatProperties props{};
-        inst.table.vkGetPhysicalDeviceFormatProperties(gpu, colourFormat, &props);
-        constexpr VkFormatFeatureFlags needed =
-            VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
-        if ((props.optimalTilingFeatures & needed) != needed) {
-            LOG("[vk] colour format %d cannot be both drawn into and sampled\n",
-                static_cast<int>(colourFormat));
-            return false;
-        }
-    }
 
     // Most precise first, and stencil-free ahead of stencil since we never use
     // stencil: carrying it costs memory and puts another aspectMask on every
     // barrier and view. optimalTiling because render targets are never linear.
+    //
+    // What each candidate has to satisfy comes from the usage handed in -- so a GPU
+    // where D32_SFLOAT can be drawn into but not sampled moves on to the next one
+    // instead of being found out at the shadow map.
+    const VkFormatFeatureFlags neededDepth = RequiredFormatFeatures(depthUsage);
     for (const VkFormat candidate : {VK_FORMAT_D32_SFLOAT,
                                      VK_FORMAT_X8_D24_UNORM_PACK32,
                                      VK_FORMAT_D32_SFLOAT_S8_UINT,
                                      VK_FORMAT_D24_UNORM_S8_UINT}) {
         VkFormatProperties props{};
         inst.table.vkGetPhysicalDeviceFormatProperties(gpu, candidate, &props);
-        if ((props.optimalTilingFeatures
-             & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0) {
+        if ((props.optimalTilingFeatures & neededDepth) == neededDepth) {
             formats.depthFormat = candidate;
             break;
         }

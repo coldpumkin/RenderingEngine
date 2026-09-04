@@ -58,12 +58,17 @@ struct TargetCapabilities {
     VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
 };
 
-// Input:  colourFormat, which the caller chose and this checks
-// Output: false means this GPU cannot run our render targets - that colour cannot be
-//         both drawn into and sampled, or there is no depth format, or no
-//         multisampling, which the resolve path requires.
+// Input:  depthUsage is everything the depth targets do between them. A format that
+//         can do only part of it is no answer, because they share the one format.
+// Output: false means this GPU cannot run our render targets - no depth format does
+//         all of that, or there is no multisampling, which the resolve path requires.
+//
+// **A search, and only a search.** Whether a format can do what an image asks is not
+// here any more: CreateImage2D asks that of every image, from its own usage. What is
+// left is the two questions with more than one right answer, and picking among those
+// is a policy rather than a check.
 //
 // Takes inst because these queries are instance level. No logical device needed.
 bool QueryTargetCapabilities(const VulkanInstance& inst, VkPhysicalDevice gpu,
-                             VkFormat colourFormat, uint32_t desiredSamples,
+                             VkImageUsageFlags depthUsage, uint32_t desiredSamples,
                              TargetCapabilities* out) noexcept;

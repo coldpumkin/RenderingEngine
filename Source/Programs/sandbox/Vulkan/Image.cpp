@@ -18,6 +18,31 @@ static VkImageAspectFlags AspectOf(VkFormat format) noexcept {
     }
 }
 
+VkFormatFeatureFlags RequiredFormatFeatures(VkImageUsageFlags usage) noexcept {
+    VkFormatFeatureFlags features = 0;
+    if (usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) {
+        features |= VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
+    }
+    if (usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT) {
+        features |= VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    }
+    if (usage & VK_IMAGE_USAGE_SAMPLED_BIT) {
+        features |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+    }
+    if (usage & VK_IMAGE_USAGE_STORAGE_BIT) {
+        features |= VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT;
+    }
+    if (usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) {
+        features |= VK_FORMAT_FEATURE_TRANSFER_SRC_BIT;
+    }
+    if (usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) {
+        features |= VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+    }
+    // TRANSIENT_ATTACHMENT and INPUT_ATTACHMENT ask nothing of the format. Neither is
+    // used here; leaving them out is what says so.
+    return features;
+}
+
 bool CreateImage2D(const VulkanDevice& dev,
                    VkExtent2D extent,
                    VkFormat format,
@@ -25,6 +50,18 @@ bool CreateImage2D(const VulkanDevice& dev,
                    VkImageUsageFlags usage,
                    Image* out) noexcept {
     out->dev = &dev;   // set first: the destructor runs even if the create below fails
+
+    // Every image, against what it declares -- not one format asked about once on
+    // behalf of four. vmaCreateImage would fail anyway, with a code and no reason.
+    VkFormatProperties props{};
+    dev.inst->table.vkGetPhysicalDeviceFormatProperties(dev.gpu, format, &props);
+    const VkFormatFeatureFlags needed = RequiredFormatFeatures(usage);
+    if ((props.optimalTilingFeatures & needed) != needed) {
+        LOG("[vk] format %d cannot do usage 0x%x: needs features 0x%x, missing 0x%x\n",
+            static_cast<int>(format), usage, needed,
+            needed & ~props.optimalTilingFeatures);
+        return false;
+    }
 
     VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     info.imageType = VK_IMAGE_TYPE_2D;

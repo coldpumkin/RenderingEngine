@@ -182,6 +182,7 @@ bool CreateDevice(const VulkanInstance& inst,
                   const PhysicalDeviceSelection& selection,
                   VulkanDevice* out) noexcept {
     VulkanDevice& dev = *out;
+    dev.inst = &inst;
     dev.gpu = selection.gpu;
     dev.families = selection.families;
     const QueueFamilies& families = dev.families;

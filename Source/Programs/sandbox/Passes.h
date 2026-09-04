@@ -482,6 +482,14 @@ SceneTargetDescs MakeSceneTargets(VkExtent2D extent, VkFormat colour, VkFormat d
 // pass reads it -- the second of the two edges.
 TextureDesc MakeShadowTarget(VkExtent2D extent, VkFormat depth) noexcept;
 
+// Output: everything the depth targets do between them
+//
+// Both take the one format QueryTargetCapabilities finds, so what it has to search
+// for is the union rather than either one. Read out of the two calls above instead of
+// written again here: the scene's depth is drawn into, the shadow map is also
+// sampled, and moving a bit in either place moves this.
+VkImageUsageFlags DepthTargetUsage() noexcept;
+
 // Output: what a pipeline drawing into these is compiled against
 //
 // The projection Attachments.h describes, as a call. main wrote it out field by field
