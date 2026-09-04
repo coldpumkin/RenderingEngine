@@ -31,8 +31,12 @@ constexpr VkFrontFace FrontFaceFor(ViewportY y) noexcept {
                               : VK_FRONT_FACE_CLOCKWISE;
 }
 
-// Output: a viewport with the sign applied
-VkViewport MakeViewport(VkExtent2D extent, ViewportY y) noexcept;
+// Output: a viewport covering area, with the sign applied
+//
+// area rather than an extent because the rect a pass draws into is not always the
+// whole of what it draws on. Three of the four passes hand in the whole target; the
+// post pass hands in a smaller one and the difference is the bars.
+VkViewport MakeViewport(VkRect2D area, ViewportY y) noexcept;
 
 // RasterState - what a pass settles before its first draw
 // ============================================================================
@@ -90,28 +94,31 @@ struct RasterState {
 
 // Effect: issues every dynamic state this program declares, in one call
 //
-// One call and not seven, so a pass cannot set some and inherit the rest. extent is
+// One call and not seven, so a pass cannot set some and inherit the rest. area is
 // separate because it is the frame's rather than the pass's preference -- the same
 // RasterState is right at any size.
 //
-// The viewport built from extent is the one place in this program where a coordinate
+// The viewport built from area is the one place in this program where a coordinate
 // stops being a fraction and becomes a pixel. Two contracts meet on that line, they
-// are separate, and nothing checks either -- both come out as a stretched picture and
-// neither says a word.
+// are separate, and nothing checks either -- either one broken is a stretched picture
+// and neither says a word.
 //
 // Contract: 3D -> 2D. viewport.width / |viewport.height| equals the aspect the
 //           projection behind these primitives was built with. The shadow pass holds
 //           it by being square (its ortho box is), the scene pass by proj and this
-//           extent both reading kRenderExtent.
+//           area both reading kRenderExtent.
 //
 // Contract: 2D -> 2D. A pass that draws an image rather than geometry owes the same
 //           thing with two extents -- what it samples against what it draws into --
 //           and it is a separate question, because there is no projection here to
-//           agree with. The post pass does not hold it: a kRenderExtent source into
-//           whatever size the window is. Stretch, letterbox or crop is a policy that
-//           has not been chosen.
+//           agree with. The post pass is the only one that owes it, and holds it by
+//           handing in a letterboxed area (LetterboxInto in Passes.cpp) instead of
+//           the whole target.
+//
+// area is why this takes a rect at all. Three passes pass {{0, 0}, extent} and always
+// will; the fourth is the reason the offset exists.
 void SetRasterState(const VolkDeviceTable& vk, VkCommandBuffer cmd,
-                    VkExtent2D extent, const RasterState& raster) noexcept;
+                    VkRect2D area, const RasterState& raster) noexcept;
 
 // Blending - whether the fragment is mixed with what is already there
 // ============================================================================

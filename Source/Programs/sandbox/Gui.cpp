@@ -502,7 +502,7 @@ void RecordGuiPass(const FrameSlot& slot, Gui& gui, const Texture& target) noexc
     // Every default: ImGui works in window pixels with the origin at the top left,
     // its triangles have no consistent winding so nothing is culled, and there is no
     // depth attachment to test against.
-    SetRasterState(vk, cmd, target.desc.extent, RasterState{});
+    SetRasterState(vk, cmd, VkRect2D{{0, 0}, target.desc.extent}, RasterState{});
 
     vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.handle);
     vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout,

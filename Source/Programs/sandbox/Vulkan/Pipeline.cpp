@@ -5,14 +5,17 @@
 #include <iterator>   // std::size
 
 // Negating height alone puts the image off screen: the origin has to move down by
-// the same amount. The two lines are one thing.
-VkViewport MakeViewport(VkExtent2D extent, ViewportY y) noexcept {
-    const float width = static_cast<float>(extent.width);
-    const float height = static_cast<float>(extent.height);
+// the same amount. The two lines are one thing, and with an offset the amount is
+// measured from the bottom of the area rather than from the bottom of the target.
+VkViewport MakeViewport(VkRect2D area, ViewportY y) noexcept {
+    const float left = static_cast<float>(area.offset.x);
+    const float top = static_cast<float>(area.offset.y);
+    const float width = static_cast<float>(area.extent.width);
+    const float height = static_cast<float>(area.extent.height);
 
     VkViewport viewport{};
-    viewport.x = 0.0f;
-    viewport.y = (y == ViewportY::Up) ? height : 0.0f;
+    viewport.x = left;
+    viewport.y = (y == ViewportY::Up) ? top + height : top;
     viewport.width = width;
     viewport.height = (y == ViewportY::Up) ? -height : height;
     viewport.minDepth = 0.0f;
@@ -24,16 +27,16 @@ VkViewport MakeViewport(VkExtent2D extent, ViewportY y) noexcept {
 // agree: one missing from this function is a validation error at the first draw, one
 // missing from that array is a value silently taken from the pipeline instead.
 void SetRasterState(const VolkDeviceTable& vk, VkCommandBuffer cmd,
-                    VkExtent2D extent, const RasterState& raster) noexcept {
-    const VkViewport viewport = MakeViewport(extent, raster.viewportY);
+                    VkRect2D area, const RasterState& raster) noexcept {
+    const VkViewport viewport = MakeViewport(area, raster.viewportY);
     vk.vkCmdSetViewport(cmd, 0, 1, &viewport);
     vk.vkCmdSetFrontFace(cmd, FrontFaceFor(raster.viewportY));
 
-    // Pixels outside this are discarded. The whole target, always -- we have no use
-    // for a partial one yet, and it is dynamic because the viewport is.
-    VkRect2D scissor{};
-    scissor.extent = extent;
-    vk.vkCmdSetScissor(cmd, 0, 1, &scissor);
+    // Pixels outside this are discarded, and the same rect: the viewport already
+    // confines the primitives to it, so this discards nothing either way. It is the
+    // area and not the whole target only because that is the rect this call was
+    // handed -- when the two differ, so will these, and that will be the point.
+    vk.vkCmdSetScissor(cmd, 0, 1, &area);
 
     vk.vkCmdSetCullMode(cmd, raster.cull);
     vk.vkCmdSetDepthTestEnable(cmd, raster.depthTest);

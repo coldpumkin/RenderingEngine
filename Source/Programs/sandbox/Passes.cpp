@@ -323,7 +323,7 @@ static void RecordShadowPass(const FrameSlot& slot, const ShadowPass& shadow,
     raster.viewportY = ViewportY::Down;
     raster.depthTest = VK_TRUE;
     raster.depthWrite = VK_TRUE;
-    SetRasterState(vk, cmd, extent, raster);
+    SetRasterState(vk, cmd, VkRect2D{{0, 0}, extent}, raster);
 
     vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadow.pipeline->handle);
     vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -472,7 +472,7 @@ static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
     state.depthWrite = raster.depthWrite ? VK_TRUE : VK_FALSE;
     state.depthCompare = raster.depthCompare;
     state.rasterizerDiscard = raster.rasterizerDiscard ? VK_TRUE : VK_FALSE;
-    SetRasterState(vk, cmd, extent, state);
+    SetRasterState(vk, cmd, VkRect2D{{0, 0}, extent}, state);
 
     vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.handle);
 
@@ -565,6 +565,38 @@ static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
 // and those belong to getting the frame out, not to drawing it. Drawing somewhere else
 // -- the next stage of an effect chain, a screenshot -- is then a different argument,
 // not a different function.
+// Output: the largest rect inside dest that has source's aspect, centred
+//
+// The 2D -> 2D contract in Pipeline.h, held for the one pass that owes it. Fitting by
+// whichever side runs out first is what "largest that still fits" means, and the
+// leftover split in two is what centres it.
+//
+// Equal aspects give back {{0, 0}, dest} exactly, which is what every window at the
+// render target's own shape gets -- the case this has to leave alone.
+//
+// Integer throughout, and the comparison is cross-multiplied rather than two
+// divisions: same answer, and no float to round the wrong way at the boundary.
+static VkRect2D LetterboxInto(VkExtent2D source, VkExtent2D dest) noexcept {
+    const uint64_t sourceIsWider = uint64_t{source.width} * dest.height;
+    const uint64_t destIsWider = uint64_t{dest.width} * source.height;
+
+    VkExtent2D fitted = dest;
+    if (sourceIsWider > destIsWider) {
+        // Width fills the target and the bars are above and below.
+        fitted.height = static_cast<uint32_t>(uint64_t{dest.width} * source.height
+                                              / source.width);
+    } else if (sourceIsWider < destIsWider) {
+        fitted.width = static_cast<uint32_t>(uint64_t{dest.height} * source.width
+                                             / source.height);
+    }
+
+    VkRect2D area{};
+    area.offset.x = static_cast<int32_t>((dest.width - fitted.width) / 2);
+    area.offset.y = static_cast<int32_t>((dest.height - fitted.height) / 2);
+    area.extent = fitted;
+    return area;
+}
+
 static void RecordPostProcessPass(const FrameSlot& slot, const PostProcessPass& post,
                                   const Texture& target) noexcept {
     const VolkDeviceTable& vk = slot.dev->table;
@@ -604,7 +636,17 @@ static void RecordPostProcessPass(const FrameSlot& slot, const PostProcessPass& 
     VkRenderingAttachmentInfo swapColor{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
     swapColor.imageView = dest.view.handle;
     swapColor.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    swapColor.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;   // the draw covers everything
+
+    // CLEAR, where it used to be DONT_CARE because the draw covered everything. It
+    // does not any more: a window whose shape differs from the source's leaves bars,
+    // and this is what is in them. renderArea below is still the whole target, so the
+    // clear reaches them -- a clear follows the render area and not the viewport.
+    //
+    // Unconditional, so a window at the source's own shape pays a clear it does not
+    // need. Making it conditional would put the same decision in two places, and this
+    // is a full-screen write the driver does with the fast path.
+    swapColor.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    swapColor.clearValue.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
     swapColor.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 
     VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
@@ -618,9 +660,14 @@ static void RecordPostProcessPass(const FrameSlot& slot, const PostProcessPass& 
     // Down, the opposite of the scene pass: fullscreen.vert builds its own uv from
     // gl_VertexIndex and expects the default orientation. One triangle, wound to face
     // us, and nothing to hide behind anything -- so everything else is the default.
+    //
+    // The area is the whole point. fullscreen.vert's uv runs 0..1 over the source no
+    // matter what, so the shape of the picture is decided here and nowhere else: hand
+    // in the whole target and it stretches. This is the only call of the four that
+    // passes anything but the target it draws on.
     RasterState raster;
     raster.cull = VK_CULL_MODE_BACK_BIT;
-    SetRasterState(vk, cmd, destExtent, raster);
+    SetRasterState(vk, cmd, LetterboxInto(source.desc.extent, destExtent), raster);
 
     vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.handle);
 
