@@ -667,7 +667,6 @@ int main() {
     GraphicsPipelineDesc opaqueDesc;
     opaqueDesc.vertexLayout = VertexInput();
     opaqueDesc.color[0] = &sceneTargetDescs.color;
-    opaqueDesc.colorCount = 1;
     opaqueDesc.depth = &sceneTargetDescs.depth;
     if (!CreateGraphicsPipeline(dev, renderer.sceneProgram, opaqueDesc,
                                 &renderer.scenePipeline)) { return 1; }
@@ -689,7 +688,6 @@ int main() {
 
     GraphicsPipelineDesc postDesc;
     postDesc.color[0] = &swapchainTarget;
-    postDesc.colorCount = 1;
     if (!CreateGraphicsPipeline(dev, renderer.postProgram, postDesc,
                                 &renderer.postPipeline)) { return 1; }
 
@@ -702,7 +700,6 @@ int main() {
     GraphicsPipelineDesc guiDesc;
     guiDesc.vertexLayout = GuiVertexInput();
     guiDesc.color[0] = &swapchainTarget;
-    guiDesc.colorCount = 1;
     guiDesc.blending = Blending::Translucent;
     if (!CreateGraphicsPipeline(dev, renderer.guiProgram, guiDesc,
                                 &renderer.guiPipeline)) { return 1; }
@@ -1218,15 +1215,19 @@ int main() {
         BuildGui(&renderer.guiPass, guiInfo);
 
 
+        // The values written above, into the buffers the sets already name. Here and
+        // not inside RecordFrame: it is a memcpy per value, not a command.
+        UploadFrameValues(slot, renderer.cameras, renderer.lights, renderer.shadows,
+                          renderer.guiPass);
+
         // Only the texture: recording has no use for the rest of the target.
         //
         // Reset rather than declared here: the counters add up, and the panel above
         // read last frame's values before this line overwrites them.
         drawStats = DrawStats{};
-        if (!RecordFrame(slot, renderer.cameras, renderer.lights, renderer.shadows,
-                         renderer.shadowPass, renderer.scenePass,
-                         renderer.postPass,
-                         renderer.guiPass, *target.texture, drawList, &drawStats)) {
+        if (!RecordFrame(slot, renderer.shadowPass, renderer.scenePass,
+                         renderer.postPass, renderer.guiPass,
+                         *target.texture, drawList, &drawStats)) {
             break;
         }
 

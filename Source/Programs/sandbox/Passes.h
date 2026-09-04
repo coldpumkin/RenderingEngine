@@ -790,7 +790,24 @@ struct DrawStats {
     uint32_t cullChanges = 0;
 };
 
-// Effect: resets the slot's command buffer and records both passes from it
+// Effect: copies this frame's values into the buffers the sets already name
+//
+// The value and its GPU copy meet here, and nothing else in a frame does this: the
+// sets were filled once at creation and point at these buffers for good, so a frame's
+// work is a memcpy per value and no descriptor write at all.
+//
+// Apart from RecordFrame because it is not recording -- it touches no command buffer,
+// issues no barrier, and the three arrays it needs were three of that function's
+// eleven arguments purely to reach these four lines.
+//
+// Contract: the caller has waited on this slot's fence. BeginFrame does, and this
+//           runs after it -- writing a buffer the GPU is still reading is the one way
+//           to get this wrong, and nothing here would notice.
+void UploadFrameValues(const FrameSlot& slot,
+                       const FrameCamera* cameras, const FrameLight* lights,
+                       const FrameShadow* shadows, Gui& gui) noexcept;
+
+// Effect: resets the slot's command buffer and records the four passes into it
 // Output: false means the buffer is invalid and must not be submitted
 //         stats, if given, is what the scene pass cost. Every frame records the same
 //         list, so one frame's numbers are the answer.
@@ -798,9 +815,10 @@ struct DrawStats {
 // Takes the slot but never touches its fence or semaphore -- a rule, not a type.
 // A Texture, not the whole FrameTarget: nothing here reads the index or the semaphore,
 // and those belong to getting the frame out, not to drawing it.
+//
+// Contract: UploadFrameValues has run for this slot. What is recorded here reads
+//           those buffers, and nothing in the command stream would say they are stale.
 bool RecordFrame(const FrameSlot& slot,
-                 const FrameCamera* cameras, const FrameLight* lights,
-                 const FrameShadow* shadows,
                  const ShadowPass& shadow, const ScenePass& scene,
                  const PostProcessPass& post, Gui& gui, const Texture& target,
                  const DrawList& draws, DrawStats* stats = nullptr) noexcept;

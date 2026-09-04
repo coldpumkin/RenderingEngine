@@ -212,7 +212,7 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     // The descs handed in, reduced to what compiling actually needs. Everything below
     // reads this, and it is what the Pipeline keeps.
     const AttachmentFormats formats =
-        AttachmentFormatsOf(desc.color, desc.colorCount, desc.depth);
+        AttachmentFormatsOf(desc.color, desc.depth);
 
     // What it was built from, kept. The target pointers are not: their projection is.
     pipeline.vertexLayout = desc.vertexLayout;

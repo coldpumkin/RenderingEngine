@@ -23,29 +23,19 @@
 // The caller fills it now and this function answers only what the GPU can: whether
 // that format works, which depth format exists, and how many samples.
 
-AttachmentFormats AttachmentFormatsOf(const TextureDesc* const color[],
-                                      uint32_t colorCount,
+AttachmentFormats AttachmentFormatsOf(const TextureDesc* const color[kMaxColorTargets],
                                       const TextureDesc* depth) noexcept {
     AttachmentFormats formats{};
-    if (colorCount > kMaxColorTargets) {
-        LOG("[vk] %u colour targets asked for; %u is the ceiling\n",
-            colorCount, kMaxColorTargets);
-        colorCount = kMaxColorTargets;
-    }
 
     // The first desc given decides samples, and every other one is compared to it.
     // A pass with no targets at all never reaches a pipeline, so the default stands.
     const TextureDesc* first = nullptr;
 
-    for (uint32_t i = 0; i < colorCount; ++i) {
-        // A count without a desc under it. Left UNDEFINED rather than skipped, so the
-        // count still says what the caller meant and CheckOutputInterface refuses the
-        // slot for a format it cannot name.
-        if (color[i] == nullptr) {
-            LOG("[vk] colour target %u of %u was not given a desc\n", i, colorCount);
-            continue;
-        }
+    // The list ends where it ends. Nobody says how long it is.
+    for (uint32_t i = 0; i < kMaxColorTargets && color[i] != nullptr; ++i) {
         formats.color[i] = color[i]->format;
+        formats.colorCount = i + 1;
+
         if (first == nullptr) { first = color[i]; }
         else if (color[i]->samples != first->samples) {
             LOG("[vk] colour target %u is %d-sample where the first is %d-sample\n",
@@ -53,7 +43,6 @@ AttachmentFormats AttachmentFormatsOf(const TextureDesc* const color[],
                 static_cast<int>(first->samples));
         }
     }
-    formats.colorCount = colorCount;
 
     if (depth != nullptr) {
         formats.depth = depth->format;

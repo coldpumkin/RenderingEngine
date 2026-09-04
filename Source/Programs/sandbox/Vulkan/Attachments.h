@@ -52,15 +52,21 @@ struct AttachmentFormats {
 
 // Output: the pipeline's view of the images a pass draws into
 //
-// **The one projection**, and the only way an AttachmentFormats is ever made. Either
-// side may be absent -- a depth-only pass passes no colour, a swapchain image no
-// depth. colorCount may be 0.
+// **The one projection**, and the only way an AttachmentFormats is ever made.
+//
+// color is always kMaxColorTargets long and **the first null ends it**, so how many
+// there are is the list rather than a number written beside it. A caller used to
+// write both and they could disagree. Either side may be empty -- a depth-only pass
+// gives no colour, a swapchain image no depth.
+//
+// A gap is not expressible, on purpose. A fragment stage's output locations have no
+// gaps either -- CheckOutputInterface refuses those -- so a hole here could only be a
+// mistake, and it reads back as a shorter list that the same check catches.
 //
 // Contract: every desc given must agree about samples. One rasterizationSamples
 //           covers a whole pass, so there is no pipeline that could honour two; a
 //           disagreement is logged and the first one wins.
-AttachmentFormats AttachmentFormatsOf(const TextureDesc* const color[],
-                                      uint32_t colorCount,
+AttachmentFormats AttachmentFormatsOf(const TextureDesc* const color[kMaxColorTargets],
                                       const TextureDesc* depth) noexcept;
 
 // The comparison the pass creations make: the descs they were handed, projected, and

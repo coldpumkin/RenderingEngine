@@ -166,10 +166,10 @@ struct GraphicsPipelineDesc {
     // A resize remakes these descs at a new extent (ResizeScenePass) and rebuilds no
     // pipeline, so what is kept has to be the part that does not move.
     //
-    // colorCount 0 is a depth-only pass, depth null is a pass with no depth. The
-    // fragment stage has the final say on the colour count and is checked against it.
+    // The first null ends the colour list, so how many there are is the list itself.
+    // An empty one is a depth-only pass; depth null is a pass with no depth. The
+    // fragment stage has the final say on the count and is checked against it.
     const TextureDesc* color[kMaxColorTargets]{};
-    uint32_t colorCount = 0;
     const TextureDesc* depth = nullptr;
 
 

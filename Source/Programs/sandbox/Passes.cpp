@@ -143,7 +143,8 @@ bool CreateShadowPass(const Descriptors& descriptors,
         ShadowPass::PerFrame& frame = out->frames[i];
         frame.depth = maps[i];
 
-        if (!SameAttachmentFormats(AttachmentFormatsOf(nullptr, 0, &maps[i]->desc),
+            const TextureDesc* const noColour[kMaxColorTargets]{};
+        if (!SameAttachmentFormats(AttachmentFormatsOf(noColour, &maps[i]->desc),
                                    pipeline.formats)) {
             LOG("[vk] shadow map %u and its pipeline disagree about the formats\n", i);
             return false;
@@ -233,9 +234,9 @@ bool CreateScenePass(const Descriptors& descriptors,
         ScenePass::PerFrame& frame = out->frames[i];
         frame.targets = targets[i];
 
-        const TextureDesc* const colour[] = {&targets[i]->color.desc};
+        const TextureDesc* const colour[kMaxColorTargets] = {&targets[i]->color.desc};
         const AttachmentFormats formats =
-            AttachmentFormatsOf(colour, 1, &targets[i]->depth.desc);
+            AttachmentFormatsOf(colour, &targets[i]->depth.desc);
         if (!SameAttachmentFormats(formats, pipeline.formats)
             || !SameAttachmentFormats(formats, wirePipeline.formats)) {
             LOG("[vk] scene targets %u and a scene pipeline disagree about the formats\n",
@@ -365,8 +366,8 @@ bool CreatePostProcessPass(const Descriptors& descriptors,
     // What it writes, against what the pipeline baked -- the same comparison the other
     // two passes make. It could not be made here until this pass was told what it
     // writes; the pipeline was the only one holding an answer.
-    const TextureDesc* const targets[] = {&target};
-    if (!SameAttachmentFormats(AttachmentFormatsOf(targets, 1, nullptr),
+    const TextureDesc* const targets[kMaxColorTargets] = {&target};
+    if (!SameAttachmentFormats(AttachmentFormatsOf(targets, nullptr),
                                pipeline.formats)) {
         LOG("[vk] the post pass's target and its pipeline disagree about the formats\n");
         return false;
@@ -819,27 +820,29 @@ static void RecordPostProcessPass(const FrameSlot& slot, const PostProcessPass& 
     // otherwise.
 }
 
-bool RecordFrame(const FrameSlot& slot,
-                 const FrameCamera* cameras, const FrameLight* lights,
-                 const FrameShadow* shadows,
-                 const ShadowPass& shadow, const ScenePass& scene,
-                 const PostProcessPass& post, Gui& gui, const Texture& target,
-                 const DrawList& draws, DrawStats* stats) noexcept {
-    const VolkDeviceTable& vk = slot.dev->table;
-
-    // The value and its GPU copy meet here. Safe because BeginFrame waited on this
-    // slot's fence, and this runs after it -- an acquired image is its precondition.
+void UploadFrameValues(const FrameSlot& slot,
+                       const FrameCamera* cameras, const FrameLight* lights,
+                       const FrameShadow* shadows, Gui& gui) noexcept {
     // Every uniform a frame writes, in the order the passes read them. The panel's
     // switches are among them even though the gui pass runs last: what reads them is
     // the scene pass, two passes earlier in the same submission.
     UploadGuiOptions(gui, slot.index);
+
     const FrameCamera& camera = cameras[slot.index];
     std::memcpy(camera.buffer.mapped, &camera.value, sizeof(camera.value));
+
     const FrameLight& light = lights[slot.index];
     std::memcpy(light.buffer.mapped, &light.value, sizeof(light.value));
-    const FrameShadow& shadowValue = shadows[slot.index];
-    std::memcpy(shadowValue.buffer.mapped, &shadowValue.value,
-                sizeof(shadowValue.value));
+
+    const FrameShadow& shadow = shadows[slot.index];
+    std::memcpy(shadow.buffer.mapped, &shadow.value, sizeof(shadow.value));
+}
+
+bool RecordFrame(const FrameSlot& slot,
+                 const ShadowPass& shadow, const ScenePass& scene,
+                 const PostProcessPass& post, Gui& gui, const Texture& target,
+                 const DrawList& draws, DrawStats* stats) noexcept {
+    const VolkDeviceTable& vk = slot.dev->table;
     VkCommandBuffer cmd = slot.cmd;
     // The pool has RESET_COMMAND_BUFFER_BIT, so one buffer can rewind on its own.
     if (vk.vkResetCommandBuffer(cmd, 0) != VK_SUCCESS) {
