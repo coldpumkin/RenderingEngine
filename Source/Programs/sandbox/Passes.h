@@ -123,27 +123,48 @@ struct LightUniform {
     glm::vec4 color;       // rgb = colour, a = ambient
 };
 
-// The light, one per frame in flight, and **neither pass's**
+// What a frame computes, once per frame in flight, owned by no pass
 // ----------------------------------------------------------------------------
 //
-// Two passes read it and it belongs to the one that draws with it no more than to the
-// one that shades with it. It used to be two buffers -- ShadowUniform beside this --
-// with main assigning the same matrix into both, one value in two homes held together
-// by nothing but the local it came from.
+// Both of these are written by main every frame and read by a pass that never writes
+// them. That is what puts them here rather than inside a pass: a value whose producer
+// is outside is one the producer should hold, and the alternative is main reaching
+// three levels into a pass to assign it.
 //
-// Where it lives follows from creation order rather than from taste. The shadow pass
-// is created first because the scene pass's sets name its maps, so a buffer owned by
-// either would have to exist before its owner did. It is created before both and
-// handed to both, which is the shape the post pass's images already have.
+// The light has a second reason -- two passes read it. It was two buffers once, with
+// main assigning the same matrix into both, one value in two homes held together by
+// nothing but the local it came from. The camera has only the first reason and that
+// was enough: inside ScenePass::PerFrame it shared a struct with attachments it moves
+// with in no way at all, one created once and the other rewritten every frame.
 //
-// Per frame in flight for the reason the attachments are: the CPU writes the next
-// frame's while the GPU still reads the previous one's.
+// Creation order settles that they cannot live in a pass anyway. The shadow pass is
+// created first because the scene pass's sets name its maps, so a buffer owned by
+// either would have to exist before its owner did.
+//
+// **Per frame in flight, and only half of each of these needs to be.** The buffer does
+// -- the GPU still reads the previous frame's. The value beside it does not: main
+// writes it and RecordFrame copies it out in the same turn of the loop, so it is born
+// and spent without ever crossing a frame boundary. Kept per frame because separating
+// them buys 176 bytes and costs RecordFrame two more arguments; the day the value is
+// large (an array of lights) or recording moves off this thread, that is the trade
+// changing rather than a new idea.
+//
+// Two structs and not one template. What repeats is a pattern -- a value and its GPU
+// copy -- and it is already on its third instance counting Texture's desc and image.
+// Naming it would turn FrameCamera into FrameUniform<CameraUniform>, which is a name
+// traded for a type argument.
+struct FrameCamera {
+    CameraUniform value{};
+    Buffer buffer;
+};
+
 struct FrameLight {
     LightUniform value{};
     Buffer buffer;
 };
 
 // Effect: creates one mapped uniform buffer per frame in flight
+bool CreateFrameCameras(const VulkanDevice& dev, FrameCamera* out) noexcept;
 bool CreateFrameLights(const VulkanDevice& dev, FrameLight* out) noexcept;
 
 // Rides inside the command buffer: no pool, no set, no lifetime. The spec guarantees
@@ -470,14 +491,13 @@ struct ScenePass {
                                // the post pass samples it -- the one that leaves
         Texture depth;         // multisample. Tested and written, never read outside
 
-        // The values and their GPU copies, paired the way Texture pairs desc and
-        // image. Per frame for the other reason the attachments are: the CPU writes
-        // these while the GPU still reads the previous frame's.
+        // No uniform buffer here any more. Both of the ones that were -- the camera
+        // and, before it, the light -- are written by main and read by this pass, and
+        // nothing in this struct moves with them: these three images are made once and
+        // never touched again.
         //
-        // Two buffers because they are two bindings. One buffer at two offsets would
-        // work and would put the split in an offset instead of a name.
-        CameraUniform cameraValue{};
-        Buffer cameraUniform;
+        // What is left is what the pass is: images it draws into, and the set that
+        // names them beside what it was handed.
 
         // Drawn from the pool by this pass and filled by it: the set names this
         // frame's input and uniform, so no one else knows what belongs in it.
@@ -511,15 +531,15 @@ struct ScenePass {
 //           barrier that makes one readable belongs to the pass that writes it.
 // Contract: gui must already be created -- binding 3 of each set names the buffer its
 //           checkboxes write into.
-// Contract: lights holds kFramesInFlight entries and outlives this pass. The same
-//           array the shadow pass was given, which is what makes the matrix in
-//           binding 1 the one that drew the map in binding 2.
+// Contract: cameras and lights hold kFramesInFlight entries and outlive this pass.
+//           lights is the same array the shadow pass was given, which is what makes
+//           the matrix in binding 1 the one that drew the map in binding 2.
 bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
                      VkExtent2D extent,
                      const Mesh& mesh, const ShaderProgram& program,
                      const Pipeline& pipeline, const Pipeline& wirePipeline,
                      const Texture* const shadowMaps[kFramesInFlight],
-                     const FrameLight* lights,
+                     const FrameCamera* cameras, const FrameLight* lights,
                      const Gui& gui, ScenePass* out) noexcept;
 
 
@@ -591,7 +611,8 @@ struct DrawStats {
 // Takes the slot but never touches its fence or semaphore -- a rule, not a type.
 // A Texture, not the whole FrameTarget: nothing here reads the index or the semaphore,
 // and those belong to getting the frame out, not to drawing it.
-bool RecordFrame(const FrameSlot& slot, const FrameLight* lights,
+bool RecordFrame(const FrameSlot& slot,
+                 const FrameCamera* cameras, const FrameLight* lights,
                  const ShadowPass& shadow, const ScenePass& scene,
                  const PostProcessPass& post, Gui& gui, const Texture& target,
                  const DrawList& draws, DrawStats* stats = nullptr) noexcept;

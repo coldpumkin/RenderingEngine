@@ -131,8 +131,12 @@ struct Renderer {
     // that draws first. Deliberately left as it is: the panel is a tool for comparing
     // features while they are understood, not a dependency of the same kind.
     //
-    // Declared before the passes so it outlives them: their sets name these buffers,
+    // Declared before the passes so they outlive them: their sets name these buffers,
     // and members are destroyed in reverse.
+    //
+    // Here and not in a pass because main writes both every frame and no pass writes
+    // either. What a pass owns is what it draws into.
+    FrameCamera cameras[kFramesInFlight];
     FrameLight lights[kFramesInFlight];
 
     ShadowPass shadowPass;

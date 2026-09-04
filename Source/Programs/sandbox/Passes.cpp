@@ -12,6 +12,28 @@
 
 // HOST_VISIBLE + MAPPED, like every uniform here: one memcpy a frame, so a staging
 // buffer and a copy command would buy nothing.
+//
+// Two functions and not one taking a size, because the only thing they would share is
+// the four flags below -- and those are the same for every uniform in this program,
+// not something these two agree on in particular.
+bool CreateFrameCameras(const VulkanDevice& dev, FrameCamera* out) noexcept {
+    for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+        if (!CreateBuffer(dev, sizeof(CameraUniform),
+                          VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                          VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+                          VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+                              | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                          &out[i].buffer)) {
+            return false;
+        }
+        if (out[i].buffer.mapped == nullptr) {
+            LOG("[vk] camera uniform buffer is not mapped\n");
+            return false;
+        }
+    }
+    return true;
+}
+
 bool CreateFrameLights(const VulkanDevice& dev, FrameLight* out) noexcept {
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
         if (!CreateBuffer(dev, sizeof(LightUniform),
@@ -92,7 +114,7 @@ bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
                      const Mesh& mesh, const ShaderProgram& program,
                      const Pipeline& pipeline, const Pipeline& wirePipeline,
                      const Texture* const shadowMaps[kFramesInFlight],
-                     const FrameLight* lights,
+                     const FrameCamera* cameras, const FrameLight* lights,
                      const Gui& gui, ScenePass* out) noexcept {
     out->mesh = &mesh;
     out->program = &program;
@@ -148,23 +170,6 @@ bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
             return false;
         }
 
-        // HOST_VISIBLE + MAPPED: one memcpy per frame, so there is no reason to go
-        // through a staging buffer and a copy command.
-        //
-        // The camera only. The light is FrameLight's -- the second pass that wanted it
-        // is why it is not here.
-        if (!CreateBuffer(dev, sizeof(CameraUniform),
-                          VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                          VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
-                          VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
-                              | VMA_ALLOCATION_CREATE_MAPPED_BIT,
-                          &frame.cameraUniform)) {
-            return false;
-        }
-        if (frame.cameraUniform.mapped == nullptr) {
-            LOG("[vk] the camera uniform buffer is not mapped\n");
-            return false;
-        }
     }
 
     // Drawn in one call, then handed out: vkAllocateDescriptorSets writes a flat
@@ -193,7 +198,7 @@ bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
         // others are: one per frame in flight, and that is the whole rule for which set
         // a binding belongs in.
         const BindingValue values[] = {
-            {VK_NULL_HANDLE, frame.cameraUniform.handle, sizeof(CameraUniform)},
+            {VK_NULL_HANDLE, cameras[i].buffer.handle, sizeof(CameraUniform)},
             {VK_NULL_HANDLE, lights[i].buffer.handle, sizeof(LightUniform)},
             {shadowMaps[i]->view.handle, VK_NULL_HANDLE, 0},
             {VK_NULL_HANDLE, GuiOptionsBuffer(gui, i), kGuiOptionsSize},
@@ -707,7 +712,8 @@ static void RecordPostProcessPass(const FrameSlot& slot, const PostProcessPass& 
     // otherwise.
 }
 
-bool RecordFrame(const FrameSlot& slot, const FrameLight* lights,
+bool RecordFrame(const FrameSlot& slot,
+                 const FrameCamera* cameras, const FrameLight* lights,
                  const ShadowPass& shadow, const ScenePass& scene,
                  const PostProcessPass& post, Gui& gui, const Texture& target,
                  const DrawList& draws, DrawStats* stats) noexcept {
@@ -719,11 +725,10 @@ bool RecordFrame(const FrameSlot& slot, const FrameLight* lights,
     // switches are among them even though the gui pass runs last: what reads them is
     // the scene pass, two passes earlier in the same submission.
     UploadGuiOptions(gui, slot.index);
+    const FrameCamera& camera = cameras[slot.index];
+    std::memcpy(camera.buffer.mapped, &camera.value, sizeof(camera.value));
     const FrameLight& light = lights[slot.index];
     std::memcpy(light.buffer.mapped, &light.value, sizeof(light.value));
-    const ScenePass::PerFrame& frame = scene.frames[slot.index];
-    std::memcpy(frame.cameraUniform.mapped, &frame.cameraValue,
-                sizeof(frame.cameraValue));
     VkCommandBuffer cmd = slot.cmd;
     // The pool has RESET_COMMAND_BUFFER_BIT, so one buffer can rewind on its own.
     if (vk.vkResetCommandBuffer(cmd, 0) != VK_SUCCESS) {
