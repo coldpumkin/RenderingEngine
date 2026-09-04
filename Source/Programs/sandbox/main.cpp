@@ -21,8 +21,9 @@
 //                 Capture        one frame to a file, for comparing two builds
 //
 //   main, once    Declarations   in destruction order, which is not the fill order
-//                 Ask            what the GPU and the surface answer before anything
-//                 Targets        what we render into, and the lens each one answers to
+//                 Display        a window, a GPU for it, and the format it takes
+//                 Device         and past it, everything that draws rather than shows
+//                 Targets        what we render into -- ours, none of it the display's
 //                 Passes         programs, then a pipeline per variant
 //                 Scene          the mesh and the draw list
 //                 Textures       the images the materials name
@@ -570,11 +571,11 @@ int main() {
     // order inside it is a destruction contract, not a preference.
     Renderer       renderer;
 
-    // Ask -- what the GPU and the surface answer before anything is built
+    // Display -- a window, a GPU that can drive it, and the format it takes
     // ========================================================================
     //
-    // The instance and the surface are inputs to these questions, not results of them.
-    // Everything after answers to what comes back here.
+    // No device yet, and nothing here needs one. This is the whole of what showing a
+    // window settles; what we draw before we show it is decided below.
 
     // glfwInit is first only because windowSystem is declared first and so dies last.
     if (!InitWindowSystem(&windowSystem)) { return 1; }
@@ -588,19 +589,39 @@ int main() {
     const PhysicalDeviceSelection selection = PickPhysicalDevice(inst, window.surface);
     if (selection.gpu == VK_NULL_HANDLE) { return 1; }
 
-    // Two questions the picked GPU answers alone -- no device, nothing to destroy.
-    // Formats, not images: images are made again on every resize.
+    // The one target format we do not choose. It must be sRGB: that encode is
+    // performed nowhere else in the chain, and the offscreen colour still does not
+    // follow from it (Attachments.cpp counts the cases).
     //
-    // The display first. Its format must be sRGB, the encode nobody else in the chain
-    // performs; the offscreen colour does not follow from it (Attachments.cpp).
+    // A format and not an image: images are made again on every resize.
     if (!SelectSurfaceFormat(inst, selection.gpu, &window)) { return 1; }
+
+    // What the last pass writes into, and the end of what a display settles. Asked for
+    // rather than assembled -- every field of it is the presentation engine's answer,
+    // which is the opposite of the render targets below, and the same type carries
+    // both, so the call is what says which.
+    const AttachmentFormats swapchainFormats = SwapchainAttachmentFormats(window);
+
+    // Device -- and past it, everything that draws rather than shows
+    // ========================================================================
+
+    // selection is absorbed here and not kept -- nothing below this line reads it.
+    if (!CreateDevice(inst, selection, &dev)) { return 1; }
+    if (!CreateCommands(dev, &commands)) { return 1; }
+
+    // Here, not with the passes below: the descriptor pool has to be told about this
+    // one's set before it is created, and the font it points at is uploaded in here.
+    if (!CreateGui(dev, commands, window, &renderer.guiPass)) { return 1; }
 
     // Targets -- what we render into
     // ------------------------------------------------------------------------
     //
+    // Ours, all of it. What a display settles was settled above without a device;
+    // a shadow map is the plainest case of what is left -- nothing about it reaches
+    // the screen.
+    //
     // Three kinds of value, in this order and for that reason: what we choose, what
-    // is answered, and what follows from both. The display's own answer came earlier,
-    // from SelectSurfaceFormat.
+    // is answered, and what follows from both.
 
     // Chosen
     //
@@ -620,7 +641,7 @@ int main() {
 
     // Answered -- the two a caller cannot decide, plus a check on the colour above
     TargetCapabilities caps;
-    if (!QueryTargetCapabilities(inst, selection.gpu, kRenderColorFormat,
+    if (!QueryTargetCapabilities(inst, dev.gpu, kRenderColorFormat,
                                  kDesiredSampleCount, &caps)) { return 1; }
 
     // Follows
@@ -639,14 +660,6 @@ int main() {
                                          sceneTargets.depth.format,
                                          sceneTargets.color.samples};
     const AttachmentFormats shadowFormats{.depth = shadowTarget.format};
-
-    // selection is absorbed here and not kept -- nothing below this line reads it.
-    if (!CreateDevice(inst, selection, &dev)) { return 1; }
-    if (!CreateCommands(dev, &commands)) { return 1; }
-
-    // Here, not with the passes below: the descriptor pool has to be told about this
-    // one's set before it is created, and the font it points at is uploaded in here.
-    if (!CreateGui(dev, commands, window, &renderer.guiPass)) { return 1; }
 
     // Passes -- a program per pair of shaders, a pipeline per variant of one
     // ------------------------------------------------------------------------
@@ -715,14 +728,8 @@ int main() {
                              "Shaders/fullscreen.frag.spv",
                              &renderer.presentProgram)) { return 1; }
 
-    // What both swapchain passes draw into -- one value, because it is one image: the
-    // gui pass draws on top of what the post pass leaves.
-    //
-    // Asked for rather than assembled. Every field of it is the presentation engine's
-    // answer, which is the opposite of sceneFormats above, and the same type carries
-    // both -- so the call is what says which.
-    const AttachmentFormats swapchainFormats = SwapchainAttachmentFormats(window);
-
+    // swapchainFormats and not a format of ours: both passes that draw into the
+    // swapchain image take it, the post pass first and the gui pass on top.
     GraphicsPipelineDesc presentDesc;
     presentDesc.formats = swapchainFormats;
     if (!CreateGraphicsPipeline(dev, renderer.presentProgram, presentDesc,
