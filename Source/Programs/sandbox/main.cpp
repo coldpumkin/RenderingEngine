@@ -6,7 +6,7 @@
 //   Passes    what we draw, and in what order
 //   here      which resources exist, who points at whom, and the loop
 //
-// Init and runtime obey different rules, and that is what split the files:
+// Init and runtime obey different rules:
 //
 //               init        runtime (per frame)
 //   runs        once        hundreds per second
@@ -14,8 +14,8 @@
 //   log         free        floods if the condition persists
 //   failure     unwind      drop the frame or recover
 //
-// The sections below, in order. It is also the order things depend on each other, so
-// nothing here can be moved up past what it reads.
+// The sections below are also the order they depend on each other, so nothing here
+// moves up past what it reads.
 //
 //   file scope    Scene data     the loader, and the plain arrays it hands back
 //                 Capture        one frame to a file, for comparing two builds
@@ -74,28 +74,21 @@
 // None of this is about Vulkan: everything here hands back plain arrays, which is what
 // CreateMesh and CreateTextureFromPixels take.
 //
-// Nothing here writes a Vertex by hand, and the loader is the only thing that fills
-// the array. Vertex answers to scene.vert -- the shader declares the locations,
-// spirv-reflect reports them, CheckVertexInterface compares the two -- and that check
-// sees whether a field is supplied, never whether it holds the right numbers. A
-// hand-written tangent is trigonometry nothing can verify; a loaded one is a field in
-// the file, and a shader that asks for one more is one more accessor to read.
+// The loader is the only thing that fills a Vertex. CheckVertexInterface compares the
+// .spv against the layout and sees whether a field is **supplied**, never whether it
+// holds the right numbers -- which is why the loader refuses a file rather than
+// filling a gap.
 
 // What the loader found for one material, and the key two of them are compared on.
 //
 // An empty path means the material named no image there, and the caller substitutes a
-// neutral one -- white for the base colour, flat for the normal. Neutral, not
-// distinctive: glTF says a material without a baseColorTexture is its factor alone,
-// and white is the texture that multiplies to exactly that.
+// neutral one -- white for the base colour, flat for the normal. White because glTF
+// says a material without a baseColorTexture is its factor alone, and white multiplies
+// to exactly that.
 //
-// Every field that makes two materials different has to be in here. Cull is in it for
-// that reason and not because a name is an image: two glTF materials naming the same
-// two images but differing in double_sided are two materials, and leaving cull out of
-// the key would quietly make them one. That is what makes Material::cullMode a
-// function of the material rather than a coincidence -- in Sponza it costs no extra
-// entry, because no two share a pair.
-//
-// The factors are the next thing missing here, and they collapse the same way today.
+// **Every field that makes two materials different has to be in here.** Cull is, or
+// two materials naming the same images and differing in double_sided would quietly
+// become one. The factors are the next thing missing, and they collapse the same way.
 struct MaterialSource {
     std::string baseColor;
     std::string normal;
@@ -112,14 +105,12 @@ struct MaterialSource {
 // Capture
 // ============================================================================
 //
-// What the scene pass produced, as a file, read off the GPU. The alternative was a
-// screenshot of the window, which reads whatever is at those coordinates -- the same
-// binary measured 0.95% and 14.26% black on two runs. This reads the image itself, so
-// two runs of one build are identical by construction and a diff is only ever code.
+// The image itself, read off the GPU -- not a screenshot of the window, which reads
+// whatever is at those coordinates (the same binary measured 0.95% and 14.26% black on
+// two runs). So two runs of one build are identical and a diff is only ever code.
 //
-// colorResolve is the subject: whatever size the render targets currently are, and
-// before the panel is drawn on top. With the target following the window that size is
-// the window's, so a capture is only comparable against another taken the same way.
+// Contract: the subject is the resolve, at whatever size the targets are and before
+//           the panel goes on top. Two captures compare only if taken the same way.
 
 static void Put32(uint8_t* at, uint32_t value) noexcept {
     at[0] = static_cast<uint8_t>(value);
@@ -175,22 +166,18 @@ static bool WriteBmp(const char* path, uint32_t width, uint32_t height,
 
 // Tangents for one primitive, from its positions and uvs.
 //
-// glTF makes TANGENT optional and says a runtime must generate it when a normal
-// texture is present without one. Sponza has exactly one primitive without it, and
-// that material names no normal map -- so nothing the shader builds from this reaches
-// the picture today. It is generated anyway, because zero is not a neutral value: the
-// TBN's first column would be normalize(0), which is NaN, and the day that material
-// gets a normal map the NaN is what would show.
+// glTF makes TANGENT optional and says a runtime must generate it. Sponza has exactly
+// one primitive without it, and that material names no normal map -- so nothing built
+// here reaches the picture today. Generated anyway because **zero is not neutral**:
+// the TBN's first column would be normalize(0), which is NaN.
 //
-// The standard construction. Across one triangle the surface is a plane, so uv is an
-// affine function of position and the tangent is the direction u grows in:
+// Across one triangle the surface is a plane, so uv is affine in position and the
+// tangent is the direction u grows in:
 //
-//   [du1]   [dp1]        T = (dp1 * dv2 - dp2 * dv1) / (du1 * dv2 - du2 * dv1)
-//   [du2]   [dp2]
+//   T = (dp1 * dv2 - dp2 * dv1) / (du1 * dv2 - du2 * dv1)
 //
-// Accumulated per vertex and normalized after, which is what averages the seams
-// between triangles. Not MikkTSpace -- that splits vertices to keep mirrored uvs
-// exact, and we have one primitive to serve.
+// Accumulated per vertex and normalized after, which averages the seams. Not
+// MikkTSpace -- that splits vertices to keep mirrored uvs exact.
 //
 // Contract: normals are already written, and w is the bitangent sign the fragment
 //           stage multiplies cross(N, T) by.
@@ -268,17 +255,16 @@ static void GenerateTangents(Vertex* vertices, size_t vertexCount,
 //         which way. What was appended before that point is undefined: the caller
 //         exits, because there is nothing else here to draw.
 //
-// The DrawItem cannot carry the material itself: a set does not exist until the pool
-// does, and the pool cannot be sized until this has counted the materials. So the
-// index comes out beside the items and the caller joins the two.
+// A DrawItem carries an index and not the Material: a set does not exist until the
+// pool does, and the pool cannot be sized until this has counted them.
 //
-// Every primitive keeps its own indices, numbered from its own first vertex, and the
-// DrawItem carries that first vertex as vertexOffset. So the indices stay uint16 even
-// though the buffer holds far more than 65535 vertices -- what has to fit in 16 bits
-// is one primitive, and Sponza's largest is 23,038.
+// Indices stay uint16 though the buffer holds far more than 65535 vertices: each
+// primitive numbers from its own first vertex, which the DrawItem carries as
+// vertexOffset. What has to fit in 16 bits is one primitive, and Sponza's largest is
+// 23,038.
 //
-// Node transforms are not walked. Sponza is one node with a scale and no children, so
-// the caller multiplies that in. cgltf_node_transform_world is where nesting would go.
+// Node transforms are not walked -- Sponza is one node with a scale, and the caller
+// multiplies it in. cgltf_node_transform_world is where nesting would go.
 static bool LoadGltf(const char* path,
                      std::vector<Vertex>* vertices,
                      std::vector<uint16_t>* indices,
@@ -338,14 +324,10 @@ static bool LoadGltf(const char* path,
             }
             if (pos == nullptr) { continue; }
 
-            // The third link in a chain that had two. CheckVertexInterface compares
-            // the .spv against the layout and SameVertexLayout compares the layout
-            // against the mesh; nothing compared the asset against either, so a file
-            // missing an attribute filled it with the zeroes resize left behind, and
-            // a zero normal is not dark -- normalize() of it is NaN.
-            //
-            // Refused rather than guessed. Sponza has neither missing, so anything
-            // written here to cope would be code that never runs.
+            // The third link in a chain that had two: the .spv against the layout,
+            // the layout against the mesh, and **nothing against the asset**. A file
+            // missing an attribute got the zeroes resize left behind, and a zero
+            // normal is not dark -- normalize() of it is NaN.
             const char* missing = nullptr;
             if (nrm == nullptr)      { missing = "NORMAL"; }
             else if (uv0 == nullptr) { missing = "TEXCOORD_0"; }
@@ -393,14 +375,10 @@ static bool LoadGltf(const char* path,
                                  indices->data() + firstIndex, prim.indices->count);
             }
 
-            // Two things the material says that land in different places: the cutoff
-            // is a number the shader compares against, cull is rasterizer state. Both
-            // belong to the material; only the cutoff still rides the draw, because
-            // moving it means giving the material a uniform buffer.
-            //
-            // In this asset the two move together (all 3 MASK materials are also
-            // double sided), but nothing in glTF says they must, so they are read
-            // apart.
+            // Both are the material's, and they land in different places: the cutoff
+            // is a number the shader compares, cull is rasterizer state. They move
+            // together in this asset -- all 3 MASK materials are double sided -- and
+            // glTF does not say they must, so they are read apart.
             MaterialParams params;
             bool doubleSided = false;
             if (prim.material != nullptr) {
@@ -418,14 +396,13 @@ static bool LoadGltf(const char* path,
                 doubleSided = prim.material->double_sided != 0;
             }
 
-            // Which images this material names, as a position in a list built as we
-            // go. Keyed on the pair, not on cgltf_material and not on base colour
-            // alone: two materials naming the same two images should be one entry,
-            // and two that share a base colour but differ in normal map must not be.
-            // Every primitive names one. A primitive without a material is legal glTF
-            // -- the spec says to draw it with the default material -- and that
-            // default is a thing we would have to build and never draw with, since
-            // Sponza has none. Refused instead, the way a missing NORMAL is.
+            // Keyed on the whole pair, not on cgltf_material and not on base colour
+            // alone: same two images is one entry, same base colour with a different
+            // normal map is two.
+            //
+            // A primitive naming no material is legal glTF -- draw it with the default
+            // -- and that default is a thing we would build and never use. Refused
+            // instead, the way a missing NORMAL is.
             if (prim.material == nullptr) {
                 LOG("[gltf] a primitive names no material\n");
                 cgltf_free(data);
@@ -460,16 +437,12 @@ static bool LoadGltf(const char* path,
                     }
                 }
 
-                // Every material the file names gets an entry, images or not. The
-                // test that used to be here -- at least one texture named -- sent a
-                // material with only a base colour factor to the stand-in, which
-                // carries a white factor, no cutoff and back-face culling. A glTF
-                // material with no images and a coloured factor is ordinary, and its
-                // colour, cutoff and double_sided were read three lines above and then
-                // dropped.
+                // Every material the file names gets an entry, images or not: one
+                // with a coloured factor and no textures is ordinary glTF, and its
+                // colour, cutoff and double_sided were read three lines above.
                 //
-                // What is left for the stand-in is a primitive that names no material
-                // at all, which is the one case with nothing to carry.
+                // The stand-in is for a primitive that names no material at all --
+                // the one case with nothing to carry.
                 {
                     for (size_t m = 0; m < materialSources->size(); ++m) {
                         const MaterialSource& seen = (*materialSources)[m];
@@ -513,11 +486,11 @@ static bool LoadGltf(const char* path,
 // Effect: reads an image file into a texture, ready for a set to name it
 //
 // 4 channels forced: the shader samples a vec4 and there is no guaranteed 8-bit
-// three-channel format. stb expands whatever the file stores.
+// three-channel format.
 //
-// The format is the caller's, and it is not a preference. Base colour is authored in
-// sRGB and must say so. A normal map is a direction, not a colour: read as SRGB every
-// texel is bent toward the flat normal, nothing reports it, and the picture is just
+// The format is the caller's and it is not a preference. Base colour is authored in
+// sRGB and must say so; **a normal map is a direction, not a colour** -- read as SRGB
+// every texel bends toward the flat normal, nothing reports it, and the picture is
 // quietly wrong.
 //
 // The pixels live only for this call -- CreateTextureFromPixels stages and blocks.
@@ -595,14 +568,13 @@ int main() {
     // Targets -- what each pass draws into, all four described before anything exists
     // ========================================================================
     //
-    // Still no device: describing a target needs none, and every pass below points at
-    // one of these. Three kinds of value, in this order because each needs the last --
-    // received, chosen, answered.
+    // Still no device: describing a target needs none. Three kinds of value, in this
+    // order because each needs the last -- received, chosen, answered.
     //
-    // A TextureDesc says four things and a pipeline bakes two of them. The two it
-    // leaves are the two that mattered: the extent a projection answers to, and usage,
-    // in which **SAMPLED marks an edge** -- exactly two of these images carry it, and
-    // those are the two another pass reads.
+    // A pipeline bakes two of a TextureDesc's four fields. The two it leaves are the
+    // two that mattered: the extent a projection answers to, and usage, in which
+    // **SAMPLED marks an edge** -- exactly two of these images carry it, and those are
+    // the two another pass reads.
 
     // Received -- the one of the four we do not write ourselves.
     const TextureDesc swapchainTarget = SwapchainTargetDesc(window);
