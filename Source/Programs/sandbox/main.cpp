@@ -544,6 +544,15 @@ static bool LoadTextureFile(const VulkanDevice& dev, const Commands& commands,
     return uploaded;
 }
 
+// Output: how big the render targets should be under the panel's policy
+//
+// One place, because the fixed answer was written at startup and again in the loop,
+// and two literals of one policy drift.
+static VkExtent2D DesiredRenderExtent(const Window& window, bool followWindow) noexcept {
+    return followWindow ? window.surfaceExtent
+                        : VkExtent2D{kRenderWidth, kRenderHeight};
+}
+
 int main() {
     // Declarations -- in destruction order, which is not the fill order
     // ========================================================================
@@ -605,21 +614,17 @@ int main() {
     // fixed, and following the window. Unreal keeps three behind
     // r.SceneRenderTargetResizeMethod and calls the trade memory against allocation
     // stalls.
-    VkExtent2D renderExtent{kRenderWidth, kRenderHeight};
+    //
+    // Fixed to start with, whatever the panel says: the surface has not been asked its
+    // size yet, and the loop's first turn corrects this if the switch is on.
+    VkExtent2D renderExtent = DesiredRenderExtent(window, false);
 
     // Contract: square, because lightProj below is a box with equal sides.
     constexpr VkExtent2D kShadowExtent{kShadowResolution, kShadowResolution};
 
-    // The camera is not here. It keeps the desc it is made from (Passes.h), so its
-    // lens and the target that shapes it cannot become two values that drift apart --
-    // the loop builds it below the acquire, from whatever renderExtent is by then.
-    //
-    // Orthographic because the light is directional: parallel rays have no eye point
-    // to project from, only a box, and the box decides how much world one texel covers.
-    // Every argument is a constant, so this is built once.
-    const glm::mat4 lightProj =
-        glm::ortho(-kShadowRadius, kShadowRadius, -kShadowRadius, kShadowRadius,
-                   0.1f, kShadowDistance * 2.0f);
+    // No camera and no light here. A camera keeps the desc it is made from (Passes.h)
+    // and the loop builds it; the light's own values are with the light, above the
+    // loop that moves it.
 
     // The two values a caller cannot decide. Everything else about a target is ours.
     TargetCapabilities caps;
@@ -1028,6 +1033,23 @@ int main() {
     uint32_t slotIndex = 0;       // which slot this frame borrows
     double lastTime = glfwGetTime();
 
+    // The light's half that does not move. The direction turns with the clock inside
+    // the loop; the box it is seen through and the point it looks at do not.
+    //
+    // The centre is fixed rather than fitted to the camera. Fitting is what a real one
+    // does, and what cascades are: it needs the frustum's corners in light space. A
+    // constant box is honest about covering this scene and nothing larger, and
+    // scene.frag returns "lit" for anything outside it.
+    //
+    // Orthographic because the light is directional: parallel rays have no eye point
+    // to project from, only a box, and the box decides how much world one texel covers.
+    //
+    // Contract: kShadowExtent is square, because this box is.
+    constexpr glm::vec3 kSceneCenter{0.0f, 3.0f, 0.0f};
+    const glm::mat4 lightProj =
+        glm::ortho(-kShadowRadius, kShadowRadius, -kShadowRadius, kShadowRadius,
+                   0.1f, kShadowDistance * 2.0f);
+
     // What the item order costs in state changes. Outside the loop because the panel
     // is built before RecordFrame fills it, so what it shows is the last frame's --
     // honest only because the list does not change between frames.
@@ -1079,9 +1101,8 @@ int main() {
         //
         // vkDeviceWaitIdle and not a fence: a fence covers one slot, and these images
         // belong to every slot.
-        const VkExtent2D wanted = GuiRenderFollowsWindow(renderer.guiPass)
-                                ? window.surfaceExtent
-                                : VkExtent2D{kRenderWidth, kRenderHeight};
+        const VkExtent2D wanted =
+            DesiredRenderExtent(window, GuiRenderFollowsWindow(renderer.guiPass));
 
         if (wanted.width != renderExtent.width || wanted.height != renderExtent.height) {
             dev.table.vkDeviceWaitIdle(dev.handle);
@@ -1164,19 +1185,9 @@ int main() {
         const glm::vec3 lightDir = glm::normalize(
             glm::vec3{std::cos(t) * 0.7f, 3.0f, std::sin(t) * 0.7f});
 
-        // Where the light looks from. Its lens is up with the render targets, for the
-        // reason the camera's is -- a projection answers to the image it lands on, and
-        // this one lands on a square map that never changes size.
-        //
-        // The centre is fixed rather than fitted to the camera. Fitting is what a real
-        // one does (and what cascades are), and it needs the frustum's corners in
-        // light space; a constant box is honest about covering this scene and nothing
-        // larger, and scene.frag returns "lit" for anything outside it.
-        //
-        // lightDir points from the surface toward the light, so the eye is the centre
-        // plus that. It never lines up with world up -- y is fixed at 0.5 while xz go
-        // round -- which is what keeps lookAt's cross product from collapsing.
-        constexpr glm::vec3 kSceneCenter{0.0f, 3.0f, 0.0f};
+        // lightDir points from a surface toward the light, so the eye is the centre
+        // plus it. It never lines up with world up -- y is fixed well above the
+        // horizon -- which keeps lookAt's cross product from collapsing.
         const glm::mat4 lightView =
             glm::lookAt(kSceneCenter + lightDir * kShadowDistance, kSceneCenter, kWorldUp);
         const glm::mat4 lightViewProj = lightProj * lightView;
