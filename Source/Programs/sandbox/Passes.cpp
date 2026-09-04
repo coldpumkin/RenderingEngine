@@ -107,6 +107,62 @@ bool CreateShadowPass(const VulkanDevice& dev, const Descriptors& descriptors,
     return true;
 }
 
+// The three images one scene frame draws into, from an extent and the formats
+//
+// Written once and called twice -- at creation and at every resize -- which is what
+// makes it a function. Every difference between the three is spelled out here rather
+// than derived inside CreateTexture, because each is a different answer to "who reads
+// this afterwards":
+//
+//   color         multisample, and no SAMPLED: a sampler2D cannot read one
+//   colorResolve  the 1-sample copy, and the only image that leaves this pass.
+//                 SAMPLED because the post pass reads it, TRANSFER_SRC because the
+//                 capture does -- both bits are edges rather than properties
+//   depth         multisample, never read outside the frame that wrote it
+//
+// TRANSFER_SRC is always on rather than behind a build flag: a flag only set in
+// capture builds would make the captured frame a different frame.
+static bool CreateSceneTargets(const VulkanDevice& dev, VkExtent2D extent,
+                               const AttachmentFormats& formats,
+                               ScenePass::PerFrame* frame) noexcept {
+    return CreateTexture(dev, {extent, formats.color, formats.samples,
+                               VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT}, &frame->color)
+        && CreateTexture(dev, {extent, formats.color, VK_SAMPLE_COUNT_1_BIT,
+                               VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+                                   | VK_IMAGE_USAGE_SAMPLED_BIT
+                                   | VK_IMAGE_USAGE_TRANSFER_SRC_BIT},
+                         &frame->colorResolve)
+        && CreateTexture(dev, {extent, formats.depth, formats.samples,
+                               VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT},
+                         &frame->depth);
+}
+
+bool ResizeScenePass(const VulkanDevice& dev, VkExtent2D extent,
+                     ScenePass* pass) noexcept {
+    // Read back off what is there, so a resize cannot change the formats by accident.
+    // The pipeline is where they came from and it is not rebuilt: none of the three
+    // depends on a size.
+    const AttachmentFormats& formats = pass->pipeline->desc.formats;
+
+    for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+        ScenePass::PerFrame& frame = pass->frames[i];
+
+        // Released before the new ones are asked for, and view-then-image inside each
+        // -- see ResetTexture. Assigning over them would destroy an image while a view
+        // made from it is still alive.
+        ResetTexture(&frame.color);
+        ResetTexture(&frame.colorResolve);
+        ResetTexture(&frame.depth);
+
+        if (!CreateSceneTargets(dev, extent, formats, &frame)) {
+            LOG("[vk] could not remake the scene targets at %ux%u\n",
+                extent.width, extent.height);
+            return false;
+        }
+    }
+    return true;
+}
+
 // Built without looking at the window, so this works while minimized - there may be
 // no swapchain yet, and nothing here depends on one.
 bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
@@ -145,28 +201,7 @@ bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
         ScenePass::PerFrame& frame = out->frames[i];
 
-        // Three descs, and every difference is written out rather than derived inside
-        // CreateTexture: color is multisample and carries no SAMPLED (sampler2D cannot
-        // read a multisample image), colorResolve is the 1-sample copy the post pass
-        // reads, and depth never leaves the frame.
-        if (!CreateTexture(dev, {extent, formats.color, formats.samples,
-                                 VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT}, &frame.color)) {
-            return false;
-        }
-        // TRANSFER_SRC is for reading it back: this is the one image in the frame that
-        // is both what the scene produced and 1-sample, so it is the only one a
-        // capture can copy. Always on rather than behind a switch -- a flag that is
-        // only set in capture builds makes the captured frame a different frame.
-        if (!CreateTexture(dev, {extent, formats.color, VK_SAMPLE_COUNT_1_BIT,
-                                 VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
-                                     | VK_IMAGE_USAGE_SAMPLED_BIT
-                                     | VK_IMAGE_USAGE_TRANSFER_SRC_BIT},
-                           &frame.colorResolve)) {
-            return false;
-        }
-        if (!CreateTexture(dev, {extent, formats.depth, formats.samples,
-                                 VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT},
-                           &frame.depth)) {
+        if (!CreateSceneTargets(dev, extent, formats, &frame)) {
             return false;
         }
 
@@ -267,6 +302,15 @@ bool CreateMaterials(const VulkanDevice& dev,
                   values, static_cast<uint32_t>(std::size(values)));
     }
     return true;
+}
+
+void RefreshPostProcessPass(const Descriptors& descriptors,
+                            PostProcessPass* post) noexcept {
+    for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+        const BindingValue values[] = {{post->source[i]->view.handle}};
+        UpdateSet(descriptors, post->program->setLayouts[kFrameSet], post->sets[i],
+                  values, 1);
+    }
 }
 
 bool CreatePostProcessPass(const Descriptors& descriptors,

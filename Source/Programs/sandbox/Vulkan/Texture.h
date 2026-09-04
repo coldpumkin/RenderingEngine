@@ -52,6 +52,18 @@ struct Texture {
 bool CreateTexture(const VulkanDevice& dev, const TextureDesc& desc,
                    Texture* out) noexcept;
 
+// Effect: releases the view and then the image, in that order, leaving an empty
+//         Texture that CreateTexture can fill again.
+//
+// **Assigning a fresh Texture over an old one does not do this.** Member-wise
+// assignment runs in declaration order, so the image would be destroyed while a view
+// made from it is still alive -- the child-before-parent rule, and the reason view is
+// declared last in the first place. Remaking a render target at a new size is the
+// path that needs this.
+//
+// Contract: nothing on the GPU may still be using it. The caller waits.
+void ResetTexture(Texture* texture) noexcept;
+
 // Effect: uploads pixels through a staging buffer and leaves the image
 //         SHADER_READ_ONLY_OPTIMAL, which is what a set records.
 //

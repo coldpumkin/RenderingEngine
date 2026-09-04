@@ -531,6 +531,21 @@ struct ScenePass {
 //           barrier that makes one readable belongs to the pass that writes it.
 // Contract: gui must already be created -- binding 3 of each set names the buffer its
 //           checkboxes write into.
+// Effect: remakes every frame's attachments at a new size, leaving the sets alone
+//
+// The other half of creation, and the reason the three images are made by a function
+// rather than written out once: they are made twice now, here and there.
+//
+// This pass's own sets name nothing that changes -- the camera, the light, a shadow
+// map and the panel's buffer -- so they survive. **The post pass's do not**, because
+// they name the resolve image this destroys; RefreshPostProcessPass is the other half
+// and the caller runs it.
+//
+// Contract: the GPU must be idle. The caller waits -- a frame in flight is still
+//           reading last frame's attachments, and no fence here says which.
+bool ResizeScenePass(const VulkanDevice& dev, VkExtent2D extent,
+                     ScenePass* pass) noexcept;
+
 // Contract: cameras and lights hold kFramesInFlight entries and outlive this pass.
 //           lights is the same array the shadow pass was given, which is what makes
 //           the matrix in binding 1 the one that drew the map in binding 2.
@@ -576,6 +591,14 @@ struct PostProcessPass {
     // than a PerFrame like the scene pass, since a set is all there is.
     VkDescriptorSet sets[kFramesInFlight]{};
 };
+
+// Effect: rewrites each set to name its source image again
+//
+// The pointers in source[] do not change when a target is remade -- the Texture stays
+// where it is and its contents are replaced -- but the view handle inside does, and a
+// set records a handle rather than a pointer. So a resize needs this and nothing else.
+void RefreshPostProcessPass(const Descriptors& descriptors,
+                            PostProcessPass* post) noexcept;
 
 // Effect: draws this pass's sets and points each at the matching source image
 //

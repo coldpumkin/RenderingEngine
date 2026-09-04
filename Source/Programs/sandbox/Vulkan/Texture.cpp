@@ -24,6 +24,12 @@ bool CreateTexture(const VulkanDevice& dev, const TextureDesc& desc,
     return CreateImageView(dev, out->image.handle, desc.format, {}, &out->view);
 }
 
+void ResetTexture(Texture* texture) noexcept {
+    texture->view = ImageView{};
+    texture->image = Image{};
+    texture->desc = TextureDesc{};
+}
+
 bool CreateTextureFromPixels(const VulkanDevice& dev, const Commands& commands,
                              const TextureDesc& desc,
                              const void* pixels, VkDeviceSize size,

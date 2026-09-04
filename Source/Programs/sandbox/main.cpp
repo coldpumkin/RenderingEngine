@@ -97,8 +97,9 @@ struct MaterialSource {
 // binary measured 0.95% and 14.26% black on two runs. This reads the image itself, so
 // two runs of one build are identical by construction and a diff is only ever code.
 //
-// colorResolve is the subject: at kRenderExtent whatever the window is doing, and
-// before the panel is drawn on top.
+// colorResolve is the subject: whatever size the render targets currently are, and
+// before the panel is drawn on top. With the target following the window that size is
+// the window's, so a capture is only comparable against another taken the same way.
 
 static void Put32(uint8_t* at, uint32_t value) noexcept {
     at[0] = static_cast<uint8_t>(value);
@@ -624,15 +625,29 @@ int main() {
     // exactly where it collides with the capture line above, and that collision is the
     // work that has to happen before this can change.
     constexpr VkFormat kRenderColorFormat = VK_FORMAT_R8G8B8A8_SRGB;
-    constexpr VkExtent2D kRenderExtent{kRenderWidth, kRenderHeight};
 
-    // Constant, so aspect cannot change while the targets live.
-    const float aspect = static_cast<float>(kRenderExtent.width)
-                       / static_cast<float>(kRenderExtent.height);
+    // **A value, not a constant.** How big these targets are is a policy with more
+    // than one right answer, and Unreal keeps three of them behind a console variable
+    // (r.SceneRenderTargetResizeMethod: follow the requested size, fix to the screen,
+    // or grow and never shrink -- the trade it names is memory against allocation
+    // stalls, not correctness). Ours was the middle one, hard-coded, with no way to
+    // say the others.
+    //
+    // The panel picks between two of them now, so both are live: fixed leaves the
+    // picture letterboxed into whatever the window is, following remakes the targets
+    // and turns the letterbox into an identity. Neither is dead code while the switch
+    // can be clicked.
+    VkExtent2D renderExtent{kRenderWidth, kRenderHeight};
 
+    // Both follow the extent. They stop being constants for the same reason it does,
+    // and the chain is the point: an aspect comes out of a render target and goes into
+    // a projection, so the size of one is the shape of the other.
+    //
     // No proj[1][1] *= -1: the viewport height is already negative.
     // Depth lands in [0,1] thanks to GLM_FORCE_DEPTH_ZERO_TO_ONE on the CMake target.
-    const glm::mat4 proj =
+    float aspect = static_cast<float>(renderExtent.width)
+                 / static_cast<float>(renderExtent.height);
+    glm::mat4 proj =
         glm::perspective(glm::radians(kFovDegrees), aspect, kNearPlane, kFarPlane);
 
     // Filled at the declaration, the way the shadow and swapchain formats are. What is
@@ -1000,7 +1015,7 @@ int main() {
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
         shadowMaps[i] = &renderer.shadowPass.frames[i].depth;
     }
-    if (!CreateScenePass(dev, renderer.descriptors, kRenderExtent,
+    if (!CreateScenePass(dev, renderer.descriptors, renderExtent,
                          renderer.mesh, renderer.sceneProgram, renderer.scenePipeline,
                          renderer.sceneWirePipeline,
                          shadowMaps, renderer.cameras, renderer.lights,
@@ -1146,7 +1161,6 @@ int main() {
         // center is eye + forward. An absolute target would pin the gaze to one point
         // and rotation would stop working.
         const glm::mat4 view = glm::lookAt(eye, eye + forward, kWorldUp);
-        const glm::mat4 camera = proj * view;
 
         // Light
         //
@@ -1194,11 +1208,11 @@ int main() {
         // too, and one of the two would otherwise have to be kept in step by hand.
         FrameSlot& slot = renderer.slots[slotIndex];
 
-        // Two writes, one per subject, and both into something main owns. They used
-        // to go into the passes -- the light into two of them, held in step by nothing
-        // but this local being assigned twice, and the camera three levels inside
-        // ScenePass. Nothing here reaches into a pass any more.
-        renderer.cameras[slot.index].value = {camera, glm::vec4{eye, 0.0f}};
+        // The light, into something main owns. It used to go into two passes, held in
+        // step by nothing but this local being assigned twice.
+        //
+        // The camera waits until after the acquire below: its matrix carries proj, and
+        // proj is what a resize changes.
         renderer.lights[slot.index].value =
             {lightViewProj, glm::vec4{lightDir, 0.0f},
              glm::vec4{1.0f, 0.95f, 0.9f, 0.15f}};
@@ -1213,6 +1227,44 @@ int main() {
         if (begun == FrameResult::Fatal) { break; }
 
         if (begun == FrameResult::Skip) { continue; }
+
+        // What we render into, if the policy says it should be something else
+        // --------------------------------------------------------------------
+        //
+        // Here and not before the acquire, because this is where the window's size is
+        // known: it is the extent of the image that came back.
+        //
+        // vkDeviceWaitIdle and not a fence. The fence in BeginFrame says this slot is
+        // free; these images belong to every slot, and nothing here knows which of the
+        // others is still reading one. A resize is not a per-frame path, so the stall
+        // is paid where it is cheap -- which is also the cost Unreal names for its
+        // default method.
+        const VkExtent2D windowExtent = target.texture->desc.extent;
+        const VkExtent2D wanted = GuiRenderFollowsWindow(renderer.guiPass)
+                                ? windowExtent
+                                : VkExtent2D{kRenderWidth, kRenderHeight};
+
+        if (wanted.width != renderExtent.width || wanted.height != renderExtent.height) {
+            dev.table.vkDeviceWaitIdle(dev.handle);
+
+            if (!ResizeScenePass(dev, wanted, &renderer.scenePass)) { break; }
+
+            // The sets that name what was just destroyed. The scene's own do not --
+            // they name a camera, a light, a shadow map and the panel's buffer, none
+            // of which a size touches.
+            RefreshPostProcessPass(renderer.descriptors, &renderer.postPass);
+
+            renderExtent = wanted;
+            aspect = static_cast<float>(renderExtent.width)
+                   / static_cast<float>(renderExtent.height);
+            proj = glm::perspective(glm::radians(kFovDegrees), aspect,
+                                    kNearPlane, kFarPlane);
+            LOG("[render] targets now %ux%u\n", renderExtent.width, renderExtent.height);
+        }
+
+        // After the resize, so it carries this frame's proj rather than the last
+        // frame's. The other half of what a pass reads, beside the light above.
+        renderer.cameras[slot.index].value = {proj * view, glm::vec4{eye, 0.0f}};
 
         // Everything from here breaks instead of continuing. The acquire already
         // happened, and skipping the submit would leave a signalled semaphore and a
