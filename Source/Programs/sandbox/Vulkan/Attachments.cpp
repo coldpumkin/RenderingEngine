@@ -7,51 +7,43 @@
 // Where sRGB actually matters, counted rather than assumed
 // ----------------------------------------------------------------------------
 //
-// The fragment stage writes linear light. Walking the chain for both choices of this
-// format, against a swapchain that is sRGB:
+// The fragment stage writes linear light. Walking the chain for both choices of the
+// colour format, against a swapchain that is sRGB:
 //
-//   SRGB here    store E(L)  ->  post samples, hardware decodes to L  ->  writes L,
-//                                swapchain encodes  ->  screen gets E(L)   correct
-//   UNORM here   store L     ->  post samples L                       ->  writes L,
-//                                swapchain encodes  ->  screen gets E(L)   correct
+//   SRGB   store E(L)  ->  post samples, hardware decodes to L  ->  writes L,
+//                          swapchain encodes  ->  screen gets E(L)   correct
+//   UNORM  store L     ->  post samples L                       ->  writes L,
+//                          swapchain encodes  ->  screen gets E(L)   correct
 //
 // **Only the swapchain's format decides whether the picture is right**, and
-// SelectSurfaceFormat refuses a surface that has no sRGB for exactly that reason. So
-// this value is independent of it, and the choice is ours on other grounds: sRGB
-// storage spends its 8 bits where the eye looks, and blending and the MSAA resolve
-// then happen in linear space because the hardware decodes first.
+// SelectSurfaceFormat refuses a surface that has no sRGB for exactly that reason.
 //
-// The coupling that does exist runs through the post pass rather than through the
-// surface. While fullscreen.frag is a pass-through the two ends are independent; the
-// day it tone-maps, this has to hold values outside [0,1] -- a float format -- and
-// what it writes has to answer to the swapchain instead.
-//
-// Kept out of the header so nothing can read it directly and bypass
-// AttachmentFormats.
-static constexpr VkFormat kRenderColorFormat = VK_FORMAT_R8G8B8A8_SRGB;
+// So the colour a pass draws into is not this file's to pick. It used to be, as a
+// private constant here, which put a value under a subject that has no claim on it.
+// The caller fills it now and this function answers only what the GPU can: whether
+// that format works, which depth format exists, and how many samples.
 
 bool ChooseAttachmentFormats(const VulkanInstance& inst, VkPhysicalDevice gpu,
                                AttachmentFormats* out) noexcept {
     AttachmentFormats& formats = *out;
 
-    // Asked for, not assumed. Depth has been asked about since this function existed
-    // and colour never was -- it was assigned and the GPU was left out of it, which is
-    // an odd pair of habits for two fields of one struct.
+    // Asked about, not assumed. Depth has been asked about since this function existed
+    // and colour never was -- it was assigned from a constant here and the GPU was
+    // left out of it, which was an odd pair of habits for two fields of one struct.
     //
-    // Both bits, because this format is two things: drawn into by the scene pass and
-    // sampled by the post pass. A format that supports one and not the other would
-    // fail at the second image rather than here.
+    // Both bits, because this image is two things: drawn into by the pass that owns it
+    // and sampled by whatever reads it next. A format supporting one and not the other
+    // would fail at the second image rather than here.
     {
         VkFormatProperties props{};
-        inst.table.vkGetPhysicalDeviceFormatProperties(gpu, kRenderColorFormat, &props);
+        inst.table.vkGetPhysicalDeviceFormatProperties(gpu, formats.color, &props);
         constexpr VkFormatFeatureFlags needed =
             VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
         if ((props.optimalTilingFeatures & needed) != needed) {
-            LOG("[vk] render colour format %d cannot be both drawn into and sampled\n",
-                static_cast<int>(kRenderColorFormat));
+            LOG("[vk] colour format %d cannot be both drawn into and sampled\n",
+                static_cast<int>(formats.color));
             return false;
         }
-        formats.color = kRenderColorFormat;
     }
 
     // Most precise first, and stencil-free ahead of stencil since we never use

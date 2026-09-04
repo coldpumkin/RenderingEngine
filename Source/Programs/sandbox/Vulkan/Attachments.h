@@ -32,10 +32,19 @@ struct AttachmentFormats {
     VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
 };
 
-// Input:  inst, gpu
-// Output: false means this GPU cannot run our render targets - no depth format, or
-//         no multisampling, which the resolve path requires.
+// Input:  inst, gpu, and out->color already filled in by the caller
+// Output: false means this GPU cannot run that render target - the colour format is
+//         not usable as both an attachment and a sampled image, or there is no depth
+//         format, or no multisampling, which the resolve path requires.
+//
+// **Only what the GPU can answer.** Which colour a target is made of is the caller's,
+// filled in before the call the way the shadow and swapchain formats are filled in at
+// their own declarations; this fills the two fields that need a device to answer and
+// checks the one it was given.
 //
 // Takes inst because these queries are instance level. No logical device needed.
+//
+// Contract: out->color is set. UNDEFINED would mean a pass that draws no colour, and
+//           such a pass has no use for the rest of this either.
 bool ChooseAttachmentFormats(const VulkanInstance& inst, VkPhysicalDevice gpu,
                                AttachmentFormats* out) noexcept;

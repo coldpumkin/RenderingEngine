@@ -598,7 +598,47 @@ int main() {
     // pass rather than around it.
     if (!SelectSurfaceFormat(inst, selection.gpu, &window)) { return 1; }
 
-    AttachmentFormats sceneFormats;
+    // What we render into
+    // ------------------------------------------------------------------------
+    //
+    // Both halves of it, in one place. They used to sit 100 lines apart -- the formats
+    // here and the size down by the camera -- and the comment on the second half said
+    // so without doing anything about it. What the aspect is made of is the reason to
+    // keep them together: it comes out of this extent and goes into proj, so a render
+    // target and a projection are two ends of one decision.
+    //
+    // **The colour is the render chain's, not the scene pass's.** Every target in the
+    // chain is made of it, from what the scene draws into to whatever a post stage
+    // would write next, and it answers to two things:
+    //
+    //   R8G8B8A8   WriteBmp reads red first and swizzles nothing
+    //   SRGB       eight bits spent where the eye looks, and blending and the MSAA
+    //              resolve then happen in linear space, the hardware decoding first
+    //
+    // Not the swapchain's. Attachments.cpp counts that out: only the swapchain's own
+    // format decides what reaches the screen, so tying this to it would put the value
+    // under a subject with no claim on it.
+    //
+    // There is one claimant now because the chain is one link long. A post stage that
+    // tone-maps would be the stronger one and would want a float format -- which is
+    // exactly where it collides with the capture line above, and that collision is the
+    // work that has to happen before this can change.
+    constexpr VkFormat kRenderColorFormat = VK_FORMAT_R8G8B8A8_SRGB;
+    constexpr VkExtent2D kRenderExtent{kRenderWidth, kRenderHeight};
+
+    // Constant, so aspect cannot change while the targets live.
+    const float aspect = static_cast<float>(kRenderExtent.width)
+                       / static_cast<float>(kRenderExtent.height);
+
+    // No proj[1][1] *= -1: the viewport height is already negative.
+    // Depth lands in [0,1] thanks to GLM_FORCE_DEPTH_ZERO_TO_ONE on the CMake target.
+    const glm::mat4 proj =
+        glm::perspective(glm::radians(kFovDegrees), aspect, kNearPlane, kFarPlane);
+
+    // Filled at the declaration, the way the shadow and swapchain formats are. What is
+    // left for the call is what a GPU has to answer: is that colour usable both ways,
+    // which depth format exists, and how many samples.
+    AttachmentFormats sceneFormats{.color = kRenderColorFormat};
     if (!ChooseAttachmentFormats(inst, selection.gpu, &sceneFormats)) { return 1; }
 
     // selection is absorbed here and not kept -- nothing below this line reads it.
@@ -706,20 +746,6 @@ int main() {
     guiDesc.blending = Blending::Translucent;
     if (!CreateGraphicsPipeline(dev, renderer.guiProgram, guiDesc,
                                 &renderer.guiPipeline)) { return 1; }
-
-    // Render resolution
-    // ------------------------------------------------------------------------
-    //
-    // The other half of what a render target looks like; sceneFormats is the first.
-    // Constant, so aspect cannot change while the targets live.
-    constexpr VkExtent2D kRenderExtent{kRenderWidth, kRenderHeight};
-    const float aspect = static_cast<float>(kRenderExtent.width)
-                       / static_cast<float>(kRenderExtent.height);
-
-    // No proj[1][1] *= -1: the viewport height is already negative.
-    // Depth lands in [0,1] thanks to GLM_FORCE_DEPTH_ZERO_TO_ONE on the CMake target.
-    const glm::mat4 proj =
-        glm::perspective(glm::radians(kFovDegrees), aspect, kNearPlane, kFarPlane);
 
     // Scene
     // ------------------------------------------------------------------------
@@ -1262,6 +1288,23 @@ int main() {
         if (capturePath != nullptr) {
             dev.table.vkDeviceWaitIdle(dev.handle);
             const Texture& shot = *sceneColor[slot.index];
+
+            // Contract: WriteBmp reads red first. ReadTexturePixels hands back the
+            //           image's own channel order and accepts BGRA as readily as
+            //           RGBA, so the two agree only while the render chain's colour
+            //           is red-first -- and until this line, nothing said so.
+            //
+            // Refused rather than swizzled. A swizzle would be a branch this machine
+            // never takes, and the capture is the one instrument here that is trusted
+            // to the byte; it has to fail loudly rather than quietly hand back an
+            // image with two channels swapped.
+            if (shot.desc.format != VK_FORMAT_R8G8B8A8_SRGB
+                    && shot.desc.format != VK_FORMAT_R8G8B8A8_UNORM) {
+                LOG("[capture] format %d is not red-first; BMP would swap R and B\n",
+                    static_cast<int>(shot.desc.format));
+                break;
+            }
+
             std::vector<uint8_t> pixels;
             if (ReadTexturePixels(dev, commands, shot,
                                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, &pixels)
