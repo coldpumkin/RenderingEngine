@@ -170,47 +170,35 @@ bool CreateShadowPass(const Descriptors& descriptors,
 }
 
 // One frame's three images, from the descs that say what they are.
-static bool CreateSceneTargets(const VulkanDevice& dev, const SceneTargetDescs& targets,
-                               ScenePass::PerFrame* frame) noexcept {
-    return CreateTexture(dev, targets.color, &frame->color)
-        && CreateTexture(dev, targets.resolve, &frame->colorResolve)
-        && CreateTexture(dev, targets.depth, &frame->depth);
+bool CreateSceneTargets(const VulkanDevice& dev, const SceneTargetDescs& descs,
+                        SceneTargets* out) noexcept {
+    return CreateTexture(dev, descs.color, &out->color)
+        && CreateTexture(dev, descs.resolve, &out->resolve)
+        && CreateTexture(dev, descs.depth, &out->depth);
 }
 
-bool ResizeScenePass(const VulkanDevice& dev, const SceneTargetDescs& targets,
-                     ScenePass* pass) noexcept {
-    // A resize may change the extent and nothing else. The pipelines are not rebuilt,
-    // so new descs carrying another format would leave them baked for the old one.
-    const TextureDesc* const resized[] = {&targets.color};
-    if (!SameAttachmentFormats(AttachmentFormatsOf(resized, 1, &targets.depth),
-                               pass->pipeline->formats)) {
-        LOG("[vk] a resize changed the scene formats, which the pipelines baked\n");
+bool ResizeSceneTargets(const VulkanDevice& dev, const SceneTargetDescs& descs,
+                        SceneTargets* out) noexcept {
+    // Released before the new ones are asked for, and view-then-image inside each --
+    // see ResetTexture. Assigning over them would destroy an image while a view made
+    // from it is still alive.
+    ResetTexture(&out->color);
+    ResetTexture(&out->resolve);
+    ResetTexture(&out->depth);
+
+    if (!CreateSceneTargets(dev, descs, out)) {
+        LOG("[vk] could not remake the scene targets at %ux%u\n",
+            descs.color.extent.width, descs.color.extent.height);
         return false;
-    }
-
-    for (uint32_t i = 0; i < kFramesInFlight; ++i) {
-        ScenePass::PerFrame& frame = pass->frames[i];
-
-        // Released before the new ones are asked for, and view-then-image inside each
-        // -- see ResetTexture. Assigning over them would destroy an image while a view
-        // made from it is still alive.
-        ResetTexture(&frame.color);
-        ResetTexture(&frame.colorResolve);
-        ResetTexture(&frame.depth);
-
-        if (!CreateSceneTargets(dev, targets, &frame)) {
-            LOG("[vk] could not remake the scene targets at %ux%u\n",
-                targets.color.extent.width, targets.color.extent.height);
-            return false;
-        }
     }
     return true;
 }
 
+
 // Built without looking at the window, so this works while minimized - there may be
 // no swapchain yet, and nothing here depends on one.
-bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
-                     const SceneTargetDescs& targets,
+bool CreateScenePass(const Descriptors& descriptors,
+                     const SceneTargets* const targets[kFramesInFlight],
                      const Mesh& mesh, const ShaderProgram& program,
                      const Pipeline& pipeline, const Pipeline& wirePipeline,
                      const Texture* const shadowMaps[kFramesInFlight],
@@ -240,21 +228,20 @@ bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
     }
 
     // Both variants, because both draw into these same images.
-    const TextureDesc* const sceneColor[] = {&targets.color};
-    const AttachmentFormats formats = AttachmentFormatsOf(sceneColor, 1, &targets.depth);
-    if (!SameAttachmentFormats(formats, pipeline.formats)
-        || !SameAttachmentFormats(formats, wirePipeline.formats)) {
-        LOG("[vk] the scene targets and a scene pipeline disagree about the formats\n");
-        return false;
-    }
-
+    // Every frame's targets against both pipelines, and so against each other.
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
         ScenePass::PerFrame& frame = out->frames[i];
+        frame.targets = targets[i];
 
-        if (!CreateSceneTargets(dev, targets, &frame)) {
+        const TextureDesc* const colour[] = {&targets[i]->color.desc};
+        const AttachmentFormats formats =
+            AttachmentFormatsOf(colour, 1, &targets[i]->depth.desc);
+        if (!SameAttachmentFormats(formats, pipeline.formats)
+            || !SameAttachmentFormats(formats, wirePipeline.formats)) {
+            LOG("[vk] scene targets %u and a scene pipeline disagree about the formats\n",
+                i);
             return false;
         }
-
     }
 
     // Drawn in one call, then handed out: vkAllocateDescriptorSets writes a flat
@@ -536,7 +523,8 @@ static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
 
     // This slot's frame of the pass. The set that names these attachments is in the
     // same PerFrame, so the two cannot be picked apart by a wrong index.
-    const ScenePass::PerFrame& targets = scene.frames[slot.index];
+    const ScenePass::PerFrame& frame = scene.frames[slot.index];
+    const SceneTargets& targets = *frame.targets;
     const VkExtent2D extent = targets.color.desc.extent;   // render resolution, not window size
 
     // oldLayout UNDEFINED: loadOp=CLEAR overwrites, so the old contents are dead.
@@ -550,7 +538,7 @@ static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
 
     // The resolve target is written too, at the end of the pass, so it needs the same
     // layout and the same stage. Nothing here draws into it directly.
-    RecordLayoutTransition(vk, cmd, targets.colorResolve.image.handle, VK_IMAGE_ASPECT_COLOR_BIT,
+    RecordLayoutTransition(vk, cmd, targets.resolve.image.handle, VK_IMAGE_ASPECT_COLOR_BIT,
                            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
@@ -578,7 +566,7 @@ static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
     color.imageView = targets.color.view.handle;
     color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     color.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
-    color.resolveImageView = targets.colorResolve.view.handle;
+    color.resolveImageView = targets.resolve.view.handle;
     color.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     color.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -624,7 +612,7 @@ static void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
 
     // Once, above the loop: it is this frame's, and every draw in the pass reads it.
     vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout,
-                               kFrameSet, 1, &targets.set, 0, nullptr);
+                               kFrameSet, 1, &frame.set, 0, nullptr);
 
     // binding 0 matches the pipeline's binding 0. offset changes once several meshes
     // share one buffer.

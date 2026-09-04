@@ -621,9 +621,9 @@ int main() {
     if (!QueryTargetCapabilities(inst, selection.gpu, DepthTargetUsage(),
                                  kDesiredSampleCount, &caps)) { return 1; }
 
-    SceneTargetDescs sceneTargets = MakeSceneTargets(DesiredRenderExtent(window),
-                                                     kRenderColorFormat,
-                                                     caps.depthFormat, caps.samples);
+    SceneTargetDescs sceneTargetDescs = MakeSceneTargets(DesiredRenderExtent(window),
+                                                         kRenderColorFormat,
+                                                         caps.depthFormat, caps.samples);
     const TextureDesc shadowTarget = MakeShadowTarget(kShadowExtent, caps.depthFormat);
 
     // Device -- and past it, everything that needs one
@@ -666,9 +666,9 @@ int main() {
     // and the resolve is what leaves afterwards.
     GraphicsPipelineDesc opaqueDesc;
     opaqueDesc.vertexLayout = VertexInput();
-    opaqueDesc.color[0] = &sceneTargets.color;
+    opaqueDesc.color[0] = &sceneTargetDescs.color;
     opaqueDesc.colorCount = 1;
-    opaqueDesc.depth = &sceneTargets.depth;
+    opaqueDesc.depth = &sceneTargetDescs.depth;
     if (!CreateGraphicsPipeline(dev, renderer.sceneProgram, opaqueDesc,
                                 &renderer.scenePipeline)) { return 1; }
 
@@ -948,19 +948,27 @@ int main() {
                           renderer.mesh, renderer.shadowProgram,
                           renderer.shadowPipeline, renderer.shadows,
                           &renderer.shadowPass)) { return 1; }
-    if (!CreateScenePass(dev, renderer.descriptors, sceneTargets,
+    // The scene's three, made here and named here. The pass draws into them, the post
+    // pass samples the resolve, and the capture reads the same image -- three readers
+    // and no pass in the middle of any of them.
+    const SceneTargets* sceneTargets[kFramesInFlight]{};
+    const Texture* sceneColor[kFramesInFlight]{};
+    for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+        if (!CreateSceneTargets(dev, sceneTargetDescs, &renderer.sceneTargets[i])) {
+            return 1;
+        }
+        sceneTargets[i] = &renderer.sceneTargets[i];
+
+        // resolve and not color: a multisample image cannot be sampled.
+        sceneColor[i] = &renderer.sceneTargets[i].resolve;
+    }
+
+    if (!CreateScenePass(renderer.descriptors, sceneTargets,
                          renderer.mesh, renderer.sceneProgram, renderer.scenePipeline,
                          renderer.sceneWirePipeline,
                          shadowMaps, renderer.cameras, renderer.lights,
                          renderer.shadows, renderer.guiPass,
                          &renderer.scenePass)) { return 1; }
-    // Both readers of the scene's colour take it from here -- the post pass and the
-    // capture at the bottom of the loop. colorResolve and not color: a multisample
-    // image cannot be sampled.
-    const Texture* sceneColor[kFramesInFlight]{};
-    for (uint32_t i = 0; i < kFramesInFlight; ++i) {
-        sceneColor[i] = &renderer.scenePass.frames[i].colorResolve;
-    }
     if (!CreatePostProcessPass(renderer.descriptors, sceneColor, swapchainTarget,
                                renderer.postProgram, renderer.postPipeline,
                                &renderer.postPass)) {
@@ -1048,17 +1056,23 @@ int main() {
 
         // Compared against the desc and not against a copy of it: the desc is where
         // the current size lives, so there is no second number to keep in step.
-        const VkExtent2D current = sceneTargets.color.extent;
+        const VkExtent2D current = sceneTargetDescs.color.extent;
 
         if (wanted.width != current.width || wanted.height != current.height) {
             dev.table.vkDeviceWaitIdle(dev.handle);
 
             // Described again at the new size, by the same call that described them
-            // the first time. Only the extent differs.
-            sceneTargets = MakeSceneTargets(wanted, kRenderColorFormat,
-                                            caps.depthFormat, caps.samples);
+            // the first time. Only the extent differs, so the pipelines stand and the
+            // scene pass's pointers still name the right objects.
+            sceneTargetDescs = MakeSceneTargets(wanted, kRenderColorFormat,
+                                                caps.depthFormat, caps.samples);
 
-            if (!ResizeScenePass(dev, sceneTargets, &renderer.scenePass)) { break; }
+            bool remade = true;
+            for (uint32_t i = 0; i < kFramesInFlight && remade; ++i) {
+                remade = ResizeSceneTargets(dev, sceneTargetDescs,
+                                            &renderer.sceneTargets[i]);
+            }
+            if (!remade) { break; }
 
             // The only sets that name what was just destroyed.
             RefreshPostProcessPass(renderer.descriptors, &renderer.postPass);
@@ -1140,7 +1154,7 @@ int main() {
         // center is eye + forward: an absolute target would pin the gaze and rotation
         // would stop working. viewPos comes out of the desc rather than being copied
         // beside it -- one camera, one place its position is written down.
-        const Camera camera = MakeCamera(CameraDesc{sceneTargets.color.extent,
+        const Camera camera = MakeCamera(CameraDesc{sceneTargetDescs.color.extent,
                                                     kFovDegrees, kNearPlane, kFarPlane,
                                                     eye, forward, kWorldUp});
         renderer.cameras[slot.index].value =
@@ -1197,9 +1211,9 @@ int main() {
         guiInfo.mesh = &renderer.mesh;
         guiInfo.guiPipeline = &renderer.guiPipeline;
         guiInfo.slotIndex = slot.index;
-        guiInfo.sceneColor = &renderer.scenePass.frames[slot.index].color;
-        guiInfo.sceneResolve = &renderer.scenePass.frames[slot.index].colorResolve;
-        guiInfo.sceneDepth = &renderer.scenePass.frames[slot.index].depth;
+        guiInfo.sceneColor = &renderer.sceneTargets[slot.index].color;
+        guiInfo.sceneResolve = &renderer.sceneTargets[slot.index].resolve;
+        guiInfo.sceneDepth = &renderer.sceneTargets[slot.index].depth;
         guiInfo.frameTarget = target.texture;
         BuildGui(&renderer.guiPass, guiInfo);
 

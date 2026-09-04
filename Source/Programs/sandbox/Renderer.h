@@ -151,6 +151,11 @@ struct Renderer {
     // Before the passes, so it outlives both: their sets name its view.
     Texture shadowMaps[kFramesInFlight];
 
+    // The scene's three, for the same reason and one step further: these are remade
+    // on every resize, and a resize is main's to run now rather than something a pass
+    // does to itself.
+    SceneTargets sceneTargets[kFramesInFlight];
+
     ShadowPass shadowPass;
     ScenePass scenePass;
     PostProcessPass postPass;

@@ -503,6 +503,29 @@ SceneTargetDescs MakeSceneTargets(VkExtent2D extent, VkFormat colour, VkFormat d
 // pass reads it -- the second of the two edges.
 TextureDesc MakeShadowTarget(VkExtent2D extent, VkFormat depth) noexcept;
 
+// The three images those descs describe, made together and remade together
+//
+// Field for field with SceneTargetDescs, because that is what it is the product of.
+// Owned by whoever declares one -- main does -- and the scene pass borrows it, the
+// way both passes borrow the shadow map.
+struct SceneTargets {
+    Texture color;     // multisample. Drawn into, then discarded
+    Texture resolve;   // 1 sample. vkCmdEndRendering averages into it, and the post
+                       // pass samples it -- the one that leaves
+    Texture depth;     // multisample. Tested and written, never read outside the frame
+};
+
+// Effect: makes the three, or remakes them at a new size
+//
+// Remaking releases first, view before image inside each -- see ResetTexture. The
+// caller waits for the GPU: a frame in flight is still reading last frame's, and no
+// fence here says which. The post pass's sets name the resolve, so they have to be
+// refreshed afterwards; nothing else does.
+bool CreateSceneTargets(const VulkanDevice& dev, const SceneTargetDescs& descs,
+                        SceneTargets* out) noexcept;
+bool ResizeSceneTargets(const VulkanDevice& dev, const SceneTargetDescs& descs,
+                        SceneTargets* out) noexcept;
+
 // Output: everything the depth targets do between them
 //
 // Both take the one format QueryTargetCapabilities finds, so what it has to search
@@ -638,18 +661,9 @@ struct ScenePass {
     const Pipeline* wirePipeline = nullptr;
 
     struct PerFrame {
-        Texture color;         // multisample. Drawn into, then discarded
-        Texture colorResolve;  // 1 sample. vkCmdEndRendering averages into it, and
-                               // the post pass samples it -- the one that leaves
-        Texture depth;         // multisample. Tested and written, never read outside
-
-        // No uniform buffer here any more. Both of the ones that were -- the camera
-        // and, before it, the light -- are written by main and read by this pass, and
-        // nothing in this struct moves with them: these three images are made once and
-        // never touched again.
-        //
-        // What is left is what the pass is: images it draws into, and the set that
-        // names them beside what it was handed.
+        // **Borrowed.** main owns them, so a resize is main's to run and the post pass
+        // can be handed the resolve without anyone naming this pass.
+        const SceneTargets* targets = nullptr;
 
         // Drawn from the pool by this pass and filled by it: the set names this
         // frame's input and uniform, so no one else knows what belongs in it.
@@ -658,17 +672,14 @@ struct ScenePass {
     PerFrame frames[kFramesInFlight];
 };
 
-// Effect: creates each frame's attachments and uniform buffer, and points the pass at
-//         what the scene brings.
+// Effect: points the pass at what it draws into and at what the scene brings, and
+//         makes the set each frame binds.
 //
-// What the attachments are made of is read off pipeline, the same way the shadow pass
-// reads its own. Which images exist at all follows from the same three values: a
-// colour format that is not UNDEFINED means a colour attachment, more than one sample
-// means a resolve beside it, a depth format means depth. That rule produces this
-// pass's three and the shadow pass's one, which is why neither takes them as an
-// argument any more.
+// It made the attachments until 09-05. main owns them now, which is what leaves this
+// with no VulkanDevice argument: it creates descriptor sets and nothing else, and the
+// pool knows its device.
 //
-// shadowMaps and not a ShadowPass, which is the whole of the change: what this
+// shadowMaps and not a ShadowPass, which was the same change made earlier: what this
 // needs is one depth image per frame, and naming the pass that owns them let this
 // function reach anything a shadow pass has. A signature is meant to state the
 // requirement, not a place the requirement can be found in.
@@ -683,26 +694,16 @@ struct ScenePass {
 //           barrier that makes one readable belongs to the pass that writes it.
 // Contract: gui must already be created -- binding 3 of each set names the buffer its
 //           checkboxes write into.
-// Effect: remakes every frame's attachments at a new size, leaving the sets alone
-//
-// The other half of creation, and the reason the three images are made by a function
-// rather than written out once: they are made twice now, here and there.
-//
-// This pass's own sets name nothing that changes -- the camera, the light, a shadow
-// map and the panel's buffer -- so they survive. **The post pass's do not**, because
-// they name the resolve image this destroys; RefreshPostProcessPass is the other half
-// and the caller runs it.
-//
-// Contract: the GPU must be idle. The caller waits -- a frame in flight is still
-//           reading last frame's attachments, and no fence here says which.
-bool ResizeScenePass(const VulkanDevice& dev, const SceneTargetDescs& targets,
-                     ScenePass* pass) noexcept;
+// A resize touches no pass. This one's sets name nothing that changes -- the camera,
+// the light, a shadow map and the panel's buffer -- and it holds pointers to targets
+// whose contents are replaced under them. **The post pass's sets do not survive**:
+// they name the resolve image, so RefreshPostProcessPass runs after every resize.
 
 // Contract: cameras, lights and shadows hold kFramesInFlight entries and outlive this
 //           pass. shadows is the same array the shadow pass was given, which is what
 //           makes the matrix in binding 2 the one that drew the map in binding 3.
-bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
-                     const SceneTargetDescs& targets,
+bool CreateScenePass(const Descriptors& descriptors,
+                     const SceneTargets* const targets[kFramesInFlight],
                      const Mesh& mesh, const ShaderProgram& program,
                      const Pipeline& pipeline, const Pipeline& wirePipeline,
                      const Texture* const shadowMaps[kFramesInFlight],
