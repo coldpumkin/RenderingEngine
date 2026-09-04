@@ -81,18 +81,20 @@ bool QuerySurfaceExtent(const VulkanInstance& inst,
                         VkPhysicalDevice gpu,
                         Window* window) noexcept;
 
-// Output: what a pass drawing into a swapchain image is compiled against
+// Output: what one swapchain image is, in the type our own targets use
 //
-// **Received, not chosen.** All three fields are the presentation engine's answer: it
-// hands back single-sample colour images with no depth, and SelectSurfaceFormat
-// settled which colour. That is the opposite of the targets we make, where the same
-// type carries decisions -- and the type does not say which, so the call does.
+// **Received, not chosen** -- the presentation engine hands back single-sample colour
+// images with no depth, and SelectSurfaceFormat settled which colour. That is the
+// opposite of the targets we make, and the type does not say which, so the call does.
 //
-// Takes the window and not a Swapchain. The pipelines that bake this are built before
-// the first swapchain exists, since EnsureSwapchain runs from BeginFrame.
+// CreateSwapchain fills each image's desc from this too, so what a pipeline is built
+// against and what the images turn out to be are one description, not two that agree.
+// The window overload exists because those pipelines are built before the first
+// swapchain does -- EnsureSwapchain runs from BeginFrame.
 //
 // Contract: SelectSurfaceFormat has run.
-AttachmentFormats SwapchainAttachmentFormats(const Window& window) noexcept;
+TextureDesc SwapchainTargetDesc(VkSurfaceFormatKHR format, VkExtent2D extent) noexcept;
+TextureDesc SwapchainTargetDesc(const Window& window) noexcept;
 
 // Effect: remakes window->swapchain when it is out of date or absent
 // Output: false means "nowhere to draw right now", and whether that is a failure is

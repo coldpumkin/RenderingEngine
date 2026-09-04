@@ -490,18 +490,6 @@ TextureDesc MakeShadowTarget(VkExtent2D extent, VkFormat depth) noexcept;
 // sampled, and moving a bit in either place moves this.
 VkImageUsageFlags DepthTargetUsage() noexcept;
 
-// Output: what a pipeline drawing into these is compiled against
-//
-// The projection Attachments.h describes, as a call. main wrote it out field by field
-// before, once per pass, so the value a pipeline baked and the value its images were
-// made from came from two hands -- and the claim that they cannot disagree held only
-// because nobody mistyped it. Now the pass creations call the same one to check.
-//
-// Named the way SwapchainAttachmentFormats is: one per thing that can answer, and the
-// name says which is answering.
-AttachmentFormats SceneAttachmentFormats(const SceneTargetDescs& targets) noexcept;
-AttachmentFormats ShadowAttachmentFormats(const TextureDesc& map) noexcept;
-
 
 // ShadowPass - the same surfaces, depth only, from where the light is
 // ============================================================================

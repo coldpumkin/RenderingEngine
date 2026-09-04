@@ -23,6 +23,24 @@
 // The caller fills it now and this function answers only what the GPU can: whether
 // that format works, which depth format exists, and how many samples.
 
+AttachmentFormats AttachmentFormatsOf(const TextureDesc* color,
+                                      const TextureDesc* depth) noexcept {
+    AttachmentFormats formats{};
+    if (color != nullptr) { formats.color = color->format; }
+    if (depth != nullptr) { formats.depth = depth->format; }
+
+    // From whichever is there. A pass with neither draws nothing and never reaches a
+    // pipeline; the default of one sample stands for it.
+    const TextureDesc* any = color != nullptr ? color : depth;
+    if (any != nullptr) { formats.samples = any->samples; }
+
+    if (color != nullptr && depth != nullptr && color->samples != depth->samples) {
+        LOG("[vk] a pass was described with %d-sample colour and %d-sample depth\n",
+            static_cast<int>(color->samples), static_cast<int>(depth->samples));
+    }
+    return formats;
+}
+
 bool QueryTargetCapabilities(const VulkanInstance& inst, VkPhysicalDevice gpu,
                              VkImageUsageFlags depthUsage, uint32_t desiredSamples,
                              TargetCapabilities* out) noexcept {

@@ -597,6 +597,15 @@ int main() {
     // A format and not an image: images are made again on every resize.
     if (!SelectSurfaceFormat(inst, selection.gpu, &window)) { return 1; }
 
+    // How big it is, asked here so the render targets below can follow it from the
+    // first frame rather than from the second. Not checked: false means minimized,
+    // and nothing built below needs a size -- the loop asks again every frame.
+    QuerySurfaceExtent(inst, selection.gpu, &window);
+
+    // What the last pass writes into. A TextureDesc like the targets below, and the
+    // only one of the four we do not write ourselves.
+    const TextureDesc swapchainTarget = SwapchainTargetDesc(window);
+
     // Device -- and past it, everything that draws rather than shows
     // ========================================================================
 
@@ -613,39 +622,30 @@ int main() {
     //
     // Above the targets and not below, because neither of these reads one. What they
     // are compiled against is the answer the display gave before there was a device,
-    // and it does not change while the program runs -- so both are right from the
-    // start and nothing rebuilds them.
+    // and swapchainTarget does not change while the program runs, so nothing rebuilds
+    // them.
     //
-    // Four programs and five pipelines in all; the other two are below. The scene has
-    // two variants, fill and line, which differ in polygonMode and so are two compiled
-    // objects. Anything that is a register instead is dynamic state and costs nothing.
-    //
+    // Four programs and five pipelines in all; the other two are below.
+
     // The post pass. No vertex input, no depth, 1 sample -- MSAA ends at the resolve.
     if (!CreateShaderProgram(dev, "Shaders/fullscreen.vert.spv",
                              "Shaders/fullscreen.frag.spv",
                              &renderer.presentProgram)) { return 1; }
 
-    // Asked for here and nowhere else -- this is where the presentation engine's own
-    // answer enters, and every field of it is theirs. That is the opposite of the
-    // targets below, where the same type carries what we decided, and the type does
-    // not say which, so the call does.
     GraphicsPipelineDesc presentDesc;
-    presentDesc.formats = SwapchainAttachmentFormats(window);
+    presentDesc.formats = AttachmentFormatsOf(&swapchainTarget, nullptr);
     if (!CreateGraphicsPipeline(dev, renderer.presentProgram, presentDesc,
                                 &renderer.presentPipeline)) { return 1; }
 
-    // The panel. A different vertex type, a different set layout, and the only one of
-    // the five that blends -- a window has to be see-through to be over anything.
-    // y-down because ImGui works in window pixels with the origin at the top left.
+    // The panel, on top of what the post pass leaves -- the same image, so the same
+    // desc. The only one of the five that blends: a window has to be see-through to be
+    // over anything. y-down because ImGui works in window pixels from the top left.
     if (!CreateShaderProgram(dev, "Shaders/gui.vert.spv", "Shaders/gui.frag.spv",
                              &renderer.guiProgram)) { return 1; }
 
-    // Read back out of the present pipeline rather than asked for a second time: this
-    // pass draws on top of what that one leaves, so it is the same image, and taking
-    // the value from there is what stops the two from ever disagreeing.
     GraphicsPipelineDesc guiDesc;
     guiDesc.vertexLayout = GuiVertexInput();
-    guiDesc.formats = renderer.presentPipeline.desc.formats;
+    guiDesc.formats = AttachmentFormatsOf(&swapchainTarget, nullptr);
     guiDesc.blending = Blending::Translucent;
     if (!CreateGraphicsPipeline(dev, renderer.guiProgram, guiDesc,
                                 &renderer.guiPipeline)) { return 1; }
@@ -668,12 +668,12 @@ int main() {
     // resolve run in linear space.
     //
     // renderExtent is a policy, switched in the panel between fixed and following the
-    // window. It starts fixed whatever the switch says, because the surface has not
-    // been asked its size yet, and the loop's first turn corrects it.
+    // window. The same call the loop makes, so the first frame is already right.
     //
     // Contract: kShadowExtent is square, because lightProj is a box with equal sides.
     constexpr VkFormat   kRenderColorFormat = VK_FORMAT_R8G8B8A8_SRGB;
-    VkExtent2D           renderExtent       = DesiredRenderExtent(window, false);
+    VkExtent2D           renderExtent =
+        DesiredRenderExtent(window, GuiRenderFollowsWindow(renderer.guiPass));
     constexpr VkExtent2D kShadowExtent{kShadowResolution, kShadowResolution};
 
     // Answered -- the two a caller cannot decide. Not a check on the colour above:
@@ -696,54 +696,38 @@ int main() {
     // Render passes -- the two that draw into targets of ours
     // ------------------------------------------------------------------------
     //
-    // Below the targets, because both are compiled against one.
-    //
+    // Below the targets, because both are compiled against one. Both take the same
+    // vertex layout: it describes the buffer, and each vertex stage reads out of it
+    // the locations it declares -- CheckVertexInterface reads that from the .spv.
+
     // The depth-only pass, first because the scene pass reads what it draws.
-    //
-    // No colour format at all: the fragment stage declares no outputs, and the two
-    // have to agree. One sample, because a visibility test cannot be averaged.
     if (!CreateShaderProgram(dev, "Shaders/shadow.vert.spv", "Shaders/shadow.frag.spv",
                              &renderer.shadowProgram)) { return 1; }
 
-    // The same layout the scene pipeline gets: it describes the buffer, and
-    // shadow.vert reads one location out of it. Which ones a pipeline consumes is the
-    // vertex stage's answer, and CheckVertexInterface reads it from the .spv.
-    //
-    // One field, because one is all this pass decides.
-    //
-    // No colour: shadow.frag declares no output, and CreateGraphicsPipeline refuses
-    // the pair where one side says colour and the other does not -- so writing
-    // UNDEFINED here would be saying a second time what the .spv already settles.
-    // One sample: the default, and averaging a visibility test would produce a depth
-    // no surface was ever at.
-    //
-    // Projected from the desc above rather than written out again, and CreateShadowPass
-    // makes the same call to check what it was handed against what this baked.
-
+    // No colour, which shadow.frag settles by declaring no output --
+    // CreateGraphicsPipeline refuses the pair where one side says colour and the other
+    // does not.
     GraphicsPipelineDesc shadowDesc;
     shadowDesc.vertexLayout = VertexInput();
-    shadowDesc.formats = ShadowAttachmentFormats(shadowTarget);
+    shadowDesc.formats = AttachmentFormatsOf(nullptr, &shadowTarget);
     if (!CreateGraphicsPipeline(dev, renderer.shadowProgram, shadowDesc,
                                 &renderer.shadowPipeline)) { return 1; }
 
-    // The program first: the shaders decide the set layouts and the push range, and a
-    // pipeline only picks state on top of that. Two pipelines from one program share
-    // every set already drawn from it.
+    // The program first: the shaders decide the set layouts and the push range. Two
+    // pipelines from one program share every set already drawn from it.
     if (!CreateShaderProgram(dev, "Shaders/scene.vert.spv", "Shaders/scene.frag.spv",
                              &renderer.sceneProgram)) { return 1; }
 
-    // Two lines, and they are the same two the shadow pipeline sets. What differs
-    // between the passes is not compiled in any more: the viewport and the winding
-    // that goes with it are set where the pass is recorded.
+    // The multisample colour and not the resolve: a pipeline bakes what it draws into,
+    // and the resolve is what leaves afterwards.
     GraphicsPipelineDesc opaqueDesc;
     opaqueDesc.vertexLayout = VertexInput();
-    opaqueDesc.formats = SceneAttachmentFormats(sceneTargets);
+    opaqueDesc.formats = AttachmentFormatsOf(&sceneTargets.color, &sceneTargets.depth);
     if (!CreateGraphicsPipeline(dev, renderer.sceneProgram, opaqueDesc,
                                 &renderer.scenePipeline)) { return 1; }
 
     // The same desc with one field changed, which is the whole of what a second
-    // variant is. LINE needs fillModeNonSolid, requested in Core.h and checked when
-    // the GPU was picked.
+    // variant is. LINE needs fillModeNonSolid, requested in Core.h.
     GraphicsPipelineDesc wireDesc = opaqueDesc;
     wireDesc.polygonMode = VK_POLYGON_MODE_LINE;
     if (!CreateGraphicsPipeline(dev, renderer.sceneProgram, wireDesc,

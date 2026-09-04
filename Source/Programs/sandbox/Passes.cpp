@@ -118,19 +118,6 @@ VkImageUsageFlags DepthTargetUsage() noexcept {
          | MakeShadowTarget(VkExtent2D{}, VK_FORMAT_UNDEFINED).usage;
 }
 
-AttachmentFormats SceneAttachmentFormats(const SceneTargetDescs& targets) noexcept {
-    // The multisample colour and not the resolve: what a pipeline bakes is what it
-    // draws into, and the resolve is what leaves afterwards.
-    return AttachmentFormats{targets.color.format, targets.depth.format,
-                             targets.color.samples};
-}
-
-AttachmentFormats ShadowAttachmentFormats(const TextureDesc& map) noexcept {
-    // No colour, which shadow.frag settles by declaring no output. samples read off
-    // the map rather than left at the default -- one value, one source.
-    return AttachmentFormats{VK_FORMAT_UNDEFINED, map.format, map.samples};
-}
-
 bool CreateShadowPass(const VulkanDevice& dev, const Descriptors& descriptors,
                       const TextureDesc& mapDesc,
                       const Mesh& mesh, const ShaderProgram& program,
@@ -152,7 +139,7 @@ bool CreateShadowPass(const VulkanDevice& dev, const Descriptors& descriptors,
     // caller and only meet here; without this the images could be made from a format
     // the pipeline did not bake, and the first vkCmdBeginRendering would say so at
     // runtime instead of this saying so now.
-    if (!SameAttachmentFormats(ShadowAttachmentFormats(mapDesc),
+    if (!SameAttachmentFormats(AttachmentFormatsOf(nullptr, &mapDesc),
                                pipeline.desc.formats)) {
         LOG("[vk] the shadow map and its pipeline disagree about the formats\n");
         return false;
@@ -198,7 +185,7 @@ bool ResizeScenePass(const VulkanDevice& dev, const SceneTargetDescs& targets,
                      ScenePass* pass) noexcept {
     // A resize may change the extent and nothing else. The pipelines are not rebuilt,
     // so new descs carrying another format would leave them baked for the old one.
-    if (!SameAttachmentFormats(SceneAttachmentFormats(targets),
+    if (!SameAttachmentFormats(AttachmentFormatsOf(&targets.color, &targets.depth),
                                pass->pipeline->desc.formats)) {
         LOG("[vk] a resize changed the scene formats, which the pipelines baked\n");
         return false;
@@ -256,7 +243,8 @@ bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
     }
 
     // Both variants, because both draw into these same images.
-    const AttachmentFormats formats = SceneAttachmentFormats(targets);
+    const AttachmentFormats formats =
+        AttachmentFormatsOf(&targets.color, &targets.depth);
     if (!SameAttachmentFormats(formats, pipeline.desc.formats)
         || !SameAttachmentFormats(formats, wirePipeline.desc.formats)) {
         LOG("[vk] the scene targets and a scene pipeline disagree about the formats\n");

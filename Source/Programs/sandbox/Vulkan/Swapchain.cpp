@@ -82,10 +82,19 @@ bool QuerySurfaceExtent(const VulkanInstance& inst,
     return caps.currentExtent.width != 0 && caps.currentExtent.height != 0;
 }
 
-AttachmentFormats SwapchainAttachmentFormats(const Window& window) noexcept {
-    AttachmentFormats formats{};
-    formats.color = window.surfaceFormat.format;
-    return formats;   // depth UNDEFINED and one sample: the engine gives neither
+TextureDesc SwapchainTargetDesc(VkSurfaceFormatKHR format, VkExtent2D extent) noexcept {
+    // One sample and colour attachment only: a presentable image has no depth, cannot
+    // be multisampled, and nothing here samples one. Every field is the presentation
+    // engine's, which is what makes this the one target desc we do not decide.
+    return TextureDesc{extent, format.format, VK_SAMPLE_COUNT_1_BIT,
+                       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT};
+}
+
+TextureDesc SwapchainTargetDesc(const Window& window) noexcept {
+    // surfaceExtent and not a swapchain's: the pipelines that bake this are built
+    // before the first swapchain exists. The two agree because CreateSwapchain is
+    // handed that same extent.
+    return SwapchainTargetDesc(window.surfaceFormat, window.surfaceExtent);
 }
 
 bool SelectSurfaceFormat(const VulkanInstance& inst,
@@ -212,8 +221,7 @@ bool CreateSwapchain(const VulkanInstance& inst,
         // A queried image with a view of ours on it. The desc says what the image is,
         // and the post-process pipeline has to have been built for that same format.
         Texture& texture = sc.images[i].texture;
-        texture.desc = {sc.extent, surfaceFormat.format, VK_SAMPLE_COUNT_1_BIT,
-                        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT};
+        texture.desc = SwapchainTargetDesc(surfaceFormat, sc.extent);
         texture.image.dev = &dev;
         texture.image.handle = rawImages[i];   // no allocation: it is not ours
 

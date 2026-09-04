@@ -15,7 +15,7 @@
 // image does. The caller derives it from the descs it already wrote; nothing here
 // invents a value, so the images and the pipeline cannot come to disagree.
 
-#include "Vulkan/Instance.h"
+#include "Vulkan/Texture.h"
 
 // The contract between the images we create and the pipeline that draws into them.
 //
@@ -39,6 +39,21 @@ struct AttachmentFormats {
     // 1 would mean no MSAA, which the resolve path does not handle (Config.h).
     VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
 };
+
+// Output: the pipeline's view of the images a pass draws into
+//
+// **The one projection.** Either side may be absent -- a depth-only pass has no
+// colour, a swapchain image has no depth -- and UNDEFINED is what says so.
+//
+// It exists so that "what do I draw into" is answered once, from the descs, wherever
+// it is asked. Three functions used to do this, one per producer, and before them
+// main wrote the fields out by hand.
+//
+// Contract: when both are given their sample counts must match. One
+//           rasterizationSamples covers every attachment in a pass, so there is no
+//           pipeline that could honour two.
+AttachmentFormats AttachmentFormatsOf(const TextureDesc* color,
+                                      const TextureDesc* depth) noexcept;
 
 // The comparison the pass creations make: the descs they were handed, projected, and
 // what their pipeline actually baked. Nobody else can see both ends.
