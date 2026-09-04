@@ -10,6 +10,14 @@
 // business knowing.
 
 // 1 and 2 measured identical at 120Hz -- 90% of the frame is the acquire wait.
+//
+// **At 1 this whole axis is one element wide.** Seven things are sized by this number
+// -- the slot, the light, each pass's per-frame share, the gui's buffers -- and they
+// are paired by slot.index and by nothing else, so an index used wrongly cannot be
+// told from an index used rightly while there is only one. That is a measurement gap
+// and not a bug, and it was closed by measuring rather than by reasoning: built at 2,
+// the captured frame is byte-identical, sync validation says nothing, and the resize
+// and minimise cycle survives. Worth repeating whenever something new joins the axis.
 constexpr uint32_t kFramesInFlight = 1;
 
 // A different axis: frames-in-flight is how far the CPU runs ahead, this is how many
