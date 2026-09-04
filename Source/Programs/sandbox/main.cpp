@@ -954,7 +954,17 @@ int main() {
                          renderer.sceneWirePipeline,
                          renderer.shadowPass, renderer.guiPass,
                          &renderer.scenePass)) { return 1; }
-    if (!CreatePostProcessPass(renderer.descriptors, renderer.scenePass,
+    // The edge, as a value. Both readers of the scene's colour take it from here --
+    // the post pass and the capture at the bottom of the loop -- so there is one place
+    // that says where it lives instead of two walks to the same field.
+    //
+    // colorResolve and not color: a multisample image cannot be sampled, which is the
+    // consumer deciding what the producer has to make.
+    const Texture* sceneColor[kFramesInFlight]{};
+    for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+        sceneColor[i] = &renderer.scenePass.frames[i].colorResolve;
+    }
+    if (!CreatePostProcessPass(renderer.descriptors, sceneColor,
                                renderer.presentProgram, renderer.presentPipeline,
                                &renderer.postPass)) {
         return 1;
@@ -1223,7 +1233,7 @@ int main() {
         // the commands just sent, and ReadTexturePixels copies from it.
         if (capturePath != nullptr) {
             dev.table.vkDeviceWaitIdle(dev.handle);
-            const Texture& shot = renderer.scenePass.frames[slot.index].colorResolve;
+            const Texture& shot = *sceneColor[slot.index];
             std::vector<uint8_t> pixels;
             if (ReadTexturePixels(dev, commands, shot,
                                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, &pixels)

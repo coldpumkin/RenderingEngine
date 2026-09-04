@@ -122,9 +122,10 @@ struct Renderer {
     // dependency: scenePass's sets name shadowPass's depth maps, postPass reads what
     // scenePass wrote.
     //
-    // Both edges are walked as paths (shadow.frames[i].depth,
-    // source->frames[i].colorResolve) rather than named. There are two of them now,
-    // which is what the open trigger in CLAUDE.md was waiting for.
+    // One of the two edges is written down now: main hands postPass the images it
+    // reads, so this one is a value rather than a path. scenePass still walks to
+    // shadow.frames[i].depth, and gui's option buffer is a third that runs the other
+    // way -- which is the open trigger in CLAUDE.md.
     ShadowPass shadowPass;
     ScenePass scenePass;
     PostProcessPass postPass;

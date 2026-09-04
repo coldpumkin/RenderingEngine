@@ -242,10 +242,10 @@ bool CreateMaterials(const VulkanDevice& dev,
     return true;
 }
 
-bool CreatePostProcessPass(const Descriptors& descriptors, const ScenePass& source,
+bool CreatePostProcessPass(const Descriptors& descriptors,
+                           const Texture* const source[kFramesInFlight],
                            const ShaderProgram& program,
                            const Pipeline& pipeline, PostProcessPass* out) noexcept {
-    out->source = &source;
     out->program = &program;
     out->pipeline = &pipeline;
 
@@ -254,9 +254,11 @@ bool CreatePostProcessPass(const Descriptors& descriptors, const ScenePass& sour
         return false;
     }
 
+    // The pointer and the set that names it are written in the same step, so the two
+    // cannot come to disagree about which image frame i reads.
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
-        // The resolve, not color: a multisample image cannot be sampled.
-        const BindingValue values[] = {{source.frames[i].colorResolve.view.handle}};
+        out->source[i] = source[i];
+        const BindingValue values[] = {{source[i]->view.handle}};
         UpdateSet(descriptors, program.setLayouts[kFrameSet], out->sets[i], values, 1);
     }
     return true;
@@ -570,9 +572,9 @@ static void RecordPostProcessPass(const FrameSlot& slot, const PostProcessPass& 
     const Pipeline& pipeline = *post.pipeline;
     const VkPipelineLayout layout = post.program->layout;
 
-    // What the scene pass left behind. The set bound below names this same image,
-    // and both are picked by slot.index.
-    const Texture& source = post.source->frames[slot.index].colorResolve;
+    // Handed in rather than found: this pass does not know what drew it. The set
+    // bound below names this same image, both picked by slot.index.
+    const Texture& source = *post.source[slot.index];
     const Texture& dest = target;
     const VkExtent2D destExtent = dest.desc.extent;
 
@@ -667,11 +669,11 @@ bool RecordFrame(const FrameSlot& slot, const ShadowPass& shadow,
         return false;
     }
 
-    // The order is here, in these three lines, and nowhere else. post.source points
-    // at scene, but that is a dependency -- it would not stop these from being
-    // swapped.
-    // Shadow first, and the order is these lines. The scene pass's set already names
-    // the map; what it cannot say is that the map has been drawn this frame.
+    // The order is here, in these lines, and nowhere else. Both dependencies are
+    // written somewhere -- the scene's set names the shadow map, post.source names the
+    // images the scene resolves into -- and neither says anything about when. A set
+    // naming a map cannot say the map was drawn this frame; that is what these lines
+    // say, by being in this order.
     RecordShadowPass(slot, shadow, draws);
     RecordScenePass(slot, scene, draws,
                     SceneRasterOptions{GuiWireframe(gui), GuiDepthTest(gui),

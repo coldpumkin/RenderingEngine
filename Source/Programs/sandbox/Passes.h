@@ -443,26 +443,43 @@ bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
 // PostProcessPass - reads what the scene pass produced, writes the frame's target
 // ============================================================================
 //
-// source is a dependency, not an order. Holding the pointer does not stop anyone from
+// **It takes the images, not the pass that made them.** Everything this pass needs of
+// its input is what a Texture already says -- extent, format, one sample -- and none
+// of those three is the scene's to decide. A multisample image cannot be sampled, so
+// the resolve exists for this reader; the format has to mean what fullscreen.frag
+// assumes of it; and the extent it carries is the aspect the projection was built
+// from. The producer answers to the consumer here, which is the other way round from
+// how the two are named.
+//
+// Naming the edge as images is also what lets the caller write it down: main fills the
+// array, so the dependency is a value in one place instead of a path walked from in
+// here. That is as far as this goes -- what it does not yet do is compare the extent
+// it samples with the extent it draws into, which is a contract nothing states.
+//
+// A dependency, not an order. Holding these pointers does not stop anyone from
 // recording this pass first; the order is the two lines in RecordFrame and stays
 // there. Passes ordered by the CPU is the point -- there is no graph to walk.
 //
 // No attachments of its own: what it draws into arrives with the frame, sized by the
 // swapchain's image count rather than by frames in flight.
 struct PostProcessPass {
-    const ScenePass* source = nullptr;
+    // One per frame in flight. Non-owning: the scene pass owns these images.
+    const Texture* source[kFramesInFlight]{};
+
     const ShaderProgram* program = nullptr;   // the interface, shared. non-owning
     const Pipeline* pipeline = nullptr;       // the one variant. non-owning
 
-    // One per frame in flight, because each names that frame's colorResolve. Flat
-    // rather than a PerFrame like the scene pass, since a set is all there is.
+    // One per frame in flight, because each names the source above it. Flat rather
+    // than a PerFrame like the scene pass, since a set is all there is.
     VkDescriptorSet sets[kFramesInFlight]{};
 };
 
-// Effect: draws this pass's sets and points each at the matching frame of source
+// Effect: draws this pass's sets and points each at the matching source image
 //
-// Contract: source must already be created -- the sets name its colorResolve images.
-bool CreatePostProcessPass(const Descriptors& descriptors, const ScenePass& source,
+// Contract: source[i] is created and outlives this pass, and is 1-sample -- a
+//           multisample image cannot be bound to a sampler. Validation says so.
+bool CreatePostProcessPass(const Descriptors& descriptors,
+                           const Texture* const source[kFramesInFlight],
                            const ShaderProgram& program,
                            const Pipeline& pipeline, PostProcessPass* out) noexcept;
 
