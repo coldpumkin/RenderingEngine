@@ -372,10 +372,32 @@ void RefreshPostProcessPass(const Descriptors& descriptors,
 
 bool CreatePostProcessPass(const Descriptors& descriptors,
                            const Texture* const source[kFramesInFlight],
+                           const TextureDesc& target,
                            const ShaderProgram& program,
                            const Pipeline& pipeline, PostProcessPass* out) noexcept {
     out->program = &program;
     out->pipeline = &pipeline;
+    out->target = &target;
+
+    // What it writes, against what the pipeline baked -- the same comparison the other
+    // two passes make. It could not be made here until this pass was told what it
+    // writes; the pipeline was the only one holding an answer.
+    const TextureDesc* const targets[] = {&target};
+    if (!SameAttachmentFormats(AttachmentFormatsOf(targets, 1, nullptr),
+                               pipeline.formats)) {
+        LOG("[vk] the post pass's target and its pipeline disagree about the formats\n");
+        return false;
+    }
+
+    // What it reads. A sampler cannot take a multisample image, which is the whole
+    // reason the scene pass resolves; this was a Contract line and is a check now.
+    for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+        if (source[i]->desc.samples != VK_SAMPLE_COUNT_1_BIT) {
+            LOG("[vk] the post pass was given a %d-sample image to read\n",
+                static_cast<int>(source[i]->desc.samples));
+            return false;
+        }
+    }
 
     if (!AllocateSets(descriptors, program.setLayouts[kFrameSet], kFramesInFlight,
                       out->sets)) {

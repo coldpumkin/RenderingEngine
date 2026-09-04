@@ -727,11 +727,17 @@ bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
 // recording this pass first; the order is the two lines in RecordFrame and stays
 // there. Passes ordered by the CPU is the point -- there is no graph to walk.
 //
-// No attachments of its own: what it draws into arrives with the frame, sized by the
-// swapchain's image count rather than by frames in flight.
+// No attachments of its own: the image it draws into arrives with the frame, one of
+// however many the swapchain handed back rather than one per frame in flight. What it
+// can hold is the description of that image, which is the same for all of them.
 struct PostProcessPass {
     // One per frame in flight. Non-owning: the scene pass owns these images.
     const Texture* source[kFramesInFlight]{};
+
+    // What it writes, described the way the other passes' targets are. Non-owning, and
+    // **the format is the part that keeps**: the extent belongs to whichever image
+    // arrives, which is why RecordFrame reads it off that image and not off here.
+    const TextureDesc* target = nullptr;
 
     const ShaderProgram* program = nullptr;   // the interface, shared. non-owning
     const Pipeline* pipeline = nullptr;       // the one variant. non-owning
@@ -750,11 +756,15 @@ void RefreshPostProcessPass(const Descriptors& descriptors,
                             PostProcessPass* post) noexcept;
 
 // Effect: draws this pass's sets and points each at the matching source image
+// Output: false also means what it reads or what it writes disagrees with the
+//         pipeline -- the two checks the other passes make, which this one could not
+//         until it was told what it writes
 //
-// Contract: source[i] is created and outlives this pass, and is 1-sample -- a
-//           multisample image cannot be bound to a sampler. Validation says so.
+// Contract: source[i] is created and outlives this pass. That it is 1-sample is
+//           checked here now: a multisample image cannot be bound to a sampler.
 bool CreatePostProcessPass(const Descriptors& descriptors,
                            const Texture* const source[kFramesInFlight],
+                           const TextureDesc& target,
                            const ShaderProgram& program,
                            const Pipeline& pipeline, PostProcessPass* out) noexcept;
 

@@ -996,7 +996,7 @@ int main() {
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
         sceneColor[i] = &renderer.scenePass.frames[i].colorResolve;
     }
-    if (!CreatePostProcessPass(renderer.descriptors, sceneColor,
+    if (!CreatePostProcessPass(renderer.descriptors, sceneColor, swapchainTarget,
                                renderer.postProgram, renderer.postPipeline,
                                &renderer.postPass)) {
         return 1;
