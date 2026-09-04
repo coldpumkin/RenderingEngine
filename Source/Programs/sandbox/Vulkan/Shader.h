@@ -22,9 +22,11 @@ constexpr uint32_t kMaxSets = 2;
 // Ceilings we impose. Our two vertex types declare four and three attributes.
 constexpr uint32_t kMaxVertexAttributes = 8;
 
-// Fragment outputs. One today, and the number a G-buffer would need is the reason
-// this is not 1.
-constexpr uint32_t kMaxColorOutputs = 4;
+// A stage's outputs. For a fragment stage they are colour attachments; for a vertex
+// stage they are varyings on their way to the next one. The same slots either way --
+// what they mean is the stage's, not the slot's -- so one array and one ceiling.
+// scene.vert declares four varyings and a G-buffer fragment stage would write three.
+constexpr uint32_t kMaxOutputSlots = 8;
 
 // What kind of number a shader variable is made of, and what a resource format
 // converts to. Vulkan converts freely inside a kind -- R8G8B8A8_UNORM feeds a vec4 --
@@ -52,6 +54,17 @@ struct InterfaceSlot {
     uint32_t componentCount = 0;
 };
 
+// For messages. Here and not beside one of its callers, because both interface checks
+// print it and they live in different files.
+inline const char* KindName(NumericKind kind) noexcept {
+    switch (kind) {
+        case NumericKind::Float: return "float";
+        case NumericKind::Sint:  return "sint";
+        case NumericKind::Uint:  return "uint";
+        default:                 return "unknown";
+    }
+}
+
 // Output: what a resource format delivers to a shader. Unknown for anything not
 //         listed, which is a refusal rather than a guess -- add the format here when
 //         one is used.
@@ -71,13 +84,13 @@ struct ShaderInterface {
     // rather than assuming the two coincide.
     InterfaceSlot inputs[kMaxVertexAttributes]{};
 
-    // The other end of the same boundary, read the same way and kept the same way.
-    // The counts alone were enough while "how many colour attachments" was the only
-    // question anyone asked of a fragment stage; what each output is made of is the
-    // half that lets the check here be the mirror of the one on the inputs.
+    // What this stage writes, whatever that turns out to be for its stage: colour
+    // attachments from a fragment stage, varyings from a vertex one. Read for both
+    // now -- a vertex stage's outputs used to be skipped, which left the boundary
+    // between the two stages the only one nothing could see.
     uint32_t outputCount = 0;
     uint32_t maxOutputLocation = 0;
-    InterfaceSlot outputs[kMaxColorOutputs]{};
+    InterfaceSlot outputs[kMaxOutputSlots]{};
 
     uint32_t pushSize = 0;                    // 0 when the stage declares no block
     VkShaderStageFlags pushStages = 0;        // the stage itself, if it reads one

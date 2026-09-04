@@ -45,15 +45,6 @@ void SetRasterState(const VolkDeviceTable& vk, VkCommandBuffer cmd,
     vk.vkCmdSetRasterizerDiscardEnable(cmd, raster.rasterizerDiscard);
 }
 
-static const char* KindName(NumericKind kind) noexcept {
-    switch (kind) {
-        case NumericKind::Float: return "float";
-        case NumericKind::Sint:  return "sint";
-        case NumericKind::Uint:  return "uint";
-        default:                 return "unknown";
-    }
-}
-
 // Effect: checks what the shaders declare against what the resource actually supplies.
 //
 // The layout belongs to the vertex buffer, not to the shader: its stride, offsets and

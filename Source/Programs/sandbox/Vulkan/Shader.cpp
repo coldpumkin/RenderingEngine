@@ -57,6 +57,18 @@ InterfaceSlot SlotOf(const SpvReflectInterfaceVariable& v) noexcept {
     return {v.location, kind, components};
 }
 
+// Output: whether this variable sits at a location, which is what makes it part of an
+//         interface we can check
+//
+// built_in alone is not enough. glslc gives a vertex stage a gl_PerVertex output block
+// whose members are built-ins while **the block itself is not**, so it arrives with
+// built_in -1 and no Location decoration -- spirv-reflect reports that as UINT32_MAX.
+// Measured on fullscreen.vert: name empty, location 0xFFFFFFFF, built_in -1, and it
+// was counted as a second varying until this line existed.
+static bool HasLocation(const SpvReflectInterfaceVariable& v) noexcept {
+    return v.built_in == -1 && v.location != UINT32_MAX;
+}
+
 bool Reflect(const std::vector<uint32_t>& code, const char* path,
              ShaderInterface* out) noexcept {
     SpvReflectShaderModule module{};
@@ -74,7 +86,7 @@ bool Reflect(const std::vector<uint32_t>& code, const char* path,
     }
     for (const SpvReflectInterfaceVariable* v : inputs) {
         // gl_VertexIndex and friends carry no location and are not vertex attributes.
-        if (v->built_in != -1) { continue; }
+        if (!HasLocation(*v)) { continue; }
         if (out->inputCount >= kMaxVertexAttributes) {
             LOG("[vk] %s declares more than %u vertex inputs\n", path, kMaxVertexAttributes);
             spvReflectDestroyShaderModule(&module);
@@ -89,30 +101,20 @@ bool Reflect(const std::vector<uint32_t>& code, const char* path,
         if (v->location + 1 > out->maxInputLocation) { out->maxInputLocation = v->location + 1; }
     }
 
-    // Same enumeration on the other end of the boundary, and only for the stage where
-    // that end is an attachment.
-    //
-    // A vertex stage has outputs too -- scene.vert declares four -- but they are
-    // varyings bound for the next stage, the same SPIR-V storage class at a different
-    // boundary. The comment here used to say a vertex stage reports none, which was
-    // simply wrong; nothing read the number, so nothing said so. Checking those
-    // against the fragment stage inputs is a real question and a different one.
-    const bool writesAttachments =
-        module.shader_stage == SPV_REFLECT_SHADER_STAGE_FRAGMENT_BIT;
-
+    // The same enumeration on the other end, for every stage. What comes back is the
+    // same SPIR-V storage class in both cases; where it lands is the stage's business
+    // -- a fragment stage's outputs are attachments, a vertex stage's are varyings.
     uint32_t outputCount = 0;
-    if (writesAttachments) {
-        spvReflectEnumerateOutputVariables(&module, &outputCount, nullptr);
-    }
+    spvReflectEnumerateOutputVariables(&module, &outputCount, nullptr);
     std::vector<SpvReflectInterfaceVariable*> outputs(outputCount);
     if (outputCount != 0) {
         spvReflectEnumerateOutputVariables(&module, &outputCount, outputs.data());
     }
     for (const SpvReflectInterfaceVariable* v : outputs) {
-        // gl_FragDepth and friends carry no location and are not attachments.
-        if (v->built_in != -1) { continue; }
-        if (out->outputCount >= kMaxColorOutputs) {
-            LOG("[vk] %s writes more than %u colour outputs\n", path, kMaxColorOutputs);
+        // gl_Position, gl_FragDepth and the block they arrive in go to the hardware.
+        if (!HasLocation(*v)) { continue; }
+        if (out->outputCount >= kMaxOutputSlots) {
+            LOG("[vk] %s writes more than %u outputs\n", path, kMaxOutputSlots);
             spvReflectDestroyShaderModule(&module);
             return false;
         }
@@ -225,6 +227,64 @@ bool BuildSetLayout(const VulkanDevice& dev,
     return true;
 }
 
+// The one boundary with a shader at both ends
+// ----------------------------------------------------------------------------
+//
+// The other interface checks live at pipeline creation because each has a CPU-side
+// fact to compare against -- a VertexLayout, an AttachmentFormats. This one has none.
+// What a vertex stage writes and what a fragment stage reads are both declared in
+// SPIR-V and nothing on our side is party to it, so a check is the only thing that
+// can see it at all.
+//
+// Here rather than in Pipeline.cpp for the same reason: it is a fact about the pair,
+// not about a variant of the pair. The scene's two pipelines share one program and
+// would otherwise ask this twice.
+//
+// Locations must match one for one. A varying written and never read is legal Vulkan
+// and wasted interpolation; refusing it costs nothing here, since a stage that stops
+// reading something is a stage whose partner should stop writing it.
+static bool CheckStageInterface(const ShaderInterface& vs, const ShaderInterface& fs,
+                                const char* vertPath, const char* fragPath) noexcept {
+    if (vs.outputCount != fs.inputCount) {
+        LOG("[vk] %s writes %u varyings and %s reads %u\n",
+            vertPath, vs.outputCount, fragPath, fs.inputCount);
+        return false;
+    }
+
+    for (uint32_t i = 0; i < fs.inputCount; ++i) {
+        const InterfaceSlot& read = fs.inputs[i];
+
+        const InterfaceSlot* written = nullptr;
+        for (uint32_t j = 0; j < vs.outputCount; ++j) {
+            if (vs.outputs[j].location == read.location) {
+                written = &vs.outputs[j];
+                break;
+            }
+        }
+        if (written == nullptr) {
+            LOG("[vk] %s reads location %u, which %s does not write\n",
+                fragPath, read.location, vertPath);
+            return false;
+        }
+
+        // The kind and the width, the same two the other two checks compare. A vec3
+        // read as a vec4 leaves one component undefined and Vulkan does not say so.
+        if (written->kind != read.kind) {
+            LOG("[vk] location %u: %s writes %s, %s reads %s\n",
+                read.location, vertPath, KindName(written->kind),
+                fragPath, KindName(read.kind));
+            return false;
+        }
+        if (written->componentCount != read.componentCount) {
+            LOG("[vk] location %u: %s writes %u components, %s reads %u\n",
+                read.location, vertPath, written->componentCount,
+                fragPath, read.componentCount);
+            return false;
+        }
+    }
+    return true;
+}
+
 bool CreateShaderProgram(const VulkanDevice& dev,
                          const char* vertPath, const char* fragPath,
                          ShaderProgram* out) noexcept {
@@ -235,6 +295,11 @@ bool CreateShaderProgram(const VulkanDevice& dev,
     out->vert = LoadShader(dev, vertPath, &out->vertInterface);
     out->frag = LoadShader(dev, fragPath, &out->fragInterface);
     if (out->vert == VK_NULL_HANDLE || out->frag == VK_NULL_HANDLE) {
+        return false;
+    }
+
+    if (!CheckStageInterface(out->vertInterface, out->fragInterface,
+                             vertPath, fragPath)) {
         return false;
     }
 
