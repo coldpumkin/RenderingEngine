@@ -321,19 +321,6 @@ static bool LoadGltf(const char* path,
             // The third link in a chain that had two. CheckVertexInterface compares
             // the .spv against the layout and SameVertexLayout compares the layout
             // against the mesh; nothing compared the asset against either, so a file
-            // missing an attribute filled it with the zeroes resize left behind.
-            //
-            // A zero normal is not dark, it is undefined -- normalize() of it is NaN
-            // and the lighting goes wherever that lands. A zero tangent takes the
-            // whole TBN with it. Neither shows up as an error anywhere.
-            //
-            // Refused rather than computed. Flat normals from the index buffer are the
-            // right answer for a file without them, and glTF says so, but that code
-            // would never run here: this asset has all four. Something that cannot be
-            // run cannot be trusted, which is the same reason there is no 1x MSAA path.
-            // The third link in a chain that had two. CheckVertexInterface compares
-            // the .spv against the layout and SameVertexLayout compares the layout
-            // against the mesh; nothing compared the asset against either, so a file
             // missing an attribute filled it with the zeroes resize left behind, and
             // a zero normal is not dark -- normalize() of it is NaN.
             //
@@ -577,81 +564,39 @@ int main() {
     if (selection.gpu == VK_NULL_HANDLE) { return 1; }
 
     // Two questions the picked GPU answers alone -- no device, nothing to destroy.
-    // Formats, not images: the pipelines below need the answer, and securing a place
-    // to draw happens again on every resize, which makes it the loop's business.
-    // The scene pass's, and named for it. There are four attachment configurations
-    // in this file and this is one of them -- calling it "formats" read as though a
-    // program had one, which is what let the shadow pass reach into it below.
+    // Formats, not images: images are made again on every resize.
     //
-    // Of the three fields, only depth is an answer about the GPU rather than a choice
-    // about this pass: colour is our constant and the sample count is the scene's
-    // alone. That is why the shadow pass takes .depth out of here and nothing else,
-    // and why a second reader of it would be the reason to ask the device separately.
-    // The display first, and then what we draw into. The order is the direction the
-    // constraint runs: whatever these render targets are made of is worth nothing if
-    // the surface cannot present, and the surface is also where the one thing that
-    // decides whether the picture is right gets settled -- it must be sRGB, because
-    // that is the encode nobody else in the chain performs.
-    //
-    // The offscreen colour format does not follow from it. Attachments.cpp counts the
-    // chain out; the short version is that only the swapchain's format changes what
-    // reaches the screen, and the coupling between the two ends runs through the post
-    // pass rather than around it.
+    // The display first. Its format must be sRGB, the encode nobody else in the chain
+    // performs; the offscreen colour does not follow from it (Attachments.cpp).
     if (!SelectSurfaceFormat(inst, selection.gpu, &window)) { return 1; }
 
     // What we render into, and the lens each target answers to
     // ------------------------------------------------------------------------
     //
-    // Both halves of it, in one place. They used to sit 100 lines apart -- the formats
-    // here and the size down by the camera -- and the comment on the second half said
-    // so without doing anything about it. What the aspect is made of is the reason to
-    // keep them together: it comes out of this extent and goes into proj, so a render
-    // target and a projection are two ends of one decision.
+    // A target's shape and its lens together, because the aspect joins them: it comes
+    // out of an extent and goes into a projection.
+
+    // The render chain's colour, not the scene pass's -- every target in the chain is
+    // made of it. R8G8B8A8 because WriteBmp reads red first; SRGB so blending and the
+    // MSAA resolve happen in linear space. Not the swapchain's: only the swapchain's
+    // own format decides what reaches the screen (Attachments.cpp counts it out).
     //
-    // **The colour is the render chain's, not the scene pass's.** Every target in the
-    // chain is made of it, from what the scene draws into to whatever a post stage
-    // would write next, and it answers to two things:
-    //
-    //   R8G8B8A8   WriteBmp reads red first and swizzles nothing
-    //   SRGB       eight bits spent where the eye looks, and blending and the MSAA
-    //              resolve then happen in linear space, the hardware decoding first
-    //
-    // Not the swapchain's. Attachments.cpp counts that out: only the swapchain's own
-    // format decides what reaches the screen, so tying this to it would put the value
-    // under a subject with no claim on it.
-    //
-    // There is one claimant now because the chain is one link long. A post stage that
-    // tone-maps would be the stronger one and would want a float format -- which is
-    // exactly where it collides with the capture line above, and that collision is the
-    // work that has to happen before this can change.
+    // Tone mapping is what changes this -- it wants a float format, and the capture
+    // above refuses one.
     constexpr VkFormat kRenderColorFormat = VK_FORMAT_R8G8B8A8_SRGB;
 
-    // **A value, not a constant.** How big these targets are is a policy with more
-    // than one right answer, and Unreal keeps three of them behind a console variable
-    // (r.SceneRenderTargetResizeMethod: follow the requested size, fix to the screen,
-    // or grow and never shrink -- the trade it names is memory against allocation
-    // stalls, not correctness). Ours was the middle one, hard-coded, with no way to
-    // say the others.
-    //
-    // The panel picks between two of them now, so both are live: fixed leaves the
-    // picture letterboxed into whatever the window is, following remakes the targets
-    // and turns the letterbox into an identity. Neither is dead code while the switch
-    // can be clicked.
+    // A value, because how big these are is a policy. The panel switches between two:
+    // fixed, and following the window. Unreal keeps three behind
+    // r.SceneRenderTargetResizeMethod and calls the trade memory against allocation
+    // stalls.
     VkExtent2D renderExtent{kRenderWidth, kRenderHeight};
 
-    // The light's target. Square, and that is a contract rather than a preference:
-    // its projection below is an orthographic box with equal sides.
+    // Contract: square, because lightProj below is a box with equal sides.
     constexpr VkExtent2D kShadowExtent{kShadowResolution, kShadowResolution};
 
-    // Two viewpoints, two lenses, and **a lens sits with the target it answers to**.
-    // Neither belongs with the eye that moves: what a projection is made of is the
-    // shape of the image it lands on, plus numbers that never change.
-    //
-    //   proj       kFov / kNear / kFar   x  renderExtent's aspect
-    //   lightProj  kShadowRadius / Distance x kShadowExtent, which is 1:1
-    //
-    // aspect is the only part that moves, and only when the target is remade. The
-    // views these pair with are in the loop, where the input and the clock are.
+    // A lens sits with the target it lands on, not with the eye that moves. aspect is
+    // the only part that moves, and only when the target is remade; the views these
+    // pair with are in the loop, with the input and the clock.
     //
     // No proj[1][1] *= -1: the viewport height is already negative.
     // Depth lands in [0,1] thanks to GLM_FORCE_DEPTH_ZERO_TO_ONE on the CMake target.
@@ -660,20 +605,16 @@ int main() {
     glm::mat4 proj =
         glm::perspective(glm::radians(kFovDegrees), aspect, kNearPlane, kFarPlane);
 
-    // Orthographic because the light is directional: its rays are parallel, so there
-    // is no eye point to project from -- only a box, and the box is what decides how
-    // much world one shadow texel covers.
-    //
-    // It was rebuilt every frame until now, beside the light's view, which read as
-    // "the light moved so this changed". Nothing in it moves: every argument is a
-    // constant, and what it answers to is the map's shape.
+    // Orthographic because the light is directional: parallel rays have no eye point
+    // to project from, only a box, and the box decides how much world one texel covers.
+    // Every argument is a constant, so this is built once.
     const glm::mat4 lightProj =
         glm::ortho(-kShadowRadius, kShadowRadius, -kShadowRadius, kShadowRadius,
                    0.1f, kShadowDistance * 2.0f);
 
-    // Filled at the declaration, the way the shadow and swapchain formats are. What is
-    // left for the call is what a GPU has to answer: is that colour usable both ways,
-    // which depth format exists, and how many samples.
+    // color is filled here, the way the shadow and swapchain formats are. The call
+    // answers only what a GPU can: is that colour usable both ways, which depth format
+    // exists, how many samples.
     AttachmentFormats sceneFormats{.color = kRenderColorFormat};
     if (!ChooseAttachmentFormats(inst, selection.gpu, &sceneFormats)) { return 1; }
 
@@ -1018,9 +959,8 @@ int main() {
     // only knows which frame it is.
     // No formats here. Each pass reads them off its pipeline, which is the thing that
     // baked them in -- passing them again would only make a second value to disagree.
-    // Before the passes that read them, which is not a preference: the shadow pass is
-    // created first because the scene pass's sets name its maps, so a buffer owned by
-    // either would have to exist before its owner.
+    // Before the passes that read them: the shadow pass is created first, so a buffer
+    // owned by either pass would have to exist before its owner.
     if (!CreateFrameCameras(dev, renderer.cameras)) { return 1; }
     if (!CreateFrameLights(dev, renderer.lights)) { return 1; }
     if (!CreateFrameShadows(dev, renderer.shadows)) { return 1; }
@@ -1029,9 +969,7 @@ int main() {
                           renderer.mesh, renderer.shadowProgram,
                           renderer.shadowPipeline, renderer.shadows,
                           &renderer.shadowPass)) { return 1; }
-    // What the scene pass reads of the shadow pass, and the only thing it reads. The
-    // array is written here rather than found in there, so the requirement is in the
-    // signature instead of in the body -- the same trade sceneColor below makes.
+    // What the scene pass reads of the shadow pass, and the only thing it reads.
     const Texture* shadowMaps[kFramesInFlight]{};
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
         shadowMaps[i] = &renderer.shadowPass.frames[i].depth;
@@ -1042,12 +980,9 @@ int main() {
                          shadowMaps, renderer.cameras, renderer.lights,
                          renderer.shadows, renderer.guiPass,
                          &renderer.scenePass)) { return 1; }
-    // The edge, as a value. Both readers of the scene's colour take it from here --
-    // the post pass and the capture at the bottom of the loop -- so there is one place
-    // that says where it lives instead of two walks to the same field.
-    //
-    // colorResolve and not color: a multisample image cannot be sampled, which is the
-    // consumer deciding what the producer has to make.
+    // Both readers of the scene's colour take it from here -- the post pass and the
+    // capture at the bottom of the loop. colorResolve and not color: a multisample
+    // image cannot be sampled.
     const Texture* sceneColor[kFramesInFlight]{};
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
         sceneColor[i] = &renderer.scenePass.frames[i].colorResolve;
@@ -1069,39 +1004,25 @@ int main() {
     // ------------------------------------------------------------------------
     //
     // Everything the loop carries across frames. Not a struct: only lookAt reads the
-    // camera values, so grouping would enforce nothing. Split them once something
-    // else reads them -- frustum culling, a light's viewpoint, a shadow pass.
+    // camera values, so grouping would enforce nothing.
     uint32_t slotIndex = 0;       // which slot this frame borrows
     double lastTime = glfwGetTime();
 
-    // What the item order costs in state changes. Logged once, because it is a number
-    // to compare between runs -- and kept, because the panel shows it every frame.
-    //
-    // Outside the loop for that second reason: the panel is built before RecordFrame
-    // fills this, so what it displays is the last frame's. The list does not change
-    // between frames, which is what makes that honest rather than merely stale.
+    // What the item order costs in state changes. Outside the loop because the panel
+    // is built before RecordFrame fills it, so what it shows is the last frame's --
+    // honest only because the list does not change between frames.
     DrawStats drawStats;
     bool loggedDrawStats = false;
 
     // Set it to a path and the first frame is written there and the program exits.
-    // An environment variable for the reason LAMBDA_FIXED_TIME is one: what a capture
-    // wants and what a person running this wants are opposite.
-    //
-    // Implies fixed time -- a capture of a moving light is not comparable to anything.
+    // Implies fixed time -- a capture of a moving light compares against nothing.
     const char* const capturePath = std::getenv("LAMBDA_CAPTURE");
 
-    // Deterministic capture.
+    // The light is the only thing here that reads absolute time, so two runs never
+    // draw the same picture unless this stops it. Environment variables rather than
+    // Config constants: a capture and a person running this want opposite values.
     //
-    // The light is the only thing here that reads absolute time, and it turns every
-    // frame -- so two runs never draw the same picture, and two screenshots cannot be
-    // told apart from what the code changed. With LAMBDA_FIXED_TIME set, it stops.
-    //
-    // An environment variable rather than a Config constant: what a capture wants and
-    // what a person running it wants are opposite, and a constant would have to be
-    // edited between them.
-    //
-    // Read once. getenv per frame would be a lookup for a value that cannot change.
-    // dt still comes from the real clock, or the camera would stop answering keys.
+    // Read once, and dt still comes from the real clock or the camera stops answering.
     const bool fixedTime =
         std::getenv("LAMBDA_FIXED_TIME") != nullptr || capturePath != nullptr;
     constexpr float kFixedTime = 1.0f;   // any constant. 1.0 puts the light off-axis
@@ -1216,20 +1137,12 @@ int main() {
         // Fill this frame's share of the pass
         //
         // Assignment only, so it belongs up here: what reaches the GPU, and when, is
-        // RecordFrame's. The camera and light go to the pass because every draw in it
-        // reads them. The item list is handed in as an argument instead -- it is this
-        // frame's alone and no pass owns it.
-        //
-        // Through slot.index, not slotIndex: recording picks the pass's frame that way
-        // too, and one of the two would otherwise have to be kept in step by hand.
+        // RecordFrame's. Through slot.index and not slotIndex: recording picks the
+        // pass's frame the same way.
         FrameSlot& slot = renderer.slots[slotIndex];
 
-        // Two writes where the light used to be one. What reaches a surface and where
-        // its shadow map was drawn from are different answers, and only the second is
-        // a viewpoint -- which is a fact about shadow mapping rather than about light.
-        //
-        // The camera waits until after the acquire below: its matrix carries proj, and
-        // proj is what a resize changes.
+        // What reaches a surface, and where its shadow map was drawn from. The camera
+        // waits until after the acquire: its matrix carries proj, which a resize changes.
         renderer.lights[slot.index].value =
             {glm::vec4{lightDir, 0.0f}, glm::vec4{1.0f, 0.95f, 0.9f, 0.15f}};
         renderer.shadows[slot.index].value = {lightViewProj};
@@ -1248,14 +1161,10 @@ int main() {
         // What we render into, if the policy says it should be something else
         // --------------------------------------------------------------------
         //
-        // Here and not before the acquire, because this is where the window's size is
-        // known: it is the extent of the image that came back.
+        // After the acquire, because that is where the window's size is known.
         //
-        // vkDeviceWaitIdle and not a fence. The fence in BeginFrame says this slot is
-        // free; these images belong to every slot, and nothing here knows which of the
-        // others is still reading one. A resize is not a per-frame path, so the stall
-        // is paid where it is cheap -- which is also the cost Unreal names for its
-        // default method.
+        // vkDeviceWaitIdle and not a fence: BeginFrame's fence covers this slot, and
+        // these images belong to every slot.
         const VkExtent2D windowExtent = target.texture->desc.extent;
         const VkExtent2D wanted = GuiRenderFollowsWindow(renderer.guiPass)
                                 ? windowExtent
@@ -1266,9 +1175,7 @@ int main() {
 
             if (!ResizeScenePass(dev, wanted, &renderer.scenePass)) { break; }
 
-            // The sets that name what was just destroyed. The scene's own do not --
-            // they name a camera, a light, a shadow map and the panel's buffer, none
-            // of which a size touches.
+            // The only sets that name what was just destroyed.
             RefreshPostProcessPass(renderer.descriptors, &renderer.postPass);
 
             renderExtent = wanted;
@@ -1279,8 +1186,7 @@ int main() {
             LOG("[render] targets now %ux%u\n", renderExtent.width, renderExtent.height);
         }
 
-        // After the resize, so it carries this frame's proj rather than the last
-        // frame's. The other half of what a pass reads, beside the light above.
+        // After the resize, so it carries this frame's proj.
         renderer.cameras[slot.index].value = {proj * view, glm::vec4{eye, 0.0f}};
 
         // Everything from here breaks instead of continuing. The acquire already
@@ -1359,15 +1265,10 @@ int main() {
             dev.table.vkDeviceWaitIdle(dev.handle);
             const Texture& shot = *sceneColor[slot.index];
 
-            // Contract: WriteBmp reads red first. ReadTexturePixels hands back the
-            //           image's own channel order and accepts BGRA as readily as
-            //           RGBA, so the two agree only while the render chain's colour
-            //           is red-first -- and until this line, nothing said so.
-            //
-            // Refused rather than swizzled. A swizzle would be a branch this machine
-            // never takes, and the capture is the one instrument here that is trusted
-            // to the byte; it has to fail loudly rather than quietly hand back an
-            // image with two channels swapped.
+            // Contract: WriteBmp reads red first, and ReadTexturePixels hands back the
+            //           image's own channel order -- BGRA included. Refused rather
+            //           than swizzled: a swizzle would be a branch this machine never
+            //           takes.
             if (shot.desc.format != VK_FORMAT_R8G8B8A8_SRGB
                     && shot.desc.format != VK_FORMAT_R8G8B8A8_UNORM) {
                 LOG("[capture] format %d is not red-first; BMP would swap R and B\n",
