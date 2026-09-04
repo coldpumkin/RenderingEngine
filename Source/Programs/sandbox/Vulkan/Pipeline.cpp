@@ -136,7 +136,7 @@ static bool CheckVertexInterface(const GraphicsPipelineDesc& desc,
 // The other end of the same boundary, checked the same way. Until this existed,
 // colorAttachmentCount was written as 1 and no shader was ever asked how many it
 // writes.
-static bool CheckOutputInterface(const GraphicsPipelineDesc& desc,
+static bool CheckOutputInterface(const AttachmentFormats& formats,
                                  const ShaderInterface& fs,
                                  const char* fragPath) noexcept {
     if (fs.outputCount != fs.maxOutputLocation) {
@@ -144,24 +144,14 @@ static bool CheckOutputInterface(const GraphicsPipelineDesc& desc,
             fragPath, fs.outputCount, fs.maxOutputLocation);
         return false;
     }
-    // AttachmentFormats carries one colour format, so it can answer for at most one
-    // output. The ceiling says so here rather than as a 1 written into the create
-    // info: a G-buffer shader stops on this line instead of drawing into one
-    // attachment and silently losing the rest.
-    if (fs.outputCount > 1) {
-        LOG("[vk] %s writes %u colour outputs; AttachmentFormats describes one\n",
-            fragPath, fs.outputCount);
-        return false;
-    }
 
     // Zero is a real answer, not a missing one: a depth-only pass writes no colour and
     // its whole product is the depth image. So the question is not how many outputs
-    // there are, it is whether the two sides agree -- a format with nothing to write
+    // there are, it is whether the two sides agree -- a target with nothing to write
     // it is as wrong as an output with nowhere to go.
-    const bool hasColorFormat = desc.formats.color != VK_FORMAT_UNDEFINED;
-    if ((fs.outputCount == 1) != hasColorFormat) {
-        LOG("[vk] %s writes %u colour outputs and was given %s colour format\n",
-            fragPath, fs.outputCount, hasColorFormat ? "a" : "no");
+    if (fs.outputCount != formats.colorCount) {
+        LOG("[vk] %s writes %u colour outputs and was given %u colour targets\n",
+            fragPath, fs.outputCount, formats.colorCount);
         return false;
     }
 
@@ -171,10 +161,13 @@ static bool CheckOutputInterface(const GraphicsPipelineDesc& desc,
     for (uint32_t i = 0; i < fs.outputCount; ++i) {
         const InterfaceSlot& slot = fs.outputs[i];
 
-        const NumericKind written = KindOfFormat(desc.formats.color);
+        // Indexed by location, because that is what a shader writes to. The gap check
+        // above is what makes the index and the location the same number.
+        const VkFormat target = formats.color[slot.location];
+        const NumericKind written = KindOfFormat(target);
         if (written == NumericKind::Unknown) {
             LOG("[vk] %s: the colour format %d is one KindOfFormat does not know\n",
-                fragPath, desc.formats.color);
+                fragPath, static_cast<int>(target));
             return false;
         }
         if (written != slot.kind) {
@@ -196,7 +189,7 @@ static bool CheckOutputInterface(const GraphicsPipelineDesc& desc,
     // Neither colour nor depth is a pipeline that draws nowhere. Vulkan permits it --
     // it is how a shader that only writes storage images is built -- and we have no
     // such thing, so it is a mistake here.
-    if (fs.outputCount == 0 && desc.formats.depth == VK_FORMAT_UNDEFINED) {
+    if (fs.outputCount == 0 && formats.depth == VK_FORMAT_UNDEFINED) {
         LOG("[vk] %s writes no colour, and no depth format was given either\n", fragPath);
         return false;
     }
@@ -219,15 +212,25 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     Pipeline& pipeline = *out;
     pipeline.dev = &dev;
     pipeline.program = &program;
-    pipeline.desc = desc;   // what it was built from, for recording and for a rebuild
 
     // The shaders, their set layouts and their pipeline layout are the program's --
     // several pipelines share one. Only the state below is this variant's.
     //
     // A rebuild reaches here with all of that already made, which is why the rebuild
     // does not strand the sets allocated from those layouts.
+    // The descs handed in, reduced to what compiling actually needs. Everything below
+    // reads this, and it is what the Pipeline keeps.
+    const AttachmentFormats formats =
+        AttachmentFormatsOf(desc.color, desc.colorCount, desc.depth);
+
+    // What it was built from, kept. The target pointers are not: their projection is.
+    pipeline.vertexLayout = desc.vertexLayout;
+    pipeline.formats = formats;
+    pipeline.polygonMode = desc.polygonMode;
+    pipeline.blending = desc.blending;
+
     if (!CheckVertexInterface(desc, program.vertInterface, program.vertPath)
-            || !CheckOutputInterface(desc, program.fragInterface, program.fragPath)) {
+            || !CheckOutputInterface(formats, program.fragInterface, program.fragPath)) {
         return false;
     }
 
@@ -357,7 +360,7 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
         VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
     // sampleShadingEnable stays off: the aliasing we see is on edges, which the
     // rasterizer already handles. Shimmering textures would make the case for it.
-    multisample.rasterizationSamples = desc.formats.samples;
+    multisample.rasterizationSamples = formats.samples;
 
     // One value, two states. Keeping them apart would let them disagree.
     const bool translucent = desc.blending == Blending::Translucent;
@@ -377,15 +380,21 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     blendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
     blendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
 
-    // One state per colour attachment, so this is the same count as below and comes
-    // from the same place. Zero leaves pAttachments unread.
+    // One state per colour attachment, and Vulkan reads that many -- the same state
+    // for each, because blending is the pipeline's answer rather than a target's.
+    // Zero leaves pAttachments unread.
+    VkPipelineColorBlendAttachmentState blendAttachments[kMaxColorTargets];
+    for (uint32_t i = 0; i < formats.colorCount; ++i) {
+        blendAttachments[i] = blendAttachment;
+    }
+
     VkPipelineColorBlendStateCreateInfo colorBlend{
         VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-    colorBlend.attachmentCount = program.fragInterface.outputCount;
-    colorBlend.pAttachments = &blendAttachment;
+    colorBlend.attachmentCount = formats.colorCount;
+    colorBlend.pAttachments = blendAttachments;
 
     // depthFormat decides whether this state exists at all, further down.
-    const bool useDepth = desc.formats.depth != VK_FORMAT_UNDEFINED;
+    const bool useDepth = formats.depth != VK_FORMAT_UNDEFINED;
     VkPipelineDepthStencilStateCreateInfo depthStencil{
         VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
     // All three ignored: they are dynamic, and SetRasterState issues them. Filled in
@@ -401,12 +410,12 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
 
     VkPipelineRenderingCreateInfo pipelineRendering{
         VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-    // From the shader, not from here. CheckOutputInterface already refused anything
-    // AttachmentFormats cannot answer for, so this is one or none -- said by the .spv.
-    pipelineRendering.colorAttachmentCount = program.fragInterface.outputCount;
+    // CheckOutputInterface already made these the same number, which is why either
+    // side can be read here.
+    pipelineRendering.colorAttachmentCount = formats.colorCount;
     pipelineRendering.pColorAttachmentFormats =
-        pipelineRendering.colorAttachmentCount != 0 ? &desc.formats.color : nullptr;
-    pipelineRendering.depthAttachmentFormat = desc.formats.depth;   // UNDEFINED = no depth
+        formats.colorCount != 0 ? formats.color : nullptr;
+    pipelineRendering.depthAttachmentFormat = formats.depth;   // UNDEFINED = no depth
 
     // --- Assemble and compile -----------------------------------------------
 

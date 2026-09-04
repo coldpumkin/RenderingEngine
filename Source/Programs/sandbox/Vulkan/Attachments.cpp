@@ -23,21 +23,48 @@
 // The caller fills it now and this function answers only what the GPU can: whether
 // that format works, which depth format exists, and how many samples.
 
-AttachmentFormats AttachmentFormatsOf(const TextureDesc* color,
+AttachmentFormats AttachmentFormatsOf(const TextureDesc* const color[],
+                                      uint32_t colorCount,
                                       const TextureDesc* depth) noexcept {
     AttachmentFormats formats{};
-    if (color != nullptr) { formats.color = color->format; }
-    if (depth != nullptr) { formats.depth = depth->format; }
-
-    // From whichever is there. A pass with neither draws nothing and never reaches a
-    // pipeline; the default of one sample stands for it.
-    const TextureDesc* any = color != nullptr ? color : depth;
-    if (any != nullptr) { formats.samples = any->samples; }
-
-    if (color != nullptr && depth != nullptr && color->samples != depth->samples) {
-        LOG("[vk] a pass was described with %d-sample colour and %d-sample depth\n",
-            static_cast<int>(color->samples), static_cast<int>(depth->samples));
+    if (colorCount > kMaxColorTargets) {
+        LOG("[vk] %u colour targets asked for; %u is the ceiling\n",
+            colorCount, kMaxColorTargets);
+        colorCount = kMaxColorTargets;
     }
+
+    // The first desc given decides samples, and every other one is compared to it.
+    // A pass with no targets at all never reaches a pipeline, so the default stands.
+    const TextureDesc* first = nullptr;
+
+    for (uint32_t i = 0; i < colorCount; ++i) {
+        // A count without a desc under it. Left UNDEFINED rather than skipped, so the
+        // count still says what the caller meant and CheckOutputInterface refuses the
+        // slot for a format it cannot name.
+        if (color[i] == nullptr) {
+            LOG("[vk] colour target %u of %u was not given a desc\n", i, colorCount);
+            continue;
+        }
+        formats.color[i] = color[i]->format;
+        if (first == nullptr) { first = color[i]; }
+        else if (color[i]->samples != first->samples) {
+            LOG("[vk] colour target %u is %d-sample where the first is %d-sample\n",
+                i, static_cast<int>(color[i]->samples),
+                static_cast<int>(first->samples));
+        }
+    }
+    formats.colorCount = colorCount;
+
+    if (depth != nullptr) {
+        formats.depth = depth->format;
+        if (first == nullptr) { first = depth; }
+        else if (depth->samples != first->samples) {
+            LOG("[vk] the depth target is %d-sample where the colour is %d-sample\n",
+                static_cast<int>(depth->samples), static_cast<int>(first->samples));
+        }
+    }
+
+    if (first != nullptr) { formats.samples = first->samples; }
     return formats;
 }
 

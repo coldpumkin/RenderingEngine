@@ -159,9 +159,18 @@ struct GraphicsPipelineDesc {
     // gl_VertexIndex.
     VertexLayout vertexLayout;
 
-    // The same values the attachments were made from -- dynamic rendering bakes them
-    // in, so a mismatch is caught at vkCmdBeginRendering. depth UNDEFINED = no depth.
-    AttachmentFormats formats;
+    // What it draws into, as the descriptions the images are made from -- one type
+    // says what a target is, and this points at it rather than restating any of it.
+    //
+    // Pointers, and read during creation only: Pipeline keeps the projection instead.
+    // A resize remakes these descs at a new extent (ResizeScenePass) and rebuilds no
+    // pipeline, so what is kept has to be the part that does not move.
+    //
+    // colorCount 0 is a depth-only pass, depth null is a pass with no depth. The
+    // fragment stage has the final say on the colour count and is checked against it.
+    const TextureDesc* color[kMaxColorTargets]{};
+    uint32_t colorCount = 0;
+    const TextureDesc* depth = nullptr;
 
 
     // FILL is the only value anything passes right now. LINE needs the device's
@@ -184,14 +193,16 @@ struct Pipeline {
 
     VkPipeline handle = VK_NULL_HANDLE;
 
-    // What it was built from, and the only copy of it. A pass makes its attachments
-    // from formats, and a rebuild needs the rest.
+    // What it was compiled against, and the whole of what a later check can ask about
+    // it. Not the desc it came from: that points at TextureDescs whose extents move.
     //
-    // Keeping it here is what lets those callers stop carrying their own: an
-    // AttachmentFormats beside a pipeline is a second value that can disagree with
-    // what the pipeline actually baked, and there is no way to check one against the
-    // other after the fact.
-    GraphicsPipelineDesc desc;
+    // Keeping them here is what lets callers stop carrying their own -- a copy beside
+    // a pipeline is a second value that can disagree with what was baked, and after
+    // the fact there is nothing to check it against.
+    VertexLayout vertexLayout;
+    AttachmentFormats formats;
+    VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL;
+    Blending blending = Blending::Opaque;
 
     Pipeline() = default;
     ~Pipeline();
@@ -200,9 +211,8 @@ struct Pipeline {
 };
 
 // Effect: destroys the compiled object and leaves the struct empty. The layout and
-//         set layouts are the program's and are not touched -- that is what lets a
-//         rebuild keep every set already allocated. The destructor calls this; main
-//         calls it directly to rebuild in place when the surface format changes.
+//         set layouts are the program's and are not touched, so a rebuild would keep
+//         every set already allocated. Only the destructor calls this today.
 //
 // Contract: every command buffer using this pipeline must have finished, so the
 //           caller calls vkDeviceWaitIdle - one frame's fence is not enough.

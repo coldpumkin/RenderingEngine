@@ -130,7 +130,7 @@ bool CreateShadowPass(const VulkanDevice& dev, const Descriptors& descriptors,
     // The same comparison the scene pass makes, because both pipelines are built from
     // the same layout now. What differs between them is which locations their vertex
     // stages read, and that is the .spv's business rather than this one's.
-    if (!SameVertexLayout(mesh.desc.vertexLayout, pipeline.desc.vertexLayout)) {
+    if (!SameVertexLayout(mesh.desc.vertexLayout, pipeline.vertexLayout)) {
         LOG("[vk] the mesh and the shadow pipeline disagree about the vertex layout\n");
         return false;
     }
@@ -139,8 +139,8 @@ bool CreateShadowPass(const VulkanDevice& dev, const Descriptors& descriptors,
     // caller and only meet here; without this the images could be made from a format
     // the pipeline did not bake, and the first vkCmdBeginRendering would say so at
     // runtime instead of this saying so now.
-    if (!SameAttachmentFormats(AttachmentFormatsOf(nullptr, &mapDesc),
-                               pipeline.desc.formats)) {
+    if (!SameAttachmentFormats(AttachmentFormatsOf(nullptr, 0, &mapDesc),
+                               pipeline.formats)) {
         LOG("[vk] the shadow map and its pipeline disagree about the formats\n");
         return false;
     }
@@ -185,8 +185,9 @@ bool ResizeScenePass(const VulkanDevice& dev, const SceneTargetDescs& targets,
                      ScenePass* pass) noexcept {
     // A resize may change the extent and nothing else. The pipelines are not rebuilt,
     // so new descs carrying another format would leave them baked for the old one.
-    if (!SameAttachmentFormats(AttachmentFormatsOf(&targets.color, &targets.depth),
-                               pass->pipeline->desc.formats)) {
+    const TextureDesc* const resized[] = {&targets.color};
+    if (!SameAttachmentFormats(AttachmentFormatsOf(resized, 1, &targets.depth),
+                               pass->pipeline->formats)) {
         LOG("[vk] a resize changed the scene formats, which the pipelines baked\n");
         return false;
     }
@@ -237,16 +238,16 @@ bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
     // The bytes were written as one thing and are read as another unless these agree.
     // Nobody else looks: the pipeline checked its layout against the shader, the mesh
     // wrote its own, and the two only meet here.
-    if (!SameVertexLayout(mesh.desc.vertexLayout, pipeline.desc.vertexLayout)) {
+    if (!SameVertexLayout(mesh.desc.vertexLayout, pipeline.vertexLayout)) {
         LOG("[vk] the mesh and this pass's pipeline disagree about the vertex layout\n");
         return false;
     }
 
     // Both variants, because both draw into these same images.
-    const AttachmentFormats formats =
-        AttachmentFormatsOf(&targets.color, &targets.depth);
-    if (!SameAttachmentFormats(formats, pipeline.desc.formats)
-        || !SameAttachmentFormats(formats, wirePipeline.desc.formats)) {
+    const TextureDesc* const sceneColor[] = {&targets.color};
+    const AttachmentFormats formats = AttachmentFormatsOf(sceneColor, 1, &targets.depth);
+    if (!SameAttachmentFormats(formats, pipeline.formats)
+        || !SameAttachmentFormats(formats, wirePipeline.formats)) {
         LOG("[vk] the scene targets and a scene pipeline disagree about the formats\n");
         return false;
     }

@@ -96,13 +96,12 @@ void ShowSetLayouts(const char* name, const ShaderProgram* program) noexcept {
 // baked without reading the call that made it.
 void ShowPipeline(const char* name, const Pipeline* pipeline) noexcept {
     if (pipeline == nullptr) { return; }
-    const GraphicsPipelineDesc& d = pipeline->desc;
     // No viewport orientation here any more: it is not baked, it is set once per
     // pass at record time. What a pipeline holds is what a pipeline decides.
     ImGui::Text("%-8s %-11s  %ux",
                 name,
-                d.blending == Blending::Opaque ? "opaque" : "translucent",
-                static_cast<uint32_t>(d.formats.samples));
+                pipeline->blending == Blending::Opaque ? "opaque" : "translucent",
+                static_cast<uint32_t>(pipeline->formats.samples));
     const char* frag = pipeline->program != nullptr ? pipeline->program->fragPath : nullptr;
     ImGui::Text("         %s", frag != nullptr ? frag : "-");
 }
