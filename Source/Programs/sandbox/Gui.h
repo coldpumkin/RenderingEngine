@@ -86,12 +86,6 @@ struct ViewOptions {
     // console variable** (r.SceneRenderTargetResizeMethod: follow, fixed, grow), so
     // the switch is here for the reason the lighting switches are -- a thing is easier
     // to understand next to its own absence.
-    //
-    // Off, the picture is a fixed 1280x720 letterboxed into whatever the window is,
-    // and LetterboxInto earns its keep. On, the targets are remade at the window's
-    // size, the letterbox becomes an identity, and the remake path runs instead.
-    // Neither is dead while this can be clicked.
-    bool renderFollowsWindow = false;
 
     // Off, the depth test stops hiding anything and the draw order becomes visible:
     // what is on screen is whatever was recorded last. That is the order main sorted
@@ -301,7 +295,6 @@ constexpr VkDeviceSize kGuiOptionsSize = sizeof(ViewOptionsUniform);
 // GuiOptionsBuffer is one: what the pass needs is an answer, and these are the whole
 // of what it may know about the panel.
 bool GuiWireframe(const Gui& gui) noexcept;
-bool GuiRenderFollowsWindow(const Gui& gui) noexcept;
 bool GuiDepthTest(const Gui& gui) noexcept;
 bool GuiDepthWrite(const Gui& gui) noexcept;
 bool GuiRasterizerDiscard(const Gui& gui) noexcept;

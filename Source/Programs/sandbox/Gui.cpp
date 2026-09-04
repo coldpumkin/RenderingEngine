@@ -231,10 +231,6 @@ bool GuiWireframe(const Gui& gui) noexcept {
     return gui.options.wireframe;
 }
 
-bool GuiRenderFollowsWindow(const Gui& gui) noexcept {
-    return gui.options.renderFollowsWindow;
-}
-
 bool GuiDepthTest(const Gui& gui) noexcept {
     return gui.options.depthTest;
 }
@@ -302,11 +298,6 @@ void BuildGui(Gui* gui, const GuiFrameInfo& info) noexcept {
         // wireframe is the odd one here: polygonMode is compiled in, so it selects
         // between two pipelines. Everything else on this list is dynamic state and
         // costs one command in the pass that sets it.
-        // Not a raster state at all -- it decides how big the images the scene draws
-        // into are. Here because it is the same kind of switch: a policy with more
-        // than one right answer, put next to its alternative so both can be seen.
-        ImGui::Checkbox("target follows window", &options->renderFollowsWindow);
-
         ImGui::Checkbox("wireframe", &options->wireframe);
         ImGui::Checkbox("depth test", &options->depthTest);
         ImGui::Checkbox("depth write", &options->depthWrite);

@@ -24,9 +24,21 @@ constexpr uint32_t kFramesInFlight = 1;
 // images rotate. 3 because a busy GPU misses vsync with 2 (Vulkan-Samples).
 constexpr uint32_t kDesiredSwapchainImages = 3;
 
-// Independent of the window. Fixed: following it adds a rebuild path for the targets.
+// Independent of the window, and how independent is the line below.
 constexpr uint32_t kRenderWidth = 1280;
 constexpr uint32_t kRenderHeight = 720;
+
+// Whether the render targets take the window's size instead.
+//
+//   false  the targets stay kRenderWidth x kRenderHeight and LetterboxInto fits the
+//          picture into whatever the window is
+//   true   the targets are remade on every resize and the letterbox is an identity
+//
+// A panel switch until 09-05, which bought exactly one thing: both paths reachable.
+// A constant buys that too, by rebuilding -- the way kFramesInFlight above is
+// verified -- and it stops a convenience feature from deciding how big a render
+// target is. Nothing but the renderer has a claim on that.
+constexpr bool kRenderFollowsWindow = false;
 
 // The shadow map, square because the light's ortho box is. Independent of the render
 // resolution: what decides it is how much world one texel covers, not how many pixels

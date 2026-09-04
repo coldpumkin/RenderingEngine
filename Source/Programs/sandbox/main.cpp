@@ -546,13 +546,12 @@ static bool LoadTextureFile(const VulkanDevice& dev, const Commands& commands,
     return uploaded;
 }
 
-// Output: how big the render targets should be under the panel's policy
+// Output: how big the render targets should be under kRenderFollowsWindow
 //
-// One place, because the fixed answer was written at startup and again in the loop,
-// and two literals of one policy drift.
-static VkExtent2D DesiredRenderExtent(const Window& window, bool followWindow) noexcept {
-    return followWindow ? window.surfaceExtent
-                        : VkExtent2D{kRenderWidth, kRenderHeight};
+// One place, because startup and the loop both ask and two copies of one policy drift.
+static VkExtent2D DesiredRenderExtent(const Window& window) noexcept {
+    return kRenderFollowsWindow ? window.surfaceExtent
+                                : VkExtent2D{kRenderWidth, kRenderHeight};
 }
 
 int main() {
@@ -669,13 +668,10 @@ int main() {
     // R8G8B8A8 because WriteBmp reads red first; SRGB so blending and the MSAA
     // resolve run in linear space.
     //
-    // renderExtent is a policy, switched in the panel between fixed and following the
-    // window. The same call the loop makes, so the first frame is already right.
-    //
-    // Contract: kShadowExtent is square, because lightProj is a box with equal sides.
+    // renderExtent is a policy, and Config.h holds which way it goes. A value rather
+    // than a constant because the loop remakes it when the window moves under it.
     constexpr VkFormat   kRenderColorFormat = VK_FORMAT_R8G8B8A8_SRGB;
-    VkExtent2D           renderExtent =
-        DesiredRenderExtent(window, GuiRenderFollowsWindow(renderer.guiPass));
+    VkExtent2D           renderExtent = DesiredRenderExtent(window);
     constexpr VkExtent2D kShadowExtent{kShadowResolution, kShadowResolution};
 
     // Answered -- the two a caller cannot decide. Not a check on the colour above:
@@ -1088,8 +1084,7 @@ int main() {
         //
         // vkDeviceWaitIdle and not a fence: a fence covers one slot, and these images
         // belong to every slot.
-        const VkExtent2D wanted =
-            DesiredRenderExtent(window, GuiRenderFollowsWindow(renderer.guiPass));
+        const VkExtent2D wanted = DesiredRenderExtent(window);
 
         if (wanted.width != renderExtent.width || wanted.height != renderExtent.height) {
             dev.table.vkDeviceWaitIdle(dev.handle);
