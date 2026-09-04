@@ -84,6 +84,15 @@ struct Window {
     // not as a by-product of remaking it.
     VkExtent2D surfaceExtent{};
 
+    // The three below are a succession of swapchains rather than anything about a
+    // window: the current one, the ones not yet safe to destroy, and whether the
+    // current one is stale. They change together on every resize, and nothing above
+    // them changes at all after startup.
+    //
+    // Together here because a surface has exactly one swapchain at a time, so the
+    // relation is real -- but it is why ~Window has to release the swapchain by hand
+    // before the surface, and why Swapchain.h forward-declares this type.
+
     // A unique_ptr because a resize replaces the whole thing. By value that needs a
     // move assignment per type; by pointer it is free. And null already means
     // "nowhere to draw right now".

@@ -71,11 +71,6 @@ FrameResult BeginFrame(const VulkanDevice& dev,
         return FrameResult::Fatal;
     }
 
-    // A frame finished, so the retired swapchains are one frame closer to safe. Here
-    // rather than in the loop because this is where "a frame completed" is known, and
-    // it is the same fence that says it.
-    AdvanceRetiredSwapchains(window);
-
     uint32_t imageIndex = 0;
     const VkResult acquired = dev.table.vkAcquireNextImageKHR(
         dev.handle, swapchain.handle, UINT64_MAX,
@@ -161,6 +156,12 @@ bool PresentFrame(const VulkanDevice& dev,
     present.pImageIndices = &target.index;
 
     const VkResult presented = dev.table.vkQueuePresentKHR(dev.queues.present, &present);
+
+    // Counted here because the number counts presents. It used to be counted in
+    // BeginFrame, which also ran on frames that acquired OUT_OF_DATE and returned
+    // without presenting -- and those are the frames right after a resize, when
+    // something has just been retired.
+    AdvanceRetiredSwapchains(window);
 
     // The submit already happened and the fence will signal. A rebuild fixes these.
     if (presented == VK_ERROR_OUT_OF_DATE_KHR || presented == VK_SUBOPTIMAL_KHR) {

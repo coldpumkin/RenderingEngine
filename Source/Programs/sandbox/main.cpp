@@ -1217,6 +1217,10 @@ int main() {
 
         if (begun == FrameResult::Skip) { continue; }
 
+        // Past the acquire, a failure breaks rather than continues: the image is
+        // taken, imageAvailable is signalled and the fence is about to be reset, and
+        // skipping the submit leaves both with nobody to wait on them.
+
         // The panel, after the acquire because it reports the image this frame got.
         // Nothing here touches the GPU -- it only fills a draw list that
         // RecordGuiPass reads. Below the Skip return on purpose: a frame that is not

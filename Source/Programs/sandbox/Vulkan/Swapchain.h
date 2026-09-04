@@ -122,9 +122,13 @@ struct RetiredSwapchain {
     uint32_t framesLeft = 0;
 };
 
-// Effect: destroys the retired swapchains whose count has run out. Once per frame.
+// Effect: destroys the retired swapchains whose count has run out
+//
+// Contract: called once per present, and only after one. The number counts presents,
+//           so counting anything else -- a frame that acquired OUT_OF_DATE and
+//           returned, say -- retires a swapchain early.
 //
 // The first place here where a resource leaves the destructor ordering: when the owner
-// lets go and when the thing is actually destroyed have come apart, and a frame count
-// is what bridges them.
+// lets go and when the thing is actually destroyed have come apart, and this count is
+// what bridges them.
 void AdvanceRetiredSwapchains(Window* window) noexcept;
