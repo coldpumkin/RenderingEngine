@@ -599,7 +599,7 @@ int main() {
     // pass rather than around it.
     if (!SelectSurfaceFormat(inst, selection.gpu, &window)) { return 1; }
 
-    // What we render into
+    // What we render into, and the lens each target answers to
     // ------------------------------------------------------------------------
     //
     // Both halves of it, in one place. They used to sit 100 lines apart -- the formats
@@ -639,9 +639,19 @@ int main() {
     // can be clicked.
     VkExtent2D renderExtent{kRenderWidth, kRenderHeight};
 
-    // Both follow the extent. They stop being constants for the same reason it does,
-    // and the chain is the point: an aspect comes out of a render target and goes into
-    // a projection, so the size of one is the shape of the other.
+    // The light's target. Square, and that is a contract rather than a preference:
+    // its projection below is an orthographic box with equal sides.
+    constexpr VkExtent2D kShadowExtent{kShadowResolution, kShadowResolution};
+
+    // Two viewpoints, two lenses, and **a lens sits with the target it answers to**.
+    // Neither belongs with the eye that moves: what a projection is made of is the
+    // shape of the image it lands on, plus numbers that never change.
+    //
+    //   proj       kFov / kNear / kFar   x  renderExtent's aspect
+    //   lightProj  kShadowRadius / Distance x kShadowExtent, which is 1:1
+    //
+    // aspect is the only part that moves, and only when the target is remade. The
+    // views these pair with are in the loop, where the input and the clock are.
     //
     // No proj[1][1] *= -1: the viewport height is already negative.
     // Depth lands in [0,1] thanks to GLM_FORCE_DEPTH_ZERO_TO_ONE on the CMake target.
@@ -649,6 +659,17 @@ int main() {
                  / static_cast<float>(renderExtent.height);
     glm::mat4 proj =
         glm::perspective(glm::radians(kFovDegrees), aspect, kNearPlane, kFarPlane);
+
+    // Orthographic because the light is directional: its rays are parallel, so there
+    // is no eye point to project from -- only a box, and the box is what decides how
+    // much world one shadow texel covers.
+    //
+    // It was rebuilt every frame until now, beside the light's view, which read as
+    // "the light moved so this changed". Nothing in it moves: every argument is a
+    // constant, and what it answers to is the map's shape.
+    const glm::mat4 lightProj =
+        glm::ortho(-kShadowRadius, kShadowRadius, -kShadowRadius, kShadowRadius,
+                   0.1f, kShadowDistance * 2.0f);
 
     // Filled at the declaration, the way the shadow and swapchain formats are. What is
     // left for the call is what a GPU has to answer: is that colour usable both ways,
@@ -694,7 +715,6 @@ int main() {
     // of there, so this value is written once and the images cannot be made from a
     // different one.
     const AttachmentFormats shadowFormats{.depth = sceneFormats.depth};
-    constexpr VkExtent2D kShadowExtent{kShadowResolution, kShadowResolution};
 
     GraphicsPipelineDesc shadowDesc;
     shadowDesc.vertexLayout = VertexInput();
@@ -1175,11 +1195,9 @@ int main() {
         const glm::vec3 lightDir = glm::normalize(
             glm::vec3{std::cos(t) * 0.7f, 3.0f, std::sin(t) * 0.7f});
 
-        // Where the light looks from, and how much it can see.
-        //
-        // Orthographic because the light is directional: its rays are parallel, so
-        // there is no eye point to project from -- only a box, and the box is what
-        // decides how much world one shadow texel covers.
+        // Where the light looks from. Its lens is up with the render targets, for the
+        // reason the camera's is -- a projection answers to the image it lands on, and
+        // this one lands on a square map that never changes size.
         //
         // The centre is fixed rather than fitted to the camera. Fitting is what a real
         // one does (and what cascades are), and it needs the frustum's corners in
@@ -1192,9 +1210,6 @@ int main() {
         constexpr glm::vec3 kSceneCenter{0.0f, 3.0f, 0.0f};
         const glm::mat4 lightView =
             glm::lookAt(kSceneCenter + lightDir * kShadowDistance, kSceneCenter, kWorldUp);
-        const glm::mat4 lightProj =
-            glm::ortho(-kShadowRadius, kShadowRadius, -kShadowRadius, kShadowRadius,
-                       0.1f, kShadowDistance * 2.0f);
         const glm::mat4 lightViewProj = lightProj * lightView;
 
         // Fill this frame's share of the pass
