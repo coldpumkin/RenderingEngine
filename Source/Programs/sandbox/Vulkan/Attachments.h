@@ -1,11 +1,19 @@
 ﻿#pragma once
 
-// Attachment formats - the spec a pass draws into
+// Attachment formats - what a pipeline is compiled to draw into
 // ============================================================================
 //
-// Three values decide three Textures (color, its resolve, depth) and go unchanged
-// into the pipeline, so no type has to bundle the results. extent is not here: the
-// pipeline never sees it, its viewport being dynamic.
+// **A projection of the TextureDescs, not a second source.** Every field here is one
+// of theirs -- a colour format, a depth format, a sample count -- and the two they
+// have that this does not are the two a pipeline never sees:
+//
+//   extent   the viewport is dynamic, and a swapchain's size is not known until one
+//            is acquired while its format is settled long before
+//   usage    what an image is for, which is the resource's business
+//
+// It exists because Vulkan asks for exactly this at pipeline creation, before any
+// image does. The caller derives it from the descs it already wrote; nothing here
+// invents a value, so the images and the pipeline cannot come to disagree.
 
 #include "Vulkan/Instance.h"
 
@@ -32,19 +40,22 @@ struct AttachmentFormats {
     VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
 };
 
-// Input:  inst, gpu, and out->color already filled in by the caller
-// Output: false means this GPU cannot run that render target - the colour format is
-//         not usable as both an attachment and a sampled image, or there is no depth
-//         format, or no multisampling, which the resolve path requires.
+// What only the device can answer about our render targets
 //
-// **Only what the GPU can answer.** Which colour a target is made of is the caller's,
-// filled in before the call the way the shadow and swapchain formats are filled in at
-// their own declarations; this fills the two fields that need a device to answer and
-// checks the one it was given.
+// The two values a caller cannot decide: which depth format exists here, and how many
+// samples colour and depth both support. Everything else about a target -- its size,
+// its colour, what it is used for -- is the caller's, and goes into a TextureDesc.
+struct TargetCapabilities {
+    VkFormat depthFormat = VK_FORMAT_UNDEFINED;
+    VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
+};
+
+// Input:  colourFormat, which the caller chose and this checks
+// Output: false means this GPU cannot run our render targets - that colour cannot be
+//         both drawn into and sampled, or there is no depth format, or no
+//         multisampling, which the resolve path requires.
 //
 // Takes inst because these queries are instance level. No logical device needed.
-//
-// Contract: out->color is set. UNDEFINED would mean a pass that draws no colour, and
-//           such a pass has no use for the rest of this either.
-bool ChooseAttachmentFormats(const VulkanInstance& inst, VkPhysicalDevice gpu,
-                               AttachmentFormats* out) noexcept;
+bool QueryTargetCapabilities(const VulkanInstance& inst, VkPhysicalDevice gpu,
+                             VkFormat colourFormat, uint32_t desiredSamples,
+                             TargetCapabilities* out) noexcept;

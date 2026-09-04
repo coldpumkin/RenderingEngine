@@ -13,12 +13,6 @@
 #include <glm/ext/matrix_transform.hpp>     // lookAt
 #include <glm/trigonometric.hpp>            // radians
 
-// HOST_VISIBLE + MAPPED, like every uniform here: one memcpy a frame, so a staging
-// buffer and a copy command would buy nothing.
-//
-// Two functions and not one taking a size, because the only thing they would share is
-// the four flags below -- and those are the same for every uniform in this program,
-// not something these two agree on in particular.
 Camera MakeCamera(const CameraDesc& desc) noexcept {
     Camera out;
     out.desc = desc;
@@ -31,6 +25,11 @@ Camera MakeCamera(const CameraDesc& desc) noexcept {
     return out;
 }
 
+// HOST_VISIBLE + MAPPED, like every uniform here: one memcpy a frame, so a staging
+// buffer and a copy command would buy nothing.
+//
+// Three functions and not one taking a size: the only thing they share is the four
+// flags, and those are the same for every uniform in this program.
 bool CreateFrameCameras(const VulkanDevice& dev, FrameCamera* out) noexcept {
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
         if (!CreateBuffer(dev, sizeof(CameraUniform),
@@ -85,18 +84,39 @@ bool CreateFrameShadows(const VulkanDevice& dev, FrameShadow* out) noexcept {
     return true;
 }
 
+SceneTargetDescs MakeSceneTargets(VkExtent2D extent, VkFormat colour, VkFormat depth,
+                                  VkSampleCountFlagBits samples) noexcept {
+    return SceneTargetDescs{
+        // No SAMPLED: a sampler2D cannot read a multisample image.
+        {extent, colour, samples, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT},
+
+        // The only image that leaves this pass. SAMPLED because the post pass reads
+        // it, TRANSFER_SRC because the capture does -- both bits are edges rather
+        // than properties, and TRANSFER_SRC is always on because a flag set only in
+        // capture builds would make the captured frame a different frame.
+        {extent, colour, VK_SAMPLE_COUNT_1_BIT,
+         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+             | VK_IMAGE_USAGE_SAMPLED_BIT
+             | VK_IMAGE_USAGE_TRANSFER_SRC_BIT},
+
+        {extent, depth, samples, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT},
+    };
+}
+
+TextureDesc MakeShadowTarget(VkExtent2D extent, VkFormat depth) noexcept {
+    return TextureDesc{extent, depth, VK_SAMPLE_COUNT_1_BIT,
+                       VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
+                           | VK_IMAGE_USAGE_SAMPLED_BIT};
+}
+
 bool CreateShadowPass(const VulkanDevice& dev, const Descriptors& descriptors,
-                      VkExtent2D extent,
+                      const TextureDesc& mapDesc,
                       const Mesh& mesh, const ShaderProgram& program,
                       const Pipeline& pipeline, const FrameShadow* shadows,
                       ShadowPass* out) noexcept {
     out->mesh = &mesh;
     out->program = &program;
     out->pipeline = &pipeline;
-
-    // The one place these come from. A pipeline bakes them in, so asking it is asking
-    // the thing the images have to match.
-    const AttachmentFormats& formats = pipeline.desc.formats;
 
     // The same comparison the scene pass makes, because both pipelines are built from
     // the same layout now. What differs between them is which locations their vertex
@@ -109,13 +129,7 @@ bool CreateShadowPass(const VulkanDevice& dev, const Descriptors& descriptors,
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
         ShadowPass::PerFrame& frame = out->frames[i];
 
-        // Both usages, which is what makes this image the seam between two passes.
-        // One sample: averaging depths across an edge produces a value no surface was
-        // ever at, and every fragment comparing against it is wrong.
-        if (!CreateTexture(dev, {extent, formats.depth, formats.samples,
-                                 VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
-                                     | VK_IMAGE_USAGE_SAMPLED_BIT},
-                           &frame.depth)) {
+        if (!CreateTexture(dev, mapDesc, &frame.depth)) {
             return false;
         }
 
@@ -140,43 +154,16 @@ bool CreateShadowPass(const VulkanDevice& dev, const Descriptors& descriptors,
     return true;
 }
 
-// The three images one scene frame draws into, from an extent and the formats
-//
-// Written once and called twice -- at creation and at every resize -- which is what
-// makes it a function. Every difference between the three is spelled out here rather
-// than derived inside CreateTexture, because each is a different answer to "who reads
-// this afterwards":
-//
-//   color         multisample, and no SAMPLED: a sampler2D cannot read one
-//   colorResolve  the 1-sample copy, and the only image that leaves this pass.
-//                 SAMPLED because the post pass reads it, TRANSFER_SRC because the
-//                 capture does -- both bits are edges rather than properties
-//   depth         multisample, never read outside the frame that wrote it
-//
-// TRANSFER_SRC is always on rather than behind a build flag: a flag only set in
-// capture builds would make the captured frame a different frame.
-static bool CreateSceneTargets(const VulkanDevice& dev, VkExtent2D extent,
-                               const AttachmentFormats& formats,
+// One frame's three images, from the descs that say what they are.
+static bool CreateSceneTargets(const VulkanDevice& dev, const SceneTargetDescs& targets,
                                ScenePass::PerFrame* frame) noexcept {
-    return CreateTexture(dev, {extent, formats.color, formats.samples,
-                               VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT}, &frame->color)
-        && CreateTexture(dev, {extent, formats.color, VK_SAMPLE_COUNT_1_BIT,
-                               VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
-                                   | VK_IMAGE_USAGE_SAMPLED_BIT
-                                   | VK_IMAGE_USAGE_TRANSFER_SRC_BIT},
-                         &frame->colorResolve)
-        && CreateTexture(dev, {extent, formats.depth, formats.samples,
-                               VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT},
-                         &frame->depth);
+    return CreateTexture(dev, targets.color, &frame->color)
+        && CreateTexture(dev, targets.resolve, &frame->colorResolve)
+        && CreateTexture(dev, targets.depth, &frame->depth);
 }
 
-bool ResizeScenePass(const VulkanDevice& dev, VkExtent2D extent,
+bool ResizeScenePass(const VulkanDevice& dev, const SceneTargetDescs& targets,
                      ScenePass* pass) noexcept {
-    // Read back off what is there, so a resize cannot change the formats by accident.
-    // The pipeline is where they came from and it is not rebuilt: none of the three
-    // depends on a size.
-    const AttachmentFormats& formats = pass->pipeline->desc.formats;
-
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
         ScenePass::PerFrame& frame = pass->frames[i];
 
@@ -187,9 +174,9 @@ bool ResizeScenePass(const VulkanDevice& dev, VkExtent2D extent,
         ResetTexture(&frame.colorResolve);
         ResetTexture(&frame.depth);
 
-        if (!CreateSceneTargets(dev, extent, formats, &frame)) {
+        if (!CreateSceneTargets(dev, targets, &frame)) {
             LOG("[vk] could not remake the scene targets at %ux%u\n",
-                extent.width, extent.height);
+                targets.color.extent.width, targets.color.extent.height);
             return false;
         }
     }
@@ -199,7 +186,7 @@ bool ResizeScenePass(const VulkanDevice& dev, VkExtent2D extent,
 // Built without looking at the window, so this works while minimized - there may be
 // no swapchain yet, and nothing here depends on one.
 bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
-                     VkExtent2D extent,
+                     const SceneTargetDescs& targets,
                      const Mesh& mesh, const ShaderProgram& program,
                      const Pipeline& pipeline, const Pipeline& wirePipeline,
                      const Texture* const shadowMaps[kFramesInFlight],
@@ -219,10 +206,6 @@ bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
         return false;
     }
 
-    // Read off the pipeline, like the shadow pass above. The images below exist
-    // because these three values say so: a colour format, a sample count above one,
-    // and a depth format.
-    const AttachmentFormats& formats = pipeline.desc.formats;
 
     // The bytes were written as one thing and are read as another unless these agree.
     // Nobody else looks: the pipeline checked its layout against the shader, the mesh
@@ -235,7 +218,7 @@ bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
         ScenePass::PerFrame& frame = out->frames[i];
 
-        if (!CreateSceneTargets(dev, extent, formats, &frame)) {
+        if (!CreateSceneTargets(dev, targets, &frame)) {
             return false;
         }
 

@@ -449,6 +449,40 @@ struct DrawList {
 };
 
 
+// What a pass draws into, described the way every other texture here is
+// ============================================================================
+//
+// A TextureDesc says four things and AttachmentFormats says two of them, so these are
+// what a target actually is and the pipeline's value is derived from them. The two
+// AttachmentFormats drops are the two that mattered all along:
+//
+//   extent   the aspect a projection is built with comes from here
+//   usage    ATTACHMENT is what the pipeline draws into. **SAMPLED is an edge** --
+//            it marks the images another pass reads, and there are exactly two
+//
+// Written by the caller, beside the other things it hands a pass, rather than made up
+// inside pass creation from formats read back off a pipeline.
+struct SceneTargetDescs {
+    TextureDesc color;     // multisample. Drawn into, then discarded
+    TextureDesc resolve;   // 1 sample. What leaves the pass
+    TextureDesc depth;     // multisample. Never read outside the frame
+};
+
+// Output: the three, from one size and the formats
+//
+// The expansion rule, which used to be four lines inside CreateScenePass and a
+// sentence in its comment. Two callers now -- creation and every resize.
+SceneTargetDescs MakeSceneTargets(VkExtent2D extent, VkFormat colour, VkFormat depth,
+                                  VkSampleCountFlagBits samples) noexcept;
+
+// Output: the one image the shadow pass makes
+//
+// One sample, always: averaging depths across an edge produces a value no surface was
+// ever at, and every fragment comparing against it is wrong. SAMPLED because the scene
+// pass reads it -- the second of the two edges.
+TextureDesc MakeShadowTarget(VkExtent2D extent, VkFormat depth) noexcept;
+
+
 // ShadowPass - the same surfaces, depth only, from where the light is
 // ============================================================================
 //
@@ -483,11 +517,11 @@ struct ShadowPass {
 // contract saying the two must agree and nothing checking it; a pipeline already
 // carries what it was compiled for, so the second copy was only a way to disagree.
 //
-// Contract: extent is square, because the light's box is.
-// Contract: lights holds kFramesInFlight entries and outlives this pass -- each set
+// Contract: mapDesc.extent is square, because the light's box is.
+// Contract: shadows holds kFramesInFlight entries and outlives this pass -- each set
 //           names the buffer of the same index.
 bool CreateShadowPass(const VulkanDevice& dev, const Descriptors& descriptors,
-                      VkExtent2D extent,
+                      const TextureDesc& mapDesc,
                       const Mesh& mesh, const ShaderProgram& program,
                       const Pipeline& pipeline, const FrameShadow* shadows,
                       ShadowPass* out) noexcept;
@@ -628,14 +662,14 @@ struct ScenePass {
 //
 // Contract: the GPU must be idle. The caller waits -- a frame in flight is still
 //           reading last frame's attachments, and no fence here says which.
-bool ResizeScenePass(const VulkanDevice& dev, VkExtent2D extent,
+bool ResizeScenePass(const VulkanDevice& dev, const SceneTargetDescs& targets,
                      ScenePass* pass) noexcept;
 
 // Contract: cameras, lights and shadows hold kFramesInFlight entries and outlive this
 //           pass. shadows is the same array the shadow pass was given, which is what
 //           makes the matrix in binding 2 the one that drew the map in binding 3.
 bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
-                     VkExtent2D extent,
+                     const SceneTargetDescs& targets,
                      const Mesh& mesh, const ShaderProgram& program,
                      const Pipeline& pipeline, const Pipeline& wirePipeline,
                      const Texture* const shadowMaps[kFramesInFlight],

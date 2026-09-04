@@ -1,7 +1,5 @@
 ﻿#include "Vulkan/Attachments.h"
 
-#include "Config.h"
-
 #include <initializer_list>   // the candidate loops below
 
 // Where sRGB actually matters, counted rather than assumed
@@ -23,25 +21,22 @@
 // The caller fills it now and this function answers only what the GPU can: whether
 // that format works, which depth format exists, and how many samples.
 
-bool ChooseAttachmentFormats(const VulkanInstance& inst, VkPhysicalDevice gpu,
-                               AttachmentFormats* out) noexcept {
-    AttachmentFormats& formats = *out;
+bool QueryTargetCapabilities(const VulkanInstance& inst, VkPhysicalDevice gpu,
+                             VkFormat colourFormat, uint32_t desiredSamples,
+                             TargetCapabilities* out) noexcept {
+    TargetCapabilities& formats = *out;
 
-    // Asked about, not assumed. Depth has been asked about since this function existed
-    // and colour never was -- it was assigned from a constant here and the GPU was
-    // left out of it, which was an odd pair of habits for two fields of one struct.
-    //
     // Both bits, because this image is two things: drawn into by the pass that owns it
     // and sampled by whatever reads it next. A format supporting one and not the other
     // would fail at the second image rather than here.
     {
         VkFormatProperties props{};
-        inst.table.vkGetPhysicalDeviceFormatProperties(gpu, formats.color, &props);
+        inst.table.vkGetPhysicalDeviceFormatProperties(gpu, colourFormat, &props);
         constexpr VkFormatFeatureFlags needed =
             VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
         if ((props.optimalTilingFeatures & needed) != needed) {
             LOG("[vk] colour format %d cannot be both drawn into and sampled\n",
-                static_cast<int>(formats.color));
+                static_cast<int>(colourFormat));
             return false;
         }
     }
@@ -57,7 +52,7 @@ bool ChooseAttachmentFormats(const VulkanInstance& inst, VkPhysicalDevice gpu,
         inst.table.vkGetPhysicalDeviceFormatProperties(gpu, candidate, &props);
         if ((props.optimalTilingFeatures
              & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0) {
-            formats.depth = candidate;
+            formats.depthFormat = candidate;
             break;
         }
     }
@@ -77,7 +72,7 @@ bool ChooseAttachmentFormats(const VulkanInstance& inst, VkPhysicalDevice gpu,
     for (const VkSampleCountFlagBits candidate : {VK_SAMPLE_COUNT_8_BIT,
                                                   VK_SAMPLE_COUNT_4_BIT,
                                                   VK_SAMPLE_COUNT_2_BIT}) {
-        if (static_cast<uint32_t>(candidate) > kDesiredSampleCount) { continue; }
+        if (static_cast<uint32_t>(candidate) > desiredSamples) { continue; }
         if ((supported & candidate) != 0) {
             formats.samples = candidate;
             break;
@@ -85,11 +80,11 @@ bool ChooseAttachmentFormats(const VulkanInstance& inst, VkPhysicalDevice gpu,
     }
 
     LOG("MSAA: requested %ux, supported mask 0x%x, using %ux\n",
-        kDesiredSampleCount, supported, static_cast<uint32_t>(formats.samples));
+        desiredSamples, supported, static_cast<uint32_t>(formats.samples));
 
     // Both failures live here, not at the call site: the caller would have to know
     // that UNDEFINED and 1_BIT are the sentinels.
-    if (formats.depth == VK_FORMAT_UNDEFINED) {
+    if (formats.depthFormat == VK_FORMAT_UNDEFINED) {
         LOG("[vk] no usable depth format\n");
         return false;
     }

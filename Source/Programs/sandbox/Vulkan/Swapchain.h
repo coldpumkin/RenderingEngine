@@ -1,5 +1,6 @@
 ﻿#pragma once
 
+#include "Vulkan/Attachments.h"
 #include "Vulkan/Texture.h"
 
 #include <memory>
@@ -54,6 +55,19 @@ bool CreateSwapchain(const VulkanInstance& inst,
 // A physical device, not a logical one: this asks the GPU a question, so it works
 // before vkCreateDevice. Taking a whole VulkanDevice and reading only .gpu would have
 // the signature claim a device is needed when none is.
+// Output: what a pass drawing into a swapchain image is compiled against
+//
+// **Received, not chosen.** All three fields are the presentation engine's answer: it
+// hands back single-sample colour images with no depth, and SelectSurfaceFormat
+// settled which colour. That is the opposite of the targets we make, where the same
+// type carries decisions -- and the type does not say which, so the call does.
+//
+// Takes the window and not a Swapchain. The pipelines that bake this are built before
+// the first swapchain exists, since EnsureSwapchain runs from BeginFrame.
+//
+// Contract: SelectSurfaceFormat has run.
+AttachmentFormats SwapchainAttachmentFormats(const Window& window) noexcept;
+
 bool SelectSurfaceFormat(const VulkanInstance& inst,
                          VkPhysicalDevice gpu,
                          Window* window) noexcept;

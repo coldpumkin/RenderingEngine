@@ -61,6 +61,12 @@ Swapchain::~Swapchain() {
     d.table.vkDestroySwapchainKHR(d.handle, handle, nullptr);
 }
 
+AttachmentFormats SwapchainAttachmentFormats(const Window& window) noexcept {
+    AttachmentFormats formats{};
+    formats.color = window.surfaceFormat.format;
+    return formats;   // depth UNDEFINED and one sample: the engine gives neither
+}
+
 bool SelectSurfaceFormat(const VulkanInstance& inst,
                          VkPhysicalDevice gpu,
                          Window* window) noexcept {

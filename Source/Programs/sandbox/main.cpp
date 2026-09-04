@@ -621,11 +621,26 @@ int main() {
         glm::ortho(-kShadowRadius, kShadowRadius, -kShadowRadius, kShadowRadius,
                    0.1f, kShadowDistance * 2.0f);
 
-    // color is filled here, the way the shadow and swapchain formats are. The call
-    // answers only what a GPU can: is that colour usable both ways, which depth format
-    // exists, how many samples.
-    AttachmentFormats sceneFormats{.color = kRenderColorFormat};
-    if (!ChooseAttachmentFormats(inst, selection.gpu, &sceneFormats)) { return 1; }
+    // The two values a caller cannot decide. Everything else about a target is ours.
+    TargetCapabilities caps;
+    if (!QueryTargetCapabilities(inst, selection.gpu, kRenderColorFormat,
+                                 kDesiredSampleCount, &caps)) { return 1; }
+
+    // What each pass draws into, written here beside everything else a pass is handed.
+    // A TextureDesc says four things where AttachmentFormats says two, and the two it
+    // adds are the ones that were missing: the extent a projection answers to, and
+    // usage -- in which **SAMPLED marks an edge**. Exactly two of these four images
+    // carry it, and those are the two another pass reads.
+    SceneTargetDescs sceneTargets = MakeSceneTargets(renderExtent, kRenderColorFormat,
+                                                     caps.depthFormat, caps.samples);
+    const TextureDesc shadowTarget = MakeShadowTarget(kShadowExtent, caps.depthFormat);
+
+    // Derived, not decided. Every field is one of the descs', so the images and the
+    // pipelines compiled for them cannot come to disagree.
+    const AttachmentFormats sceneFormats{sceneTargets.color.format,
+                                         sceneTargets.depth.format,
+                                         sceneTargets.color.samples};
+    const AttachmentFormats shadowFormats{.depth = shadowTarget.format};
 
     // selection is absorbed here and not kept -- nothing below this line reads it.
     if (!CreateDevice(inst, selection, &dev)) { return 1; }
@@ -664,7 +679,6 @@ int main() {
     // It goes into the pipeline and nowhere else. CreateShadowPass reads it back out
     // of there, so this value is written once and the images cannot be made from a
     // different one.
-    const AttachmentFormats shadowFormats{.depth = sceneFormats.depth};
 
     GraphicsPipelineDesc shadowDesc;
     shadowDesc.vertexLayout = VertexInput();
@@ -971,7 +985,7 @@ int main() {
     if (!CreateFrameLights(dev, renderer.lights)) { return 1; }
     if (!CreateFrameShadows(dev, renderer.shadows)) { return 1; }
 
-    if (!CreateShadowPass(dev, renderer.descriptors, kShadowExtent,
+    if (!CreateShadowPass(dev, renderer.descriptors, shadowTarget,
                           renderer.mesh, renderer.shadowProgram,
                           renderer.shadowPipeline, renderer.shadows,
                           &renderer.shadowPass)) { return 1; }
@@ -980,7 +994,7 @@ int main() {
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
         shadowMaps[i] = &renderer.shadowPass.frames[i].depth;
     }
-    if (!CreateScenePass(dev, renderer.descriptors, renderExtent,
+    if (!CreateScenePass(dev, renderer.descriptors, sceneTargets,
                          renderer.mesh, renderer.sceneProgram, renderer.scenePipeline,
                          renderer.sceneWirePipeline,
                          shadowMaps, renderer.cameras, renderer.lights,
@@ -1177,14 +1191,16 @@ int main() {
         if (wanted.width != renderExtent.width || wanted.height != renderExtent.height) {
             dev.table.vkDeviceWaitIdle(dev.handle);
 
-            if (!ResizeScenePass(dev, wanted, &renderer.scenePass)) { break; }
+            // Described again at the new size, by the same call that described them
+            // the first time. Only the extent differs.
+            renderExtent = wanted;
+            sceneTargets = MakeSceneTargets(renderExtent, kRenderColorFormat,
+                                            caps.depthFormat, caps.samples);
+
+            if (!ResizeScenePass(dev, sceneTargets, &renderer.scenePass)) { break; }
 
             // The only sets that name what was just destroyed.
             RefreshPostProcessPass(renderer.descriptors, &renderer.postPass);
-
-            // The camera follows on its own: it is built from renderExtent below, so
-            // there is no second value here to remember to update.
-            renderExtent = wanted;
             LOG("[render] targets now %ux%u\n", renderExtent.width, renderExtent.height);
         }
 
