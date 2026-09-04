@@ -946,13 +946,19 @@ int main() {
     // only knows which frame it is.
     // No formats here. Each pass reads them off its pipeline, which is the thing that
     // baked them in -- passing them again would only make a second value to disagree.
+    // Before both passes that read it, which is not a preference: the shadow pass is
+    // created first because the scene pass's sets name its maps, so a light owned by
+    // either would have to exist before its owner.
+    if (!CreateFrameLights(dev, renderer.lights)) { return 1; }
+
     if (!CreateShadowPass(dev, renderer.descriptors, kShadowExtent,
                           renderer.mesh, renderer.shadowProgram,
-                          renderer.shadowPipeline, &renderer.shadowPass)) { return 1; }
+                          renderer.shadowPipeline, renderer.lights,
+                          &renderer.shadowPass)) { return 1; }
     if (!CreateScenePass(dev, renderer.descriptors, kRenderExtent,
                          renderer.mesh, renderer.sceneProgram, renderer.scenePipeline,
                          renderer.sceneWirePipeline,
-                         renderer.shadowPass, renderer.guiPass,
+                         renderer.shadowPass, renderer.lights, renderer.guiPass,
                          &renderer.scenePass)) { return 1; }
     // The edge, as a value. Both readers of the scene's colour take it from here --
     // the post pass and the capture at the bottom of the loop -- so there is one place
@@ -1142,20 +1148,14 @@ int main() {
         // too, and one of the two would otherwise have to be kept in step by hand.
         FrameSlot& slot = renderer.slots[slotIndex];
 
-        // Three writes, and lightViewProj is in two of them. Not because two set
-        // layouts cannot name one buffer -- a descriptor is a buffer, an offset and a
-        // range, so they can -- but because nothing has made them yet. The scene's
-        // light is its own binding now, which is what a shared one would replace.
-        //
-        // What holds the two copies together is this local: one value, assigned twice,
-        // three lines apart. A name, which is the good end of the scale, and the whole
-        // of the guarantee.
-        renderer.shadowPass.frames[slot.index].uniformValue = {lightViewProj};
-        renderer.scenePass.frames[slot.index].cameraValue =
-            {camera, glm::vec4{eye, 0.0f}};
-        renderer.scenePass.frames[slot.index].lightValue =
+        // Two writes, one per subject, and lightViewProj is in one of them. It used
+        // to be in two, held in step by nothing but this local being assigned twice;
+        // now both passes read the same buffer and there is no second copy to keep.
+        renderer.lights[slot.index].value =
             {lightViewProj, glm::vec4{lightDir, 0.0f},
              glm::vec4{1.0f, 0.95f, 0.9f, 0.15f}};
+        renderer.scenePass.frames[slot.index].cameraValue =
+            {camera, glm::vec4{eye, 0.0f}};
 
         // Draw it
         // --------------------------------------------------------------------
@@ -1210,7 +1210,8 @@ int main() {
         // Reset rather than declared here: the counters add up, and the panel above
         // read last frame's values before this line overwrites them.
         drawStats = DrawStats{};
-        if (!RecordFrame(slot, renderer.shadowPass, renderer.scenePass,
+        if (!RecordFrame(slot, renderer.lights,
+                         renderer.shadowPass, renderer.scenePass,
                          renderer.postPass,
                          renderer.guiPass, *target.texture, drawList, &drawStats)) {
             break;

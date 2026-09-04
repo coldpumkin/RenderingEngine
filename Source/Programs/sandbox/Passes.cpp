@@ -10,10 +10,31 @@
 
 #include <glm/matrix.hpp>   // inverse, transpose
 
+// HOST_VISIBLE + MAPPED, like every uniform here: one memcpy a frame, so a staging
+// buffer and a copy command would buy nothing.
+bool CreateFrameLights(const VulkanDevice& dev, FrameLight* out) noexcept {
+    for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+        if (!CreateBuffer(dev, sizeof(LightUniform),
+                          VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                          VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+                          VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+                              | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                          &out[i].buffer)) {
+            return false;
+        }
+        if (out[i].buffer.mapped == nullptr) {
+            LOG("[vk] light uniform buffer is not mapped\n");
+            return false;
+        }
+    }
+    return true;
+}
+
 bool CreateShadowPass(const VulkanDevice& dev, const Descriptors& descriptors,
                       VkExtent2D extent,
                       const Mesh& mesh, const ShaderProgram& program,
-                      const Pipeline& pipeline, ShadowPass* out) noexcept {
+                      const Pipeline& pipeline, const FrameLight* lights,
+                      ShadowPass* out) noexcept {
     out->mesh = &mesh;
     out->program = &program;
     out->pipeline = &pipeline;
@@ -43,18 +64,6 @@ bool CreateShadowPass(const VulkanDevice& dev, const Descriptors& descriptors,
             return false;
         }
 
-        if (!CreateBuffer(dev, sizeof(ShadowUniform),
-                          VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                          VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
-                          VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
-                              | VMA_ALLOCATION_CREATE_MAPPED_BIT,
-                          &frame.uniform)) {
-            return false;
-        }
-        if (frame.uniform.mapped == nullptr) {
-            LOG("[vk] shadow uniform buffer is not mapped\n");
-            return false;
-        }
     }
 
     VkDescriptorSet sets[kFramesInFlight]{};
@@ -64,8 +73,11 @@ bool CreateShadowPass(const VulkanDevice& dev, const Descriptors& descriptors,
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
         ShadowPass::PerFrame& frame = out->frames[i];
         frame.set = sets[i];
+        // The light, handed in. shadow.vert declares only its first field, so the
+        // range covers more than this stage reads -- which is what a descriptor over a
+        // shared buffer looks like and not a mistake.
         const BindingValue values[] = {
-            {VK_NULL_HANDLE, frame.uniform.handle, sizeof(ShadowUniform)},  // 0: matrix
+            {VK_NULL_HANDLE, lights[i].buffer.handle, sizeof(LightUniform)},
         };
         UpdateSet(descriptors, program.setLayouts[kFrameSet], frame.set,
                   values, static_cast<uint32_t>(std::size(values)));
@@ -79,7 +91,7 @@ bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
                      VkExtent2D extent,
                      const Mesh& mesh, const ShaderProgram& program,
                      const Pipeline& pipeline, const Pipeline& wirePipeline,
-                     const ShadowPass& shadow,
+                     const ShadowPass& shadow, const FrameLight* lights,
                      const Gui& gui, ScenePass* out) noexcept {
     out->mesh = &mesh;
     out->program = &program;
@@ -138,7 +150,8 @@ bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
         // HOST_VISIBLE + MAPPED: one memcpy per frame, so there is no reason to go
         // through a staging buffer and a copy command.
         //
-        // Two, one per binding. The light's is the one a second pass will want.
+        // The camera only. The light is FrameLight's -- the second pass that wanted it
+        // is why it is not here.
         if (!CreateBuffer(dev, sizeof(CameraUniform),
                           VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                           VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
@@ -147,17 +160,8 @@ bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
                           &frame.cameraUniform)) {
             return false;
         }
-        if (!CreateBuffer(dev, sizeof(LightUniform),
-                          VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                          VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
-                          VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
-                              | VMA_ALLOCATION_CREATE_MAPPED_BIT,
-                          &frame.lightUniform)) {
-            return false;
-        }
-        if (frame.cameraUniform.mapped == nullptr
-                || frame.lightUniform.mapped == nullptr) {
-            LOG("[vk] a scene uniform buffer is not mapped\n");
+        if (frame.cameraUniform.mapped == nullptr) {
+            LOG("[vk] the camera uniform buffer is not mapped\n");
             return false;
         }
     }
@@ -179,7 +183,9 @@ bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
         // still writing.
         //
         // 1 and 2 are neighbours because they are halves of one fact: the matrix has to
-        // be the one that drew the map beside it.
+        // be the one that drew the map beside it. That is no longer only a comment --
+        // binding 1 is the buffer the shadow pass was handed, so the two cannot be
+        // different matrices unless someone passes two different arrays.
         //
         // The last comes from a pass that draws after this one, which is the only edge
         // here that runs that direction. It is in this set for the same reason the
@@ -187,7 +193,7 @@ bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
         // a binding belongs in.
         const BindingValue values[] = {
             {VK_NULL_HANDLE, frame.cameraUniform.handle, sizeof(CameraUniform)},
-            {VK_NULL_HANDLE, frame.lightUniform.handle, sizeof(LightUniform)},
+            {VK_NULL_HANDLE, lights[i].buffer.handle, sizeof(LightUniform)},
             {shadow.frames[i].depth.view.handle, VK_NULL_HANDLE, 0},
             {VK_NULL_HANDLE, GuiOptionsBuffer(gui, i), kGuiOptionsSize},
         };
@@ -700,8 +706,8 @@ static void RecordPostProcessPass(const FrameSlot& slot, const PostProcessPass& 
     // otherwise.
 }
 
-bool RecordFrame(const FrameSlot& slot, const ShadowPass& shadow,
-                 const ScenePass& scene,
+bool RecordFrame(const FrameSlot& slot, const FrameLight* lights,
+                 const ShadowPass& shadow, const ScenePass& scene,
                  const PostProcessPass& post, Gui& gui, const Texture& target,
                  const DrawList& draws, DrawStats* stats) noexcept {
     const VolkDeviceTable& vk = slot.dev->table;
@@ -712,14 +718,11 @@ bool RecordFrame(const FrameSlot& slot, const ShadowPass& shadow,
     // switches are among them even though the gui pass runs last: what reads them is
     // the scene pass, two passes earlier in the same submission.
     UploadGuiOptions(gui, slot.index);
-    const ShadowPass::PerFrame& shadowFrame = shadow.frames[slot.index];
-    std::memcpy(shadowFrame.uniform.mapped, &shadowFrame.uniformValue,
-                sizeof(shadowFrame.uniformValue));
+    const FrameLight& light = lights[slot.index];
+    std::memcpy(light.buffer.mapped, &light.value, sizeof(light.value));
     const ScenePass::PerFrame& frame = scene.frames[slot.index];
     std::memcpy(frame.cameraUniform.mapped, &frame.cameraValue,
                 sizeof(frame.cameraValue));
-    std::memcpy(frame.lightUniform.mapped, &frame.lightValue,
-                sizeof(frame.lightValue));
     VkCommandBuffer cmd = slot.cmd;
     // The pool has RESET_COMMAND_BUFFER_BIT, so one buffer can rewind on its own.
     if (vk.vkResetCommandBuffer(cmd, 0) != VK_SUCCESS) {

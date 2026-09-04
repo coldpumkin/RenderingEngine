@@ -110,18 +110,41 @@ struct CameraUniform {
     glm::vec4 viewPos;      // xyz = camera position
 };
 
-// Contract: field order and types match the shader's Light block.
+// Contract: field order and types match the shader's Light block, and lightViewProj
+//           is first -- shadow.vert declares only that much of it.
 struct LightUniform {
     // The same world from the light's side, which is what turns a depth in the shadow
-    // map into a comparison with this fragment.
-    //
-    // Contract: this is the matrix the shadow pass drew binding 2's map with. Nothing
-    //           checks it; main writes both from one local.
+    // map into a comparison with this fragment. The shadow pass draws the map with
+    // this matrix and the scene pass compares against it, which is why one buffer
+    // rather than two: they cannot disagree about a value there is one of.
     glm::mat4 lightViewProj;
 
     glm::vec4 direction;   // xyz = surface toward the light, w unused
     glm::vec4 color;       // rgb = colour, a = ambient
 };
+
+// The light, one per frame in flight, and **neither pass's**
+// ----------------------------------------------------------------------------
+//
+// Two passes read it and it belongs to the one that draws with it no more than to the
+// one that shades with it. It used to be two buffers -- ShadowUniform beside this --
+// with main assigning the same matrix into both, one value in two homes held together
+// by nothing but the local it came from.
+//
+// Where it lives follows from creation order rather than from taste. The shadow pass
+// is created first because the scene pass's sets name its maps, so a buffer owned by
+// either would have to exist before its owner did. It is created before both and
+// handed to both, which is the shape the post pass's images already have.
+//
+// Per frame in flight for the reason the attachments are: the CPU writes the next
+// frame's while the GPU still reads the previous one's.
+struct FrameLight {
+    LightUniform value{};
+    Buffer buffer;
+};
+
+// Effect: creates one mapped uniform buffer per frame in flight
+bool CreateFrameLights(const VulkanDevice& dev, FrameLight* out) noexcept;
 
 // Rides inside the command buffer: no pool, no set, no lifetime. The spec guarantees
 // only 128 bytes, so what goes here is what changes per draw and nothing else.
@@ -327,30 +350,22 @@ struct DrawList {
 // scene pass samples, which makes it also the first thing depth does outside the
 // frame that produced it.
 //
-// One matrix, its own set, its own program. Not the scene's uniform: that one carries
-// a camera and four switches this stage never reads, and one layout answering to half
-// of each pass is how a set stops meaning anything.
-//
-// Contract: field order matches the Shadow block in shadow.vert.
-struct ShadowUniform {
-    glm::mat4 lightViewProj;
-};
-
+// Its own set and its own program, but not its own light: the matrix it draws with is
+// FrameLight's, handed in. What stays the pass's is the map.
 struct ShadowPass {
     const Mesh* mesh = nullptr;
     const ShaderProgram* program = nullptr;
     const Pipeline* pipeline = nullptr;
 
-    // Per frame in flight for the reason the scene's attachments are: the CPU writes
-    // the next frame's matrix while the GPU still reads the previous frame's map.
+    // Per frame in flight for the reason the scene's attachments are: the GPU still
+    // reads the previous frame's map while the next is drawn.
     struct PerFrame {
         // DEPTH_STENCIL_ATTACHMENT to draw into and SAMPLED to be read afterwards.
         // One sample: multisampling a visibility test would average depths that were
         // never on the same surface.
         Texture depth;
 
-        ShadowUniform uniformValue{};
-        Buffer uniform;
+        // Names the FrameLight of the same index. No buffer beside it any more.
         VkDescriptorSet set = VK_NULL_HANDLE;
     };
     PerFrame frames[kFramesInFlight];
@@ -363,10 +378,13 @@ struct ShadowPass {
 // carries what it was compiled for, so the second copy was only a way to disagree.
 //
 // Contract: extent is square, because the light's box is.
+// Contract: lights holds kFramesInFlight entries and outlives this pass -- each set
+//           names the buffer of the same index.
 bool CreateShadowPass(const VulkanDevice& dev, const Descriptors& descriptors,
                       VkExtent2D extent,
                       const Mesh& mesh, const ShaderProgram& program,
-                      const Pipeline& pipeline, ShadowPass* out) noexcept;
+                      const Pipeline& pipeline, const FrameLight* lights,
+                      ShadowPass* out) noexcept;
 
 
 // ScenePass - the off-screen pass, and what it draws into
@@ -460,9 +478,6 @@ struct ScenePass {
         CameraUniform cameraValue{};
         Buffer cameraUniform;
 
-        LightUniform lightValue{};
-        Buffer lightUniform;
-
         // Drawn from the pool by this pass and filled by it: the set names this
         // frame's input and uniform, so no one else knows what belongs in it.
         VkDescriptorSet set = VK_NULL_HANDLE;
@@ -483,13 +498,16 @@ struct ScenePass {
 // Contract: shadow must already be created -- each frame's set names its depth map,
 //           frame for frame. Taken by value at set-fill time and not stored: the
 //           barrier that makes it readable belongs to the pass that writes it.
-// Contract: gui must already be created, for the same reason: binding 2 of each set
+// Contract: gui must already be created, for the same reason: binding 3 of each set
 //           names the buffer its checkboxes write into.
+// Contract: lights holds kFramesInFlight entries and outlives this pass. The same
+//           array the shadow pass was given, which is what makes the matrix in
+//           binding 1 the one that drew the map in binding 2.
 bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
                      VkExtent2D extent,
                      const Mesh& mesh, const ShaderProgram& program,
                      const Pipeline& pipeline, const Pipeline& wirePipeline,
-                     const ShadowPass& shadow,
+                     const ShadowPass& shadow, const FrameLight* lights,
                      const Gui& gui, ScenePass* out) noexcept;
 
 
@@ -561,7 +579,7 @@ struct DrawStats {
 // Takes the slot but never touches its fence or semaphore -- a rule, not a type.
 // A Texture, not the whole FrameTarget: nothing here reads the index or the semaphore,
 // and those belong to getting the frame out, not to drawing it.
-bool RecordFrame(const FrameSlot& slot, const ShadowPass& shadow,
-                 const ScenePass& scene,
+bool RecordFrame(const FrameSlot& slot, const FrameLight* lights,
+                 const ShadowPass& shadow, const ScenePass& scene,
                  const PostProcessPass& post, Gui& gui, const Texture& target,
                  const DrawList& draws, DrawStats* stats = nullptr) noexcept;
