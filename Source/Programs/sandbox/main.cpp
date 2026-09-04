@@ -1061,10 +1061,42 @@ int main() {
         //
         // Reset the clock after waking: the sleep is not a frame, and counting it
         // would make the next dt jump and teleport the camera.
-        if (!WindowHasDrawableSize(window)) {
+        // The window's size, asked of the surface. Also the minimize check: 0x0 is
+        // what a minimized surface reports, and skipping here is what keeps
+        // EnsureSwapchain from retrying a device wait and a creation every iteration
+        // with no present to pace it.
+        if (!QuerySurfaceExtent(inst, dev.gpu, &window)) {
             glfwWaitEvents();
             lastTime = glfwGetTime();
             continue;
+        }
+
+        // Resize -- if the policy says the targets should be another size
+        //
+        // Above the acquire, because the size no longer arrives with an image: the
+        // query above is where a window's size comes from now. That is what lets the
+        // camera be built with the rest of the frame's state rather than after it.
+        //
+        // vkDeviceWaitIdle and not a fence: a fence covers one slot, and these images
+        // belong to every slot.
+        const VkExtent2D wanted = GuiRenderFollowsWindow(renderer.guiPass)
+                                ? window.surfaceExtent
+                                : VkExtent2D{kRenderWidth, kRenderHeight};
+
+        if (wanted.width != renderExtent.width || wanted.height != renderExtent.height) {
+            dev.table.vkDeviceWaitIdle(dev.handle);
+
+            // Described again at the new size, by the same call that described them
+            // the first time. Only the extent differs.
+            renderExtent = wanted;
+            sceneTargets = MakeSceneTargets(renderExtent, kRenderColorFormat,
+                                            caps.depthFormat, caps.samples);
+
+            if (!ResizeScenePass(dev, sceneTargets, &renderer.scenePass)) { break; }
+
+            // The only sets that name what was just destroyed.
+            RefreshPostProcessPass(renderer.descriptors, &renderer.postPass);
+            LOG("[render] targets now %ux%u\n", renderExtent.width, renderExtent.height);
         }
 
         // What to draw
@@ -1156,8 +1188,16 @@ int main() {
         // pass's frame the same way.
         FrameSlot& slot = renderer.slots[slotIndex];
 
-        // What reaches a surface, and where its shadow map was drawn from. The camera
-        // waits until after the acquire: its matrix carries proj, which a resize changes.
+        // center is eye + forward: an absolute target would pin the gaze and rotation
+        // would stop working. viewPos comes out of the desc rather than being copied
+        // beside it -- one camera, one place its position is written down.
+        const Camera camera = MakeCamera(CameraDesc{renderExtent,
+                                                    kFovDegrees, kNearPlane, kFarPlane,
+                                                    eye, forward, kWorldUp});
+        renderer.cameras[slot.index].value =
+            {camera.proj * camera.view, glm::vec4{camera.desc.eye, 0.0f}};
+
+        // What reaches a surface, and where its shadow map was drawn from.
         renderer.lights[slot.index].value =
             {glm::vec4{lightDir, 0.0f}, glm::vec4{1.0f, 0.95f, 0.9f, 0.15f}};
         renderer.shadows[slot.index].value = {lightViewProj};
@@ -1176,45 +1216,6 @@ int main() {
         if (begun == FrameResult::Fatal) { break; }
 
         if (begun == FrameResult::Skip) { continue; }
-
-        // Resize -- if the policy says the targets should be another size
-        //
-        // After the acquire, because that is where the window's size is known.
-        //
-        // vkDeviceWaitIdle and not a fence: BeginFrame's fence covers this slot, and
-        // these images belong to every slot.
-        const VkExtent2D windowExtent = target.texture->desc.extent;
-        const VkExtent2D wanted = GuiRenderFollowsWindow(renderer.guiPass)
-                                ? windowExtent
-                                : VkExtent2D{kRenderWidth, kRenderHeight};
-
-        if (wanted.width != renderExtent.width || wanted.height != renderExtent.height) {
-            dev.table.vkDeviceWaitIdle(dev.handle);
-
-            // Described again at the new size, by the same call that described them
-            // the first time. Only the extent differs.
-            renderExtent = wanted;
-            sceneTargets = MakeSceneTargets(renderExtent, kRenderColorFormat,
-                                            caps.depthFormat, caps.samples);
-
-            if (!ResizeScenePass(dev, sceneTargets, &renderer.scenePass)) { break; }
-
-            // The only sets that name what was just destroyed.
-            RefreshPostProcessPass(renderer.descriptors, &renderer.postPass);
-            LOG("[render] targets now %ux%u\n", renderExtent.width, renderExtent.height);
-        }
-
-        // Below the resize, so the target it is built from is this frame's. center is
-        // eye + forward: an absolute target would pin the gaze and rotation would stop
-        // working.
-        //
-        // viewPos comes out of the desc rather than being copied beside it -- one
-        // camera, one place its position is written down.
-        const Camera camera = MakeCamera(CameraDesc{renderExtent,
-                                                    kFovDegrees, kNearPlane, kFarPlane,
-                                                    eye, forward, kWorldUp});
-        renderer.cameras[slot.index].value =
-            {camera.proj * camera.view, glm::vec4{camera.desc.eye, 0.0f}};
 
         // The panel, after the acquire because it reports the image this frame got.
         // Nothing here touches the GPU -- it only fills a draw list that

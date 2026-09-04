@@ -61,6 +61,27 @@ Swapchain::~Swapchain() {
     d.table.vkDestroySwapchainKHR(d.handle, handle, nullptr);
 }
 
+bool QuerySurfaceExtent(const VulkanInstance& inst,
+                        VkPhysicalDevice gpu,
+                        Window* window) noexcept {
+    VkSurfaceCapabilitiesKHR caps{};
+    if (inst.table.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gpu, window->surface, &caps)
+            != VK_SUCCESS) {
+        LOG("[vk] vkGetPhysicalDeviceSurfaceCapabilitiesKHR failed\n");
+        window->surfaceExtent = VkExtent2D{};
+        return false;
+    }
+
+    // Contract: currentExtent is the window's size. On platforms that answer
+    //           0xFFFFFFFF the swapchain would pick instead, and this asserts it
+    //           never happens here rather than carrying a path nothing runs.
+    window->surfaceExtent = caps.currentExtent;
+
+    // Minimized. Not logged: it lasts until the window comes back, and it would be
+    // hundreds of lines a second.
+    return caps.currentExtent.width != 0 && caps.currentExtent.height != 0;
+}
+
 AttachmentFormats SwapchainAttachmentFormats(const Window& window) noexcept {
     AttachmentFormats formats{};
     formats.color = window.surfaceFormat.format;
@@ -101,6 +122,7 @@ bool CreateSwapchain(const VulkanInstance& inst,
                      const VulkanDevice& dev,
                      VkSurfaceKHR surface,
                      VkSurfaceFormatKHR surfaceFormat,
+                     VkExtent2D extent,
                      VkSwapchainKHR oldSwapchain,
                      Swapchain* out) noexcept {
     Swapchain& sc = *out;
@@ -112,10 +134,10 @@ bool CreateSwapchain(const VulkanInstance& inst,
         return false;
     }
 
-    // Minimized, the surface reports 0x0. Not an error, and it lasts until the window
-    // comes back -- logged, it would be hundreds of lines a second.
-    if (caps.currentExtent.width == 0 || caps.currentExtent.height == 0) {
-        return false;
+    // The size is handed in rather than read out of caps here. QuerySurfaceExtent
+    // asked the same pair, and one answer used twice cannot disagree with itself.
+    if (extent.width == 0 || extent.height == 0) {
+        return false;   // minimized. Not logged: it lasts until the window comes back
     }
 
     const VkCompositeAlphaFlagBitsKHR compositeAlpha =
@@ -138,7 +160,7 @@ bool CreateSwapchain(const VulkanInstance& inst,
     info.minImageCount = imageCount;
     info.imageFormat = surfaceFormat.format;
     info.imageColorSpace = surfaceFormat.colorSpace;
-    info.imageExtent = caps.currentExtent;
+    info.imageExtent = extent;
     info.imageArrayLayers = 1;
     // The post-process pass draws straight into these, so COLOR_ATTACHMENT is all
     // that is needed -- and it is the one usage the spec always puts in
@@ -162,7 +184,7 @@ bool CreateSwapchain(const VulkanInstance& inst,
         return false;
     }
 
-    sc.extent = caps.currentExtent;
+    sc.extent = extent;
 
     // The count is a result, not a request: minImageCount is a floor and the driver
     // may hand back more, so it is asked again after creation.
@@ -263,9 +285,12 @@ bool EnsureSwapchain(const VulkanDevice& dev, Window* window) noexcept {
     const VkSwapchainKHR retiring =
         window->swapchain != nullptr ? window->swapchain->handle : VK_NULL_HANDLE;
 
+    // The extent is not asked again either. QuerySurfaceExtent runs at the top of the
+    // frame, so what a swapchain is made at is the size that was already read.
     auto fresh = std::make_unique<Swapchain>();
     const bool created = CreateSwapchain(*window->inst, dev, window->surface,
-                                         window->surfaceFormat, retiring, fresh.get());
+                                         window->surfaceFormat, window->surfaceExtent,
+                                         retiring, fresh.get());
 
     // Released **after** the new one is made, and not destroyed here: present may
     // still be reading the old images, so it waits in retired until the count runs out.

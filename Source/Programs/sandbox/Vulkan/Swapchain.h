@@ -47,14 +47,40 @@ bool CreateSwapchain(const VulkanInstance& inst,
                      const VulkanDevice& dev,
                      VkSurfaceKHR surface,
                      VkSurfaceFormatKHR surfaceFormat,
+                     VkExtent2D extent,
                      VkSwapchainKHR oldSwapchain,
                      Swapchain* out) noexcept;
 
-// Effect: fills in window->surfaceFormat
+// What the (GPU, surface) pair answers
+// ----------------------------------------------------------------------------
 //
-// A physical device, not a logical one: this asks the GPU a question, so it works
-// before vkCreateDevice. Taking a whole VulkanDevice and reading only .gpu would have
-// the signature claim a device is needed when none is.
+// Two questions, both instance level, both about this window rather than about any
+// swapchain -- which is why the answers live in Window. A physical device, not a
+// logical one: taking a whole VulkanDevice and reading only .gpu would have the
+// signature claim a device is needed when none is.
+//
+// They differ in how often they are asked. The format is settled once at startup and
+// fed back into every recreate; the extent changes whenever the window does.
+
+// Effect: fills in window->surfaceFormat
+bool SelectSurfaceFormat(const VulkanInstance& inst,
+                         VkPhysicalDevice gpu,
+                         Window* window) noexcept;
+
+// Effect: fills in window->surfaceExtent
+// Output: false while minimized, when the surface reports 0x0. A state, not an error
+//
+// Asked at the top of the loop. Skipping the frame there is what keeps EnsureSwapchain
+// from retrying a device wait, a surface query and a creation every iteration while
+// minimized, with no present to pace it -- measured at 10.9% CPU against 135.9%.
+//
+// **The one place a window's size is asked.** It used to be two: glfwGetFramebufferSize
+// for the minimize check, and caps.currentExtent inside swapchain creation, which made
+// the size a by-product of remaking the swapchain rather than something askable.
+bool QuerySurfaceExtent(const VulkanInstance& inst,
+                        VkPhysicalDevice gpu,
+                        Window* window) noexcept;
+
 // Output: what a pass drawing into a swapchain image is compiled against
 //
 // **Received, not chosen.** All three fields are the presentation engine's answer: it
@@ -67,10 +93,6 @@ bool CreateSwapchain(const VulkanInstance& inst,
 //
 // Contract: SelectSurfaceFormat has run.
 AttachmentFormats SwapchainAttachmentFormats(const Window& window) noexcept;
-
-bool SelectSurfaceFormat(const VulkanInstance& inst,
-                         VkPhysicalDevice gpu,
-                         Window* window) noexcept;
 
 // Effect: remakes window->swapchain when it is out of date or absent
 // Output: false means "nowhere to draw right now", and whether that is a failure is

@@ -71,6 +71,19 @@ struct Window {
     // a detection, and the place for it is another call to SelectSurfaceFormat.
     VkSurfaceFormatKHR surfaceFormat{};
 
+    // The other half of what the (GPU, surface) pair answers, and it lives here for
+    // the same reason the format does: it is an instance-level fact about this window
+    // that outlives any one swapchain.
+    //
+    // Unlike the format it does change -- every resize -- so it is asked again at the
+    // top of each frame rather than settled once. **0x0 means minimized**, which is a
+    // state and not an error.
+    //
+    // Having it here is what lets a render target follow the window without waiting
+    // for an image to be acquired: the size is known before the swapchain is remade,
+    // not as a by-product of remaking it.
+    VkExtent2D surfaceExtent{};
+
     // A unique_ptr because a resize replaces the whole thing. By value that needs a
     // move assignment per type; by pointer it is free. And null already means
     // "nowhere to draw right now".
@@ -103,16 +116,6 @@ bool OpenWindow(const VulkanInstance& inst,
                 int width, int height, const char* title,
                 Window* out) noexcept;
 
-// Output: whether there is a size to draw at. Minimized, the framebuffer is 0x0.
-//
-// Asked at the top of the loop, because otherwise EnsureSwapchain retries
-// vkDeviceWaitIdle, a surface query and a swapchain creation every iteration while
-// minimized -- and with no present there is no vsync to pace it. Measured: 10.9% CPU
-// to 135.9%.
-//
-// Whether to run a frame at all is the window's state to report, not something
-// BeginFrame should have to answer.
-bool WindowHasDrawableSize(const Window& window) noexcept;
-
-// SelectSurfaceFormat is declared in Swapchain.h: EnsureSwapchain is its only caller
-// and its definition is there too.
+// SelectSurfaceFormat and QuerySurfaceExtent are declared in Swapchain.h, next to the
+// swapchain creation they feed. Both fill a field of this struct: they ask the
+// (GPU, surface) pair, which is a surface question with a swapchain answer.

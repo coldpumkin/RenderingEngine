@@ -77,13 +77,6 @@ bool OpenWindow(const VulkanInstance& inst,
     return true;
 }
 
-bool WindowHasDrawableSize(const Window& window) noexcept {
-    int width = 0;
-    int height = 0;
-    glfwGetFramebufferSize(window.handle, &width, &height);
-    return width > 0 && height > 0;
-}
-
 // Destroyed inside out: swapchain -> surface -> window.
 //
 // **The surface has to go before the window**, or it references a dead HWND. The
