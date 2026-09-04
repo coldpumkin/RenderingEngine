@@ -17,7 +17,8 @@ layout(location = 0) in vec3 inPosition;
 //
 // Contract: matches ShadowUniform in Passes.h.
 layout(set = 0, binding = 0) uniform Shadow {
-    mat4 lightViewProj;
+    mat4 lightView;
+    mat4 lightProj;
 } shadow;
 
 // Contract: the first field of PushConstants in Passes.h. A stage may declare part of
@@ -28,5 +29,5 @@ layout(push_constant) uniform Push {
 } pc;
 
 void main() {
-    gl_Position = shadow.lightViewProj * (pc.model * vec4(inPosition, 1.0));
+    gl_Position = shadow.lightProj * (shadow.lightView * (pc.model * vec4(inPosition, 1.0)));
 }

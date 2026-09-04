@@ -149,10 +149,25 @@ constexpr float CameraAspect(const CameraDesc& desc) noexcept {
 // being two variables that have to be updated in step.
 Camera MakeCamera(const CameraDesc& desc) noexcept;
 
+// Two matrices and not their product
+// ----------------------------------------------------------------------------
+//
+// view is where the camera is; proj is what the target it lands on does to what the
+// camera sees. They answer to different things -- view to the keyboard, proj to
+// renderExtent -- and multiplying them on the CPU hid that: a render target's extent
+// is read by exactly one thing in this program, the projection, and while the product
+// was all that reached the GPU there was nothing on that side an extent belonged to.
+//
+// It also gives a lighting pass its inverses. Reconstructing a world position from a
+// depth buffer needs proj undone and then view undone; from the product only the pair
+// can be undone at once, which costs the camera-space step every such pass wants.
+//
 // Contract: field order and types match the shader's Camera block, and viewPos sits at
-//           64 -- scene.frag names that offset rather than declaring the matrix.
+//           128 -- scene.frag names that offset rather than declaring two matrices it
+//           never touches.
 struct CameraUniform {
-    glm::mat4 viewProj;
+    glm::mat4 view;
+    glm::mat4 proj;
 
     // w is unused. It carried one specular exponent for the whole scene until
     // roughness came out of the material, which is the value that replaced it.
@@ -183,14 +198,20 @@ struct CameraUniform {
 // day there are N lights and M of them cast, those are different numbers, and a block
 // holding both would have to be taken apart first.
 
-// Contract: field order and types match the shader's Shadow block. One field, and the
-//           whole of what shadow.vert declares -- there is nothing to truncate now.
+// Contract: field order and types match the shader's Shadow block, and both stages
+//           that read it declare both fields.
 struct ShadowUniform {
     // The same world from the light's side, which is what turns a depth in the shadow
     // map into a comparison with this fragment. The shadow pass draws the map with
-    // this matrix and the scene pass compares against it, which is why one buffer
-    // rather than two: they cannot disagree about a value there is one of.
-    glm::mat4 lightViewProj;
+    // these and the scene pass compares against them, which is why one buffer rather
+    // than two: they cannot disagree about values there is one of.
+    //
+    // Split for the reason the camera's are, and here the two halves are further
+    // apart: lightView turns with the clock every frame, lightProj is a box built once
+    // out of kShadowRadius and the map's shape. Their product hid a per-frame value
+    // and a constant behind one name.
+    glm::mat4 lightView;
+    glm::mat4 lightProj;
 };
 
 // Contract: field order and types match the shader's Light block.

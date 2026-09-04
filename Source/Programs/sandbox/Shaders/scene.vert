@@ -5,12 +5,17 @@
 //
 //   object    what the file says. Vertex.position, straight out of the glTF
 //   world     pc.model puts it here. **The only space where things can be compared**
-//   clip      scene.viewProj takes it here, and gl_Position is where it leaves
+//   view      camera.view takes it here -- the camera at the origin looking down -z
+//   clip      camera.proj takes it there, and gl_Position is where it leaves
 //   ndc       clip / w, done by the hardware
 //   screen    the viewport decides, and its sign is RasterState::viewportY
 //
-// This stage owns two arrows of that chain -- object to world, then world to clip.
-// Everything after gl_Position belongs to the hardware.
+// This stage owns three arrows of that chain -- object to world, world to view, view
+// to clip. Everything after gl_Position belongs to the hardware.
+//
+// The last two are two matrices and not their product because they answer to different
+// things: view to where the camera is, proj to the size of the target this lands on.
+// Passes.h says the rest.
 //
 // **World exists because more than one thing has to meet.** Drawing a single object
 // needs none of it: object straight to clip would do. It appears the moment a fragment
@@ -18,9 +23,9 @@
 // the camera is, where the light is, and where this surface sits in the light's own
 // projection. Two things can only be compared in a space both of them are in.
 //
-// That is also why pc.model rides the draw while viewProj, lightViewProj and viewPos
-// sit in the frame's uniform. model is "how to put *this* object into the shared
-// space"; the rest are defined *on* that shared space and belong to no object.
+// That is also why pc.model rides the draw while the camera's matrices, the light's
+// and viewPos sit in the frame's uniform. model is "how to put *this* object into the
+// shared space"; the rest are defined *on* that shared space and belong to no object.
 //
 // uv is not on the chain at all -- it is a coordinate on the surface, and no transform
 // here touches it. That is why it sits last on both sides below.
@@ -48,12 +53,13 @@ layout(location = 3) in vec2 inUV;
 // comes before a field, so the first N fields sit where they sit. Reading a later one
 // means saying its offset, the way scene.frag's push block does.
 //
-// The camera, and only the field this stage moves a vertex with. viewPos sits behind
-// it and is the fragment stage's; truncating from the front is what leaves it out.
+// The camera, and only the fields this stage moves a vertex with. viewPos sits behind
+// them and is the fragment stage's; truncating from the front is what leaves it out.
 //
-// Contract: viewProj is the first field of CameraUniform in Passes.h.
+// Contract: view and proj are the first two fields of CameraUniform in Passes.h.
 layout(set = 0, binding = 0) uniform Camera {
-    mat4 viewProj;
+    mat4 view;
+    mat4 proj;
 } camera;
 
 // What this stage reads of the push block, and no more. The fragment stage declares
@@ -85,7 +91,7 @@ void main() {
     // World first, because specular needs the surface point and the clip position
     // cannot be turned back into one.
     const vec4 world = pc.model * vec4(inPosition, 1.0);
-    gl_Position = camera.viewProj * world;
+    gl_Position = camera.proj * (camera.view * world);
     fragWorldPos = world.xyz;
 
     // The normal matrix, not the model matrix. A normal is a covector: it stays

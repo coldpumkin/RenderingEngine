@@ -18,12 +18,12 @@ layout(location = 3) in vec2 fragUV;
 // and a different number of readers, which is two of the three grounds for splitting.
 //
 // Binding 0, the camera. Only viewPos is read here, so it is the only field declared
-// -- 64 is where it starts, and stating that beats declaring a matrix this stage never
-// touches. The same thing the push block below does, for the same reason.
+// -- 128 is where it starts, and stating that beats declaring two matrices this stage
+// never touches. The same thing the push block below does, for the same reason.
 //
-// Contract: 64 is offsetof(CameraUniform, viewPos) in Passes.h.
+// Contract: 128 is offsetof(CameraUniform, viewPos) in Passes.h -- view then proj.
 layout(set = 0, binding = 0) uniform Camera {
-    layout(offset = 64) vec4 viewPos;
+    layout(offset = 128) vec4 viewPos;
 } camera;
 
 // Binding 1, the light -- what arrives at a surface. No matrix: what this does to a
@@ -49,7 +49,8 @@ layout(set = 0, binding = 1) uniform Light {
 // comparison sampler would do the test in hardware and give free 2x2 filtering, and
 // that is what the first soft edge will ask for.
 layout(set = 0, binding = 2) uniform Shadow {
-    mat4 lightViewProj;
+    mat4 lightView;
+    mat4 lightProj;
 } shadow;
 
 layout(set = 0, binding = 3) uniform sampler2D shadowMap;
@@ -129,7 +130,7 @@ layout(location = 0) out vec4 outColor;
 // shadow texel, so it needs more slack than one facing the light does. Without it the
 // choice is between acne on the flat surfaces and a gap under every object.
 float ShadowFactor(vec3 worldPos, float ndotl) {
-    const vec4 clip = shadow.lightViewProj * vec4(worldPos, 1.0);
+    const vec4 clip = shadow.lightProj * (shadow.lightView * vec4(worldPos, 1.0));
 
     // The light is directional, so its projection is orthographic and w is 1. Divided
     // anyway -- this line is what would have to change for a spot light, and it should

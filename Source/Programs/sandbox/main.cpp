@@ -1177,8 +1177,6 @@ int main() {
         // horizon -- which keeps lookAt's cross product from collapsing.
         const glm::mat4 lightView =
             glm::lookAt(kSceneCenter + lightDir * kShadowDistance, kSceneCenter, kWorldUp);
-        const glm::mat4 lightViewProj = lightProj * lightView;
-
         // Fill this frame's share of the pass
         //
         // Assignment only, so it belongs up here: what reaches the GPU, and when, is
@@ -1193,12 +1191,12 @@ int main() {
                                                     kFovDegrees, kNearPlane, kFarPlane,
                                                     eye, forward, kWorldUp});
         renderer.cameras[slot.index].value =
-            {camera.proj * camera.view, glm::vec4{camera.desc.eye, 0.0f}};
+            {camera.view, camera.proj, glm::vec4{camera.desc.eye, 0.0f}};
 
         // What reaches a surface, and where its shadow map was drawn from.
         renderer.lights[slot.index].value =
             {glm::vec4{lightDir, 0.0f}, glm::vec4{1.0f, 0.95f, 0.9f, 0.15f}};
-        renderer.shadows[slot.index].value = {lightViewProj};
+        renderer.shadows[slot.index].value = {lightView, lightProj};
 
         // Draw it
         // --------------------------------------------------------------------
