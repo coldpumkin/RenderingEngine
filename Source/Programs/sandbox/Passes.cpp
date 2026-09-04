@@ -137,16 +137,27 @@ bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
 
         // HOST_VISIBLE + MAPPED: one memcpy per frame, so there is no reason to go
         // through a staging buffer and a copy command.
-        if (!CreateBuffer(dev, sizeof(SceneUniform),
+        //
+        // Two, one per binding. The light's is the one a second pass will want.
+        if (!CreateBuffer(dev, sizeof(CameraUniform),
                           VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                           VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
                           VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
                               | VMA_ALLOCATION_CREATE_MAPPED_BIT,
-                          &frame.uniform)) {
+                          &frame.cameraUniform)) {
             return false;
         }
-        if (frame.uniform.mapped == nullptr) {
-            LOG("[vk] uniform buffer is not mapped\n");
+        if (!CreateBuffer(dev, sizeof(LightUniform),
+                          VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                          VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+                          VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+                              | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                          &frame.lightUniform)) {
+            return false;
+        }
+        if (frame.cameraUniform.mapped == nullptr
+                || frame.lightUniform.mapped == nullptr) {
+            LOG("[vk] a scene uniform buffer is not mapped\n");
             return false;
         }
     }
@@ -162,19 +173,23 @@ bool CreateScenePass(const VulkanDevice& dev, const Descriptors& descriptors,
         ScenePass::PerFrame& frame = out->frames[i];
         frame.set = sets[i];
 
-        // Three bindings, counted the same way: this frame's camera and light, the
+        // Four bindings, counted the same way: this frame's camera, its light, the
         // depth map the shadow pass drew for this same frame, and the panel's switches.
         // Frame for frame -- a set naming another slot's would read what the GPU is
         // still writing.
         //
-        // The last one comes from a pass that draws after this one, which is the only
-        // edge here that runs that direction. It is in this set for the same reason
-        // the other two are: one per frame in flight, and that is the whole rule for
-        // which set a binding belongs in.
+        // 1 and 2 are neighbours because they are halves of one fact: the matrix has to
+        // be the one that drew the map beside it.
+        //
+        // The last comes from a pass that draws after this one, which is the only edge
+        // here that runs that direction. It is in this set for the same reason the
+        // others are: one per frame in flight, and that is the whole rule for which set
+        // a binding belongs in.
         const BindingValue values[] = {
-            {VK_NULL_HANDLE, frame.uniform.handle, sizeof(SceneUniform)},  // 0: scene
-            {shadow.frames[i].depth.view.handle, VK_NULL_HANDLE, 0},       // 1: shadow map
-            {VK_NULL_HANDLE, GuiOptionsBuffer(gui, i), kGuiOptionsSize},   // 2: switches
+            {VK_NULL_HANDLE, frame.cameraUniform.handle, sizeof(CameraUniform)},
+            {VK_NULL_HANDLE, frame.lightUniform.handle, sizeof(LightUniform)},
+            {shadow.frames[i].depth.view.handle, VK_NULL_HANDLE, 0},
+            {VK_NULL_HANDLE, GuiOptionsBuffer(gui, i), kGuiOptionsSize},
         };
         UpdateSet(descriptors, program.setLayouts[kFrameSet], frame.set,
                   values, static_cast<uint32_t>(std::size(values)));
@@ -701,7 +716,10 @@ bool RecordFrame(const FrameSlot& slot, const ShadowPass& shadow,
     std::memcpy(shadowFrame.uniform.mapped, &shadowFrame.uniformValue,
                 sizeof(shadowFrame.uniformValue));
     const ScenePass::PerFrame& frame = scene.frames[slot.index];
-    std::memcpy(frame.uniform.mapped, &frame.uniformValue, sizeof(frame.uniformValue));
+    std::memcpy(frame.cameraUniform.mapped, &frame.cameraValue,
+                sizeof(frame.cameraValue));
+    std::memcpy(frame.lightUniform.mapped, &frame.lightValue,
+                sizeof(frame.lightValue));
     VkCommandBuffer cmd = slot.cmd;
     // The pool has RESET_COMMAND_BUFFER_BIT, so one buffer can rewind on its own.
     if (vk.vkResetCommandBuffer(cmd, 0) != VK_SUCCESS) {

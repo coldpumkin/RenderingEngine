@@ -374,8 +374,8 @@ void BuildGui(Gui* gui, const GuiFrameInfo& info) noexcept {
     if (ImGui::CollapsingHeader("shader data")) {
         // Three ways to get bytes to a shader, and the reason there are three is how
         // often each changes and how big it is allowed to be.
-        ImGui::Text("uniform  %3u B   x%u    per frame, host visible + mapped",
-                    info.uniformBytes, info.framesInFlight);
+        ImGui::Text("uniform  %3u + %3u B  x%u   camera + light, host visible + mapped",
+                    info.cameraBytes, info.lightBytes, info.framesInFlight);
         ImGui::Text("push     %3u B         per draw, inside the command buffer",
                     info.pushBytes);
         ImGui::Text("vertex   %3u B   x%u attrs   per vertex, in the buffer",

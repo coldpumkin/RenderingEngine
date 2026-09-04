@@ -245,7 +245,11 @@ struct GuiFrameInfo {
 
     // sizeof on our side of the boundary. The shader's side is in the .spv and the
     // two are checked only where the pipeline was built.
-    uint32_t uniformBytes = 0;
+    //
+    // Two numbers because the frame set holds two blocks. One total would hide that
+    // the light's is the half a second pass wants.
+    uint32_t cameraBytes = 0;
+    uint32_t lightBytes = 0;
     uint32_t pushBytes = 0;
     uint32_t vertexStride = 0;
     uint32_t vertexAttributes = 0;

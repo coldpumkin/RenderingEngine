@@ -1142,14 +1142,20 @@ int main() {
         // too, and one of the two would otherwise have to be kept in step by hand.
         FrameSlot& slot = renderer.slots[slotIndex];
 
-        // The same matrix reaches the GPU twice, through two sets, because two passes
-        // need it and neither reads the other's uniform. Sharing one buffer would mean
-        // one set layout that both programs answer to, and they do not: the shadow
-        // stage has no use for a camera, a light colour or four switches.
+        // Three writes, and lightViewProj is in two of them. Not because two set
+        // layouts cannot name one buffer -- a descriptor is a buffer, an offset and a
+        // range, so they can -- but because nothing has made them yet. The scene's
+        // light is its own binding now, which is what a shared one would replace.
+        //
+        // What holds the two copies together is this local: one value, assigned twice,
+        // three lines apart. A name, which is the good end of the scale, and the whole
+        // of the guarantee.
         renderer.shadowPass.frames[slot.index].uniformValue = {lightViewProj};
-        renderer.scenePass.frames[slot.index].uniformValue =
-            {camera, lightViewProj, glm::vec4{lightDir, 0.0f},
-             glm::vec4{1.0f, 0.95f, 0.9f, 0.15f}, glm::vec4{eye, 0.0f}};
+        renderer.scenePass.frames[slot.index].cameraValue =
+            {camera, glm::vec4{eye, 0.0f}};
+        renderer.scenePass.frames[slot.index].lightValue =
+            {lightViewProj, glm::vec4{lightDir, 0.0f},
+             glm::vec4{1.0f, 0.95f, 0.9f, 0.15f}};
 
         // Draw it
         // --------------------------------------------------------------------
@@ -1183,7 +1189,8 @@ int main() {
         guiInfo.guiProgram = &renderer.guiProgram;
         guiInfo.scenePipeline = &renderer.scenePipeline;
         guiInfo.presentPipeline = &renderer.presentPipeline;
-        guiInfo.uniformBytes = static_cast<uint32_t>(sizeof(SceneUniform));
+        guiInfo.cameraBytes = static_cast<uint32_t>(sizeof(CameraUniform));
+        guiInfo.lightBytes = static_cast<uint32_t>(sizeof(LightUniform));
         guiInfo.pushBytes = static_cast<uint32_t>(sizeof(PushConstants));
         guiInfo.vertexStride = renderer.mesh.desc.vertexLayout.stride;
         guiInfo.vertexAttributes = renderer.mesh.desc.vertexLayout.attributeCount;

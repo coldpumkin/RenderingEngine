@@ -11,35 +11,51 @@ layout(location = 3) in vec2 fragUV;
 // then this draw's. A set is a set because of how its contents are counted, so that
 // order is also the reason there are two of them.
 
-// Set 0 is the frame's: one camera and one light for every draw in the pass.
+// Set 0 is the frame's, and it holds two subjects rather than one. They were a single
+// block called Scene until it was read field by field: the camera's two come from the
+// keyboard, the light's three from the clock, and the light's matrix is wanted by the
+// shadow pass as well while nothing of the camera's is. Different reasons to change
+// and a different number of readers, which is two of the three grounds for splitting.
 //
-// Contract: same fields as SceneUniform in Passes.h.
-layout(set = 0, binding = 0) uniform Scene {
-    mat4 viewProj;
+// Binding 0, the camera. Only viewPos is read here, so it is the only field declared
+// -- 64 is where it starts, and stating that beats declaring a matrix this stage never
+// touches. The same thing the push block below does, for the same reason.
+//
+// Contract: 64 is offsetof(CameraUniform, viewPos) in Passes.h.
+layout(set = 0, binding = 0) uniform Camera {
+    layout(offset = 64) vec4 viewPos;
+} camera;
 
+// Binding 1, the light. All three read here, so the block is spelled out in order.
+//
+// Contract: same fields as LightUniform in Passes.h.
+layout(set = 0, binding = 1) uniform Light {
     // The same world, seen from the light. Here rather than in the push block for the
     // reason the camera is: one light for every draw in the pass.
     mat4 lightViewProj;
 
-    vec4 lightDir;
-    vec4 lightColor;
-    vec4 viewPos;
-} scene;
+    vec4 direction;   // xyz = surface toward the light
+    vec4 color;       // rgb = colour, a = ambient
+} light;
 
-// Binding 1 of the frame's set: the depth the shadow pass wrote, counted the same way
-// the uniform above is -- one per frame in flight, because each frame draws its own.
+// Binding 2: the depth the shadow pass wrote, counted the same way the two above are
+// -- one per frame in flight, because each frame draws its own.
+//
+// Next to the light on purpose. lightViewProj and this map are one fact in two halves:
+// the matrix has to be the one that drew the map, or every shadow lands somewhere
+// else. Nothing checks it -- main writes both from one local.
 //
 // A plain sampler2D, so this reads the stored depth and compares it here. A
 // comparison sampler would do the test in hardware and give free 2x2 filtering, and
 // that is what the first soft edge will ask for.
-layout(set = 0, binding = 1) uniform sampler2D shadowMap;
+layout(set = 0, binding = 2) uniform sampler2D shadowMap;
 
-// Binding 2: what to leave out, so a feature can be compared against its own absence
-// without rebuilding. Counted per frame in flight like the two above, and owned by the
-// panel -- nothing the scene computes decides any of it.
+// Binding 3: what to leave out, so a feature can be compared against its own absence
+// without rebuilding. Counted per frame in flight like the three above, and owned by
+// the panel -- nothing the scene computes decides any of it.
 //
 // Contract: field order matches ViewOptionsUniform in Gui.h.
-layout(set = 0, binding = 2) uniform View {
+layout(set = 0, binding = 3) uniform View {
     float useNormalMap;
     float useBaseColor;
     float useSpecular;
@@ -109,7 +125,7 @@ layout(location = 0) out vec4 outColor;
 // shadow texel, so it needs more slack than one facing the light does. Without it the
 // choice is between acne on the flat surfaces and a gap under every object.
 float ShadowFactor(vec3 worldPos, float ndotl) {
-    const vec4 clip = scene.lightViewProj * vec4(worldPos, 1.0);
+    const vec4 clip = light.lightViewProj * vec4(worldPos, 1.0);
 
     // The light is directional, so its projection is orthographic and w is 1. Divided
     // anyway -- this line is what would have to change for a spot light, and it should
@@ -158,7 +174,7 @@ void main() {
     const vec3 tangentNormal = texture(normalMap, fragUV).xyz * 2.0 - 1.0;
     const vec3 normal = view.useNormalMap > 0.5 ? normalize(tbn * tangentNormal)
                                                  : geometric;
-    const vec3 toLight = normalize(scene.lightDir.xyz);
+    const vec3 toLight = normalize(light.direction.xyz);
     const float lambert = max(dot(normal, toLight), 0.0);
 
     // Blinn-Phong: the halfway vector stands in for the mirror direction, and lines up
@@ -174,7 +190,7 @@ void main() {
                           ? clamp(mr.x * mtl.roughness, 0.04, 1.0) : 1.0;
     const float metallic = view.useMetallicRoughness > 0.5 ? mr.y * mtl.metallic : 0.0;
 
-    const vec3 toEye = normalize(scene.viewPos.xyz - fragWorldPos);
+    const vec3 toEye = normalize(camera.viewPos.xyz - fragWorldPos);
     const vec3 halfway = normalize(toLight + toEye);
 
     // Roughness as a Blinn-Phong exponent. **This is not PBR** -- there is no GGX
@@ -220,8 +236,8 @@ void main() {
     // the cheapest thing that is not a black hole, and it is the line that changes the
     // day an environment map arrives.
     const vec3 lit =
-        (scene.lightColor.rgb * lambert * shade + scene.lightColor.a) * diffuseColor
-        + (scene.lightColor.rgb * specular * shade + scene.lightColor.a) * specularColor;
+        (light.color.rgb * lambert * shade + light.color.a) * diffuseColor
+        + (light.color.rgb * specular * shade + light.color.a) * specularColor;
 
     outColor = vec4(lit, pc.alpha);
 }

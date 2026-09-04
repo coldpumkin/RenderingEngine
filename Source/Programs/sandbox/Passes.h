@@ -77,31 +77,50 @@ constexpr uint32_t kMaterialSet = 1;   // what a surface looks like. One per mat
 // scene.frag, not to the API. The pipeline layer only needs their sizes, and it gets
 // those out of the .spv.
 
-// Contract: field order and types match the shader's Scene block. Written once per
-//           frame; every draw in the pass reads the same values, so what differs per
-//           draw goes in PushConstants instead.
+// Two subjects, not one
+// ----------------------------------------------------------------------------
 //
-// Only values this frame computed. The panel's switches used to be here too, and they
-// answer to nothing in this struct -- they are the panel's, and binding 2 of this set
-// is where they arrive now.
+// These were a single struct called SceneUniform, on the grounds that both are the
+// frame's and every draw in the pass reads them. That is true and it is not enough:
+// reading the fields one at a time says they are two things.
+//
+//   camera   viewProj, viewPos          changed by the keyboard      read by 1 pass
+//   light    lightViewProj, dir, color  changed by the clock         read by 2
+//
+// Different reasons to change, and a different number of readers -- two of the three
+// grounds for splitting. The third does not hold: both are written once per frame.
+//
+// The duplicate was the symptom. lightViewProj is in ShadowUniform as well, because a
+// value with two readers was living in a struct shaped for one; sharing one buffer is
+// the step this makes possible and not the step this is.
+//
+// It also lets each stage stop declaring what it does not read. In one block the
+// fragment stage had to name viewProj -- which it uses nowhere -- to reach past it.
 //
 // vec4 rather than vec3: std140 aligns a vec3 to 16 bytes anyway, so naming the
 // leftover beats hiding it.
-struct SceneUniform {
+
+// Contract: field order and types match the shader's Camera block, and viewPos sits at
+//           64 -- scene.frag names that offset rather than declaring the matrix.
+struct CameraUniform {
     glm::mat4 viewProj;
 
-    // The same world from the light's side, which is what turns a depth in the shadow
-    // map into a comparison with this fragment. One per frame like the camera: every
-    // draw in the pass reads it, and it changes when the light moves.
-    glm::mat4 lightViewProj;
-
-    glm::vec4 lightDir;     // xyz = surface toward the light, w unused
-    glm::vec4 lightColor;   // rgb = colour, a = ambient
     // w is unused. It carried one specular exponent for the whole scene until
     // roughness came out of the material, which is the value that replaced it.
     glm::vec4 viewPos;      // xyz = camera position
+};
 
+// Contract: field order and types match the shader's Light block.
+struct LightUniform {
+    // The same world from the light's side, which is what turns a depth in the shadow
+    // map into a comparison with this fragment.
+    //
+    // Contract: this is the matrix the shadow pass drew binding 2's map with. Nothing
+    //           checks it; main writes both from one local.
+    glm::mat4 lightViewProj;
 
+    glm::vec4 direction;   // xyz = surface toward the light, w unused
+    glm::vec4 color;       // rgb = colour, a = ambient
 };
 
 // Rides inside the command buffer: no pool, no set, no lifetime. The spec guarantees
@@ -404,11 +423,17 @@ struct ScenePass {
                                // the post pass samples it -- the one that leaves
         Texture depth;         // multisample. Tested and written, never read outside
 
-        // The value and its GPU copy, paired the way Texture pairs desc and image.
-        // Per frame for the other reason the attachments are: the CPU writes this one
-        // while the GPU still reads the previous frame's.
-        SceneUniform uniformValue{};
-        Buffer uniform;
+        // The values and their GPU copies, paired the way Texture pairs desc and
+        // image. Per frame for the other reason the attachments are: the CPU writes
+        // these while the GPU still reads the previous frame's.
+        //
+        // Two buffers because they are two bindings. One buffer at two offsets would
+        // work and would put the split in an offset instead of a name.
+        CameraUniform cameraValue{};
+        Buffer cameraUniform;
+
+        LightUniform lightValue{};
+        Buffer lightUniform;
 
         // Drawn from the pool by this pass and filled by it: the set names this
         // frame's input and uniform, so no one else knows what belongs in it.

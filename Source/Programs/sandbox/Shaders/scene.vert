@@ -48,10 +48,13 @@ layout(location = 3) in vec2 inUV;
 // comes before a field, so the first N fields sit where they sit. Reading a later one
 // means saying its offset, the way scene.frag's push block does.
 //
-// Contract: viewProj is the first field of SceneUniform in Passes.h.
-layout(set = 0, binding = 0) uniform Scene {
+// The camera, and only the field this stage moves a vertex with. viewPos sits behind
+// it and is the fragment stage's; truncating from the front is what leaves it out.
+//
+// Contract: viewProj is the first field of CameraUniform in Passes.h.
+layout(set = 0, binding = 0) uniform Camera {
     mat4 viewProj;
-} scene;
+} camera;
 
 // What this stage reads of the push block, and no more. The fragment stage declares
 // its own field at its own offset; the two do not have to look alike, and a program's
@@ -82,7 +85,7 @@ void main() {
     // World first, because specular needs the surface point and the clip position
     // cannot be turned back into one.
     const vec4 world = pc.model * vec4(inPosition, 1.0);
-    gl_Position = scene.viewProj * world;
+    gl_Position = camera.viewProj * world;
     fragWorldPos = world.xyz;
 
     // The normal matrix, not the model matrix. A normal is a covector: it stays
