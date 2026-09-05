@@ -7,6 +7,7 @@ GraphicsPipelineDesc MakePostPipeline(const ShaderProgram& program,
     GraphicsPipelineDesc desc;
     desc.program = &program;
     desc.targets[0] = &target;
+    desc.blend[0] = NoBlend();
 
     // Down, the opposite of the scene pass: fullscreen.vert builds its own uv from
     // gl_VertexIndex and expects the default orientation. One triangle, wound to face

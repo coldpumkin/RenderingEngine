@@ -100,7 +100,7 @@ void ShowPipeline(const char* name, const Pipeline* pipeline) noexcept {
     // pass at record time. What a pipeline holds is what a pipeline decides.
     ImGui::Text("%-8s %-11s  %ux",
                 name,
-                pipeline->blending == Blending::Opaque ? "opaque" : "translucent",
+                pipeline->blend[0].blendEnable != 0 ? "blend" : "opaque",
                 static_cast<uint32_t>(pipeline->formats.samples));
     // The fragment stage, asked for by stage: what a pipeline draws with is the one
     // the panel names, and a depth-only program has none to name.
@@ -118,7 +118,8 @@ GraphicsPipelineDesc MakeGuiPipeline(const ShaderProgram& program,
     desc.program = &program;
     desc.vertexLayout = GuiVertexInput();
     desc.targets[0] = &target;
-    desc.blending = Blending::Translucent;
+    // The panel goes over what is already on the swapchain image.
+    desc.blend[0] = AlphaBlend();
     return desc;
 }
 

@@ -37,6 +37,7 @@ GraphicsPipelineDesc MakeScenePipeline(const ShaderProgram& program,
     desc.vertexLayout = mesh;
     desc.targets[0] = &targets.color;
     desc.targets[1] = &targets.depth;
+    desc.blend[0] = NoBlend();
 
     // Up, because world y is up and the projection was built that way; the winding
     // rides along in the same field. Depth on for both halves -- this is the pass with

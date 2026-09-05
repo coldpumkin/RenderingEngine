@@ -201,7 +201,7 @@ VkShaderModule LoadShader(const VulkanDevice& dev, const char* path,
 // nothing comes from GraphicsPipelineDesc -- that is the whole line.
 //
 // It is a type because it belongs to a pass, not to a pipeline. Pipelines built from
-// one pair of shaders differ only in state the pass admits (polygon mode, blending),
+// one set of shaders differ only in baked state (polygon mode, blend),
 // and they have to share this: a set drawn from one of these layouts gets bound
 // through this pipeline layout, whichever pipeline is current. Vulkan calls two
 // layouts compatible when identically defined -- nothing checks the "identically", and

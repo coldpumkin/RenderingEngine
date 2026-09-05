@@ -249,8 +249,10 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     pipeline.vertexLayout = desc.vertexLayout;
     pipeline.formats = formats;
     pipeline.polygonMode = desc.polygonMode;
-    pipeline.blending = desc.blending;
     pipeline.raster = desc.raster;
+    for (uint32_t i = 0; i < kMaxColorTargets; ++i) {
+        pipeline.blend[i] = desc.blend[i];
+    }
     pipeline.dynamicCount = desc.dynamicCount;
     for (uint32_t i = 0; i < desc.dynamicCount; ++i) {
         pipeline.dynamicStates[i] = desc.dynamicStates[i];
@@ -365,8 +367,7 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     rasterization.rasterizerDiscardEnable = desc.raster.rasterizerDiscard;
     rasterization.lineWidth = 1.0f;   // used by LINE only. Above 1.0 needs wideLines
 
-    // --- Fragment output: samples, blending, depth --------------------------
-    // desc.formats.samples and desc.blending decide; every other value is fixed for both.
+    // --- Fragment output: samples, blend, depth -----------------------------
 
     VkPipelineMultisampleStateCreateInfo multisample{
         VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
@@ -374,36 +375,20 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     // rasterizer already handles. Shimmering textures would make the case for it.
     multisample.rasterizationSamples = formats.samples;
 
-    // One value, two states. Keeping them apart would let them disagree.
-    const bool translucent = desc.blending == Blending::Translucent;
-
-    VkPipelineColorBlendAttachmentState blendAttachment{};
-    blendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT
-                                   | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-    blendAttachment.blendEnable = translucent ? VK_TRUE : VK_FALSE;
-    // Straight alpha: src*a + dst*(1-a). The attachment is sRGB, so the hardware
-    // decodes, blends in linear space, and encodes again - the result is not a
-    // halfway mix of the stored bytes, and that is correct.
-    blendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-    blendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    blendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
-    // The alpha channel goes unused: our final destination is opaque.
-    blendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-    blendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
-    blendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
-
-    // One state per colour attachment, and Vulkan reads that many. The same state for
-    // each, which is what Blending being one value means -- Vulkan allows them to
-    // differ. Zero leaves pAttachments unread.
-    VkPipelineColorBlendAttachmentState blendAttachments[kMaxColorTargets];
+    // The desc's own, one per colour attachment, and Vulkan reads exactly that many.
+    // A zeroed colorWriteMask is a target nobody said anything about: legal Vulkan, and
+    // here it is a forgotten field rather than an intent to write nothing.
     for (uint32_t i = 0; i < formats.colorCount; ++i) {
-        blendAttachments[i] = blendAttachment;
+        if (desc.blend[i].colorWriteMask == 0) {
+            LOG("[vk] colour target %u has no blend state, so it writes no channels\n", i);
+            return false;
+        }
     }
 
     VkPipelineColorBlendStateCreateInfo colorBlend{
         VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-    colorBlend.attachmentCount = formats.colorCount;
-    colorBlend.pAttachments = blendAttachments;
+    colorBlend.attachmentCount = formats.colorCount;   // 0 leaves pAttachments unread
+    colorBlend.pAttachments = desc.blend;
 
     // depthFormat decides whether this state exists at all, further down.
     const bool useDepth = formats.depth != VK_FORMAT_UNDEFINED;

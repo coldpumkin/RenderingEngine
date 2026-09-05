@@ -18,10 +18,9 @@ GraphicsPipelineDesc MakeShadowPipeline(const ShaderProgram& program,
     GraphicsPipelineDesc desc;
     desc.program = &program;
     desc.vertexLayout = mesh;
-    // One target, and its usage says it is the depth one. No colour follows, which
-    // is what a program with no fragment stage means -- polygonMode stays FILL and
-    // blending stays Opaque, the second of which is dead here: blend state is per
-    // colour attachment and there are none.
+    // One target, and its usage says it is the depth one. No colour follows, which is
+    // what a program with no fragment stage means -- so blend[] stays empty and
+    // polygonMode stays FILL.
     desc.targets[0] = &target;
 
     // ViewportY::Down settles the direction the map's v axis runs. scene.frag reads it
