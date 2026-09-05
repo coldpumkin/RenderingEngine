@@ -94,11 +94,22 @@ constexpr VkPipelineColorBlendAttachmentState AlphaBlend() noexcept {
     return state;
 }
 
-// Everything one pipeline is created from.
+// Everything one pipeline is created from, which is every field of
+// VkGraphicsPipelineCreateInfo that is ours to choose. The three answers a field can
+// have, and every one of them has exactly one:
 //
-// The sample count is not among them: it is inside AttachmentFormats, projected from
-// targets. A field of its own would make "the attachment is 4x and the pipeline is 1x"
-// expressible.
+//   here            it can differ between pipelines and is not derived from anything
+//   derived         it comes from another field, so a second copy could disagree:
+//                   the sample count and the attachment formats from targets, the
+//                   winding from viewportY, blendConstants and primitiveRestart from
+//                   the values that would use them
+//   one value       a feature we do not ask the device for. depthClamp, wideLines,
+//                   sampleRateShading, depthBounds, logicOp, alphaToOne, multiViewport
+//                   and multiview are all absent from Core.h's RequiredFeatures, and
+//                   asking for one is what would move it up here
+//
+// "we only use one" is not among them, and was how topology and blend came to be
+// written as literals.
 struct GraphicsPipelineDesc {
 
     // Borrowed. Two pipelines differing only in baked state share one.
@@ -119,8 +130,35 @@ struct GraphicsPipelineDesc {
     // rebuilds no pipeline, so Pipeline keeps the projection.
     const TextureDesc* targets[kMaxColorTargets + 1]{};
 
-    // Contract: LINE needs fillModeNonSolid, which we stopped requesting.
+    // LINE needs the fillModeNonSolid feature, which Core.h asks for and Device.cpp
+    // refuses a GPU without.
     VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL;
+
+    // Added to every fragment's depth before the test, in units of the format's
+    // smallest representable difference plus a slope term. The tool for shadow acne,
+    // and free of any feature -- an alternative to biasing inside the shader.
+    VkBool32 depthBias = VK_FALSE;
+    float depthBiasConstant = 0.0f;
+    float depthBiasSlope = 0.0f;
+    float depthBiasClamp = 0.0f;      // 0 is no clamp
+
+    // The fragment's alpha becomes a coverage mask, so a cutout gets the same edge
+    // smoothing the rasterizer gives geometry. Only means anything at more than one
+    // sample; the alternative is discard in the shader, which does not antialias.
+    VkBool32 alphaToCoverage = VK_FALSE;
+
+    // Which samples may be written at all, ANDed with coverage. One word covers up to
+    // 32 samples, and kMaxSamples is far below that.
+    VkSampleMask sampleMask = ~0u;
+
+    // Off unless the depth format carries a stencil aspect, which is the resource's
+    // fact -- ChooseDepthFormat may land on D32_SFLOAT_S8_UINT.
+    //
+    // Contract: enabling this needs a depth target whose format has a stencil aspect.
+    //           Nothing here can see the image, so this stays a contract.
+    VkBool32 stencilTest = VK_FALSE;
+    VkStencilOpState stencilFront{};
+    VkStencilOpState stencilBack{};
 
     // One per colour target, in targets[] order. Vulkan's own type and one entry each,
     // because an attachment is where a blend applies and two are free to differ.

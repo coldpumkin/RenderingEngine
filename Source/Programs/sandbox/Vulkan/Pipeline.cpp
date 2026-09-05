@@ -22,6 +22,36 @@ VkViewport MakeViewport(VkRect2D area, ViewportY y) noexcept {
     return viewport;
 }
 
+// Output: whether a restart index means anything to this topology. Only strips and
+//         fans have one; a list would need primitiveTopologyListRestart, which we do
+//         not ask the device for.
+static bool IsStripOrFan(VkPrimitiveTopology topology) noexcept {
+    switch (topology) {
+        case VK_PRIMITIVE_TOPOLOGY_LINE_STRIP:
+        case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP:
+        case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN:
+        case VK_PRIMITIVE_TOPOLOGY_LINE_STRIP_WITH_ADJACENCY:
+        case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP_WITH_ADJACENCY:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// Output: whether this depth format carries a stencil aspect, which is what decides
+//         where a stencil test reads from. ChooseDepthFormat's candidates include one.
+static bool HasStencilAspect(VkFormat format) noexcept {
+    switch (format) {
+        case VK_FORMAT_S8_UINT:
+        case VK_FORMAT_D16_UNORM_S8_UINT:
+        case VK_FORMAT_D24_UNORM_S8_UINT:
+        case VK_FORMAT_D32_SFLOAT_S8_UINT:
+            return true;
+        default:
+            return false;
+    }
+}
+
 // Walked from the pipeline's own list, so what was declared at creation and what is
 // issued here cannot drift apart.
 static void SetRasterState(const VolkDeviceTable& vk, VkCommandBuffer cmd,
@@ -333,14 +363,17 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
 
     VkPipelineInputAssemblyStateCreateInfo inputAssembly{
         VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
-    // Compiled in, unlike the depth state below. See the note in Pipeline.h: the
-    // dynamic version of this only moves within a topology class.
     inputAssembly.topology = desc.topology;
+    // Derived, not a field. A restart index only means anything to a strip or a fan;
+    // a list topology needs the primitiveTopologyListRestart feature, which we do not
+    // ask for, so the topology settles this.
+    inputAssembly.primitiveRestartEnable = IsStripOrFan(desc.topology);
 
     // --- Raster: where the primitive lands and which side faces us ----------
     // Counts are fixed, the two values are set at record time, the rest is desc.
 
-    // Values stay out: baked here, every resize would need a rebuild.
+    // Values stay out: baked here, every resize would need a rebuild. One each, because
+    // more than one needs the multiViewport feature and we do not ask for it.
     VkPipelineViewportStateCreateInfo viewportState{
         VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
     viewportState.viewportCount = 1;
@@ -365,15 +398,25 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     rasterization.cullMode = desc.raster.cull;
     rasterization.frontFace = FrontFaceFor(desc.raster.viewportY);
     rasterization.rasterizerDiscardEnable = desc.raster.rasterizerDiscard;
-    rasterization.lineWidth = 1.0f;   // used by LINE only. Above 1.0 needs wideLines
+    rasterization.depthBiasEnable = desc.depthBias;
+    rasterization.depthBiasConstantFactor = desc.depthBiasConstant;
+    rasterization.depthBiasSlopeFactor = desc.depthBiasSlope;
+    rasterization.depthBiasClamp = desc.depthBiasClamp;
+    // depthClampEnable stays off and lineWidth stays 1: depthClamp and wideLines are
+    // features we do not ask the device for.
+    rasterization.lineWidth = 1.0f;
 
     // --- Fragment output: samples, blend, depth -----------------------------
 
+    // One word of mask, which covers 32 samples -- past anything AttachmentFormats can
+    // hold. sampleShadingEnable and alphaToOneEnable stay off: sampleRateShading and
+    // alphaToOne are features we do not ask the device for.
+    const VkSampleMask sampleMask = desc.sampleMask;
     VkPipelineMultisampleStateCreateInfo multisample{
         VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-    // sampleShadingEnable stays off: the aliasing we see is on edges, which the
-    // rasterizer already handles. Shimmering textures would make the case for it.
     multisample.rasterizationSamples = formats.samples;
+    multisample.pSampleMask = &sampleMask;
+    multisample.alphaToCoverageEnable = desc.alphaToCoverage;
 
     // The desc's own, one per colour attachment, and Vulkan reads exactly that many.
     // A zeroed colorWriteMask is a target nobody said anything about: legal Vulkan, and
@@ -389,6 +432,9 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
         VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
     colorBlend.attachmentCount = formats.colorCount;   // 0 leaves pAttachments unread
     colorBlend.pAttachments = desc.blend;
+    // blendConstants are read only by a CONSTANT_* factor, so they are derived rather
+    // than a field: nothing here names one. logicOpEnable stays off -- logicOp is a
+    // feature we do not ask the device for.
 
     // depthFormat decides whether this state exists at all, further down.
     const bool useDepth = formats.depth != VK_FORMAT_UNDEFINED;
@@ -398,6 +444,10 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     depthStencil.depthTestEnable = desc.raster.depthTest;
     depthStencil.depthWriteEnable = desc.raster.depthWrite;
     depthStencil.depthCompareOp = desc.raster.depthCompare;
+    depthStencil.stencilTestEnable = desc.stencilTest;
+    depthStencil.front = desc.stencilFront;
+    depthStencil.back = desc.stencilBack;
+    // depthBoundsTestEnable stays off: depthBounds is a feature we do not ask for.
 
     // --- What it draws into: attachment formats -----------------------------
     // Dynamic rendering writes the formats here instead of into a VkRenderPass.
@@ -411,6 +461,10 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     pipelineRendering.pColorAttachmentFormats =
         formats.colorCount != 0 ? formats.color : nullptr;
     pipelineRendering.depthAttachmentFormat = formats.depth;   // UNDEFINED = no depth
+    // The same format when it carries a stencil aspect, which is what a stencil test
+    // reads. viewMask stays 0: multiview is a feature we do not ask for.
+    pipelineRendering.stencilAttachmentFormat =
+        HasStencilAspect(formats.depth) ? formats.depth : VK_FORMAT_UNDEFINED;
 
     // --- Assemble and compile -----------------------------------------------
 
