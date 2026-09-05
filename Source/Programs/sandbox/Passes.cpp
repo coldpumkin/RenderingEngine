@@ -153,7 +153,7 @@ bool RecordFrame(const FrameSlot& slot,
     // say, by being in this order.
     RecordShadowPass(slot, shadow, draws);
     RecordScenePass(slot, scene, draws,
-                    SceneRasterOptions{GuiWireframe(gui), GuiDepthTest(gui),
+                    SceneRasterOptions{GuiPolygonMode(gui), GuiDepthTest(gui),
                                        GuiDepthWrite(gui), GuiRasterizerDiscard(gui),
                                        GuiCullMode(gui), GuiDepthCompare(gui)},
                     stats);

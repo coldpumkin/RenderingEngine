@@ -80,13 +80,16 @@ struct ViewOptions {
     // The three below do not reach a shader. They are read on the CPU where the scene
     // pass records, and they differ in what that costs:
     //
-    //   wireframe   polygonMode is compiled in, so it selects between two pipelines
+    //   wireframe   polygonMode is compiled in, so it selects a pipeline variant
     //   depthTest   dynamic state, one command, no pipeline
     //   cull        dynamic state, and one the material already sets per draw
     //
     // Which is which is not about how often they change -- all three change never, or
     // when a checkbox moves. It is about whether the driver has to compile something
     // different.
+    // A checkbox, because that is what the panel draws. What leaves the panel is a
+    // VkPolygonMode -- GuiPolygonMode below -- for the reason CullChoice leaves as a
+    // VkCullModeFlags: a bool can name two variants and polygonMode has three.
     bool wireframe = false;
 
     // Whether the scene's render targets follow the window or stay at the size in
@@ -302,7 +305,7 @@ constexpr VkDeviceSize kGuiOptionsSize = sizeof(ViewOptionsUniform);
 // The three CPU-side answers the scene pass needs. Functions for the same reason
 // GuiOptionsBuffer is one: what the pass needs is an answer, and these are the whole
 // of what it may know about the panel.
-bool GuiWireframe(const Gui& gui) noexcept;
+VkPolygonMode GuiPolygonMode(const Gui& gui) noexcept;
 bool GuiDepthTest(const Gui& gui) noexcept;
 bool GuiDepthWrite(const Gui& gui) noexcept;
 bool GuiRasterizerDiscard(const Gui& gui) noexcept;

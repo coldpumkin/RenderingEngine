@@ -244,8 +244,8 @@ Gui::~Gui() {
     // the pool, which outlives this because it is declared before it.
 }
 
-bool GuiWireframe(const Gui& gui) noexcept {
-    return gui.options.wireframe;
+VkPolygonMode GuiPolygonMode(const Gui& gui) noexcept {
+    return gui.options.wireframe ? VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL;
 }
 
 bool GuiDepthTest(const Gui& gui) noexcept {
@@ -312,9 +312,9 @@ void BuildGui(Gui* gui, const GuiFrameInfo& info) noexcept {
         // Separated because these are a different kind of switch: the five above turn
         // a term of the lighting off, these change how the same draws are rasterized.
         ImGui::Separator();
-        // wireframe is the odd one here: polygonMode is compiled in, so it selects
-        // between two pipelines. Everything else on this list is dynamic state and
-        // costs one command in the pass that sets it.
+        // wireframe is the odd one here: polygonMode is compiled in, so it picks a
+        // pipeline variant. Everything else on this list is dynamic state and costs
+        // one command in the pass that sets it.
         ImGui::Checkbox("wireframe", &options->wireframe);
         ImGui::Checkbox("depth test", &options->depthTest);
         ImGui::Checkbox("depth write", &options->depthWrite);

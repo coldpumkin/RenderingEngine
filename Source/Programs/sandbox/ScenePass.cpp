@@ -29,7 +29,6 @@ SceneTargetDescs MakeSceneTargets(VkExtent2D extent, VkFormat colour,
     };
 }
 
-// One frame's three images, from the descs that say what they are.
 GraphicsPipelineDesc MakeScenePipeline(const VertexLayout& mesh,
                                        const SceneTargetDescs& targets) noexcept {
     GraphicsPipelineDesc desc;
@@ -46,6 +45,7 @@ GraphicsPipelineDesc MakeSceneWirePipeline(const VertexLayout& mesh,
     return desc;
 }
 
+// One frame's three images, from the descs that say what they are.
 bool CreateSceneTargets(const VulkanDevice& dev, const SceneTargetDescs& descs,
                         SceneTargets* out) noexcept {
     return CreateTexture(dev, descs.color, &out->color)
@@ -228,7 +228,12 @@ void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
 
     // One choice for the whole pass. Both were built from scene.program, so every set
     // allocated for this pass fits either one and nothing below changes.
-    const Pipeline& pipeline = raster.wireframe ? *scene.wirePipeline : *scene.pipeline;
+    // Picked by what each variant was baked with, not by which field it sits in. A
+    // Pipeline records its polygonMode, so the choice reads that rather than assuming
+    // wirePipeline is the LINE one -- and a third mode would be a third variant here
+    // and no change to what the panel sends.
+    const Pipeline& pipeline = raster.polygonMode == scene.wirePipeline->polygonMode
+                                   ? *scene.wirePipeline : *scene.pipeline;
 
     // Sets and push constants go through the pass's layout, not the pipeline's: every
     // pipeline a draw here can name was built from the same program, so this is the

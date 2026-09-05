@@ -321,7 +321,10 @@ struct DrawStats {
 // What the panel decided about rasterization, as the three values this pass uses.
 // Gathered into one struct so the signature does not grow a parameter per checkbox.
 struct SceneRasterOptions {
-    bool wireframe = false;
+    // A polygonMode and not a bool, unlike the four below it. Those are VkBool32 on
+    // the other side; this one is a three-valued enum, and calling it "wireframe"
+    // meant only two of the three could be asked for.
+    VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL;
     bool depthTest = true;
     bool depthWrite = true;
     bool rasterizerDiscard = false;
