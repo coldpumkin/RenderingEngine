@@ -68,7 +68,6 @@ void RefreshPostProcessPass(const Descriptors& descriptors,
 bool CreatePostProcessPass(const Descriptors& descriptors,
                            const Texture* const source[kFramesInFlight],
                            const TextureDesc& target,
-                           const ShaderProgram& program,
                            const Pipeline& pipeline, PostProcessPass* out) noexcept;
 
 // Output: what the post pipeline is compiled from

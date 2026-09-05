@@ -837,7 +837,7 @@ int main() {
                                                                : VK_CULL_MODE_BACK_BIT)};
     }
 
-    if (!CreateGuiSet(renderer.descriptors, renderer.guiProgram, renderer.guiPipeline,
+    if (!CreateGuiSet(renderer.descriptors, renderer.guiPipeline,
                       &renderer.guiPass)) { return 1; }
 
     renderer.materials.resize(materialCount);
@@ -900,7 +900,7 @@ int main() {
     }
 
     if (!CreateShadowPass(renderer.descriptors, shadowMaps,
-                          renderer.mesh, renderer.shadowProgram,
+                          renderer.mesh,
                           renderer.shadowPipeline, renderer.shadows,
                           &renderer.shadowPass)) { return 1; }
     // The scene's three, made here and named here. The pass draws into them, the post
@@ -919,13 +919,13 @@ int main() {
     }
 
     if (!CreateScenePass(renderer.descriptors, sceneTargets,
-                         renderer.mesh, renderer.sceneProgram, renderer.scenePipeline,
+                         renderer.mesh, renderer.scenePipeline,
                          renderer.sceneWirePipeline,
                          shadowMaps, renderer.cameras, renderer.lights,
                          renderer.shadows, renderer.guiPass,
                          &renderer.scenePass)) { return 1; }
     if (!CreatePostProcessPass(renderer.descriptors, sceneColor, swapchainTarget,
-                               renderer.postProgram, renderer.postPipeline,
+                               renderer.postPipeline,
                                &renderer.postPass)) {
         return 1;
     }

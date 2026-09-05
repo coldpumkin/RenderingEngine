@@ -214,8 +214,17 @@ bool CreateGui(const VulkanDevice& dev, const Commands& commands,
     return true;
 }
 
-bool CreateGuiSet(const Descriptors& descriptors, const ShaderProgram& program,
+bool CreateGuiSet(const Descriptors& descriptors,
                   const Pipeline& pipeline, Gui* out) noexcept {
+    // The program is the pipeline's, not a second argument beside it. A pipeline
+    // records what it was built from, and taking both let a caller hand over a pair
+    // that never met -- which is what the check below used to be for.
+    if (pipeline.program == nullptr) {
+        LOG("[vk] a pass was given a pipeline that names no program\n");
+        return false;
+    }
+    const ShaderProgram& program = *pipeline.program;
+
     out->program = &program;
     out->pipeline = &pipeline;
     if (!AllocateSets(descriptors, program.setLayouts[0], 1, &out->set)) {

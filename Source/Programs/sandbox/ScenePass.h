@@ -295,7 +295,7 @@ struct ScenePass {
 //           makes the matrix in binding 2 the one that drew the map in binding 3.
 bool CreateScenePass(const Descriptors& descriptors,
                      const SceneTargets* const targets[kFramesInFlight],
-                     const Mesh& mesh, const ShaderProgram& program,
+                     const Mesh& mesh,
                      const Pipeline& pipeline, const Pipeline& wirePipeline,
                      const Texture* const shadowMaps[kFramesInFlight],
                      const FrameCamera* cameras, const FrameLight* lights,

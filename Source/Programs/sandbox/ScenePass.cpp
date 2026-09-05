@@ -74,12 +74,21 @@ bool ResizeSceneTargets(const VulkanDevice& dev, const SceneTargetDescs& descs,
 // no swapchain yet, and nothing here depends on one.
 bool CreateScenePass(const Descriptors& descriptors,
                      const SceneTargets* const targets[kFramesInFlight],
-                     const Mesh& mesh, const ShaderProgram& program,
+                     const Mesh& mesh,
                      const Pipeline& pipeline, const Pipeline& wirePipeline,
                      const Texture* const shadowMaps[kFramesInFlight],
                      const FrameCamera* cameras, const FrameLight* lights,
                      const FrameShadow* shadows,
                      const Gui& gui, ScenePass* out) noexcept {
+    // The program is the pipeline's, not a second argument beside it. A pipeline
+    // records what it was built from, and taking both let a caller hand over a pair
+    // that never met -- which is what the check below used to be for.
+    if (pipeline.program == nullptr) {
+        LOG("[vk] a pass was given a pipeline that names no program\n");
+        return false;
+    }
+    const ShaderProgram& program = *pipeline.program;
+
     out->mesh = &mesh;
     out->program = &program;
     out->pipeline = &pipeline;
@@ -87,9 +96,10 @@ bool CreateScenePass(const Descriptors& descriptors,
 
     // Both variants have to answer to the same set layouts, or the sets filled below
     // fit one of them and not the other. Sharing a ShaderProgram is what guarantees
-    // it, and this is the line that says so out loud.
-    if (pipeline.program != &program || wirePipeline.program != &program) {
-        LOG("[vk] a scene pipeline was built from a different program\n");
+    // it, and comparing the two variants is the whole of what is left to ask: which
+    // program either was built from is not something a caller can get wrong now.
+    if (wirePipeline.program != pipeline.program) {
+        LOG("[vk] the scene's two pipelines were built from different programs\n");
         return false;
     }
 

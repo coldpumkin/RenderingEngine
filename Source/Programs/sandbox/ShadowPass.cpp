@@ -26,9 +26,18 @@ GraphicsPipelineDesc MakeShadowPipeline(const VertexLayout& mesh,
 
 bool CreateShadowPass(const Descriptors& descriptors,
                       const Texture* const maps[kFramesInFlight],
-                      const Mesh& mesh, const ShaderProgram& program,
+                      const Mesh& mesh,
                       const Pipeline& pipeline, const FrameShadow* shadows,
                       ShadowPass* out) noexcept {
+    // The program is the pipeline's, not a second argument beside it. A pipeline
+    // records what it was built from, and taking both let a caller hand over a pair
+    // that never met -- which is what the check below used to be for.
+    if (pipeline.program == nullptr) {
+        LOG("[vk] a pass was given a pipeline that names no program\n");
+        return false;
+    }
+    const ShaderProgram& program = *pipeline.program;
+
     out->mesh = &mesh;
     out->program = &program;
     out->pipeline = &pipeline;

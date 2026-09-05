@@ -20,8 +20,16 @@ void RefreshPostProcessPass(const Descriptors& descriptors,
 bool CreatePostProcessPass(const Descriptors& descriptors,
                            const Texture* const source[kFramesInFlight],
                            const TextureDesc& target,
-                           const ShaderProgram& program,
                            const Pipeline& pipeline, PostProcessPass* out) noexcept {
+    // The program is the pipeline's, not a second argument beside it. A pipeline
+    // records what it was built from, and taking both let a caller hand over a pair
+    // that never met -- which is what the check below used to be for.
+    if (pipeline.program == nullptr) {
+        LOG("[vk] a pass was given a pipeline that names no program\n");
+        return false;
+    }
+    const ShaderProgram& program = *pipeline.program;
+
     out->program = &program;
     out->pipeline = &pipeline;
     out->target = &target;

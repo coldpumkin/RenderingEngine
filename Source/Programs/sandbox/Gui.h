@@ -216,7 +216,7 @@ bool CreateGui(const VulkanDevice& dev, const Commands& commands,
 //
 // Separate from the above because a set cannot exist before the pool, and the pool
 // cannot be sized before every pass has said what it wants.
-bool CreateGuiSet(const Descriptors& descriptors, const ShaderProgram& program,
+bool CreateGuiSet(const Descriptors& descriptors,
                   const Pipeline& pipeline,
                   Gui* out) noexcept;
 

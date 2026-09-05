@@ -88,7 +88,7 @@ struct ShadowPass {
 //           the frame of the same index.
 bool CreateShadowPass(const Descriptors& descriptors,
                       const Texture* const maps[kFramesInFlight],
-                      const Mesh& mesh, const ShaderProgram& program,
+                      const Mesh& mesh,
                       const Pipeline& pipeline, const FrameShadow* shadows,
                       ShadowPass* out) noexcept;
 
