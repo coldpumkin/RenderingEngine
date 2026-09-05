@@ -40,6 +40,11 @@ struct ShadowPass {
     // receives is the pipeline's fact rather than the pass's.
     const Pipeline* pipeline = nullptr;
 
+    // What this pass does to what it draws into, settled once. loadOp CLEAR because the
+    // last frame's map is spent; storeOp STORE because this map is the product, unlike
+    // a depth buffer used only within its own pass.
+    RenderPassDesc pass;
+
     // Per frame in flight for the reason the scene's attachments are: the GPU still
     // reads the previous frame's map while the next is drawn.
     struct PerFrame {

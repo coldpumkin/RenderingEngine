@@ -1,5 +1,6 @@
 ﻿#include "Vulkan/Attachments.h"
 
+#include "Vulkan/Barrier.h"   // the transitions an attachment implies
 #include "Vulkan/Image.h"     // RequiredFormatFeatures
 
 #include <initializer_list>   // the candidate loops below
@@ -131,5 +132,102 @@ bool QueryTargetCapabilities(const VulkanInstance& inst, VkPhysicalDevice gpu,
         LOG("[vk] no multisampling: the resolve path has no 1x fallback\n");
         return false;
     }
+    return true;
+}
+
+bool BeginPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
+               const RenderPassDesc& desc,
+               const Texture* const views[], const Texture* const resolves[],
+               uint32_t count, VkRect2D area,
+               VkPipelineStageFlags2 waitedStage) noexcept {
+    if (count != desc.useCount) {
+        LOG("[vk] a pass declaring %u attachments was handed %u views\n",
+            desc.useCount, count);
+        return false;
+    }
+    if (count > kMaxColorTargets + 1) {
+        LOG("[vk] a pass of %u attachments, and we hold %u\n", count, kMaxColorTargets + 1);
+        return false;
+    }
+
+    VkRenderingAttachmentInfo colour[kMaxColorTargets]{};
+    VkRenderingAttachmentInfo depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    uint32_t colourCount = 0;
+    bool haveDepth = false;
+
+    for (uint32_t i = 0; i < count; ++i) {
+        if (views[i] == nullptr) {
+            LOG("[vk] attachment %u has no view\n", i);
+            return false;
+        }
+        const AttachmentUse& use = desc.uses[i];
+
+        // The role is the image's, out of the usage it was made with -- the same rule
+        // AttachmentFormatsOf reads, so a pass and its pipeline cannot disagree about
+        // which slot is which. The layout follows from the role and is not a choice.
+        const bool isColour =
+            (views[i]->desc.usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) != 0;
+        const bool isDepth =
+            (views[i]->desc.usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0;
+        if (isColour == isDepth) {
+            LOG("[vk] attachment %u is neither a colour nor a depth target\n", i);
+            return false;
+        }
+
+        VkRenderingAttachmentInfo info{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+        info.imageView = views[i]->view.handle;
+        info.imageLayout = isColour ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+                                    : VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+        info.loadOp = use.load;
+        info.storeOp = use.store;
+        info.clearValue = use.clear;
+
+        if (use.resolve != VK_RESOLVE_MODE_NONE) {
+            const Texture* into = resolves != nullptr ? resolves[i] : nullptr;
+            if (into == nullptr) {
+                LOG("[vk] attachment %u resolves and was given nowhere to resolve to\n", i);
+                return false;
+            }
+            info.resolveMode = use.resolve;
+            info.resolveImageView = into->view.handle;
+            info.resolveImageLayout = info.imageLayout;
+        }
+
+        // Where it has to be before the first draw. Skipped for LOAD, which reads what
+        // came before and so has a writer to issue it instead.
+        if (use.load != VK_ATTACHMENT_LOAD_OP_LOAD) {
+            RecordAttachmentTransition(vk, cmd, views[i]->image.handle,
+                                       isColour ? VK_IMAGE_ASPECT_COLOR_BIT
+                                                : VK_IMAGE_ASPECT_DEPTH_BIT,
+                                       info, waitedStage);
+        }
+
+        if (isColour) {
+            if (colourCount >= kMaxColorTargets) {
+                LOG("[vk] more than %u colour attachments\n", kMaxColorTargets);
+                return false;
+            }
+            colour[colourCount] = info;
+            colourCount += 1;
+        } else {
+            if (haveDepth) {
+                LOG("[vk] attachment %u is a second depth attachment\n", i);
+                return false;
+            }
+            depth = info;
+            haveDepth = true;
+        }
+    }
+
+    VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
+    rendering.flags = desc.flags;
+    rendering.renderArea = area;
+    rendering.layerCount = desc.layerCount;
+    rendering.viewMask = desc.viewMask;
+    rendering.colorAttachmentCount = colourCount;
+    rendering.pColorAttachments = colourCount != 0 ? colour : nullptr;
+    rendering.pDepthAttachment = haveDepth ? &depth : nullptr;
+
+    vk.vkCmdBeginRendering(cmd, &rendering);
     return true;
 }

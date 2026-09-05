@@ -29,6 +29,11 @@ bool CreateShadowPass(const Descriptors& descriptors,
     out->mesh = &mesh;
     out->pipeline = &pipeline;
 
+    out->pass.useCount = 1;
+    out->pass.uses[0].load = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    out->pass.uses[0].store = VK_ATTACHMENT_STORE_OP_STORE;
+    out->pass.uses[0].clear.depthStencil.depth = 1.0f;   // nothing seen yet is farthest
+
     // The same comparison the scene pass makes, because both pipelines are built from
     // the same layout now. What differs between them is which locations their vertex
     // stages read, and that is the .spv's business rather than this one's.
@@ -86,28 +91,14 @@ void RecordShadowPass(const FrameSlot& slot, const ShadowPass& shadow,
     // loadOp CLEAR: the last frame's map is spent, and the image was left
     // SHADER_READ_ONLY by the frame before -- discarding that is what CLEAR means here.
     // storeOp STORE, unlike the scene pass's depth: this one is the product.
-    VkRenderingAttachmentInfo depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-    depth.imageView = frame.depth->view.handle;
-    depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-    depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    depth.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    depth.clearValue.depthStencil.depth = 1.0f;   // nothing seen yet is farthest
-
-    // Read out of the attachment above rather than written again: CLEAR is what makes
-    // the old contents dead, and DEPTH_ATTACHMENT_OPTIMAL is what says which stage
-    // writes it. TOP_OF_PIPE because nothing outside this command buffer holds the map.
-    RecordAttachmentTransition(vk, cmd, frame.depth->image.handle,
-                               VK_IMAGE_ASPECT_DEPTH_BIT, depth,
-                               VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT);
-
-    // colorAttachmentCount 0 and no pColorAttachments. The pipeline was compiled the
-    // same way, from a fragment stage that declares no outputs.
-    VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
-    rendering.renderArea.extent = extent;
-    rendering.layerCount = 1;
-    rendering.pDepthAttachment = &depth;
-
-    vk.vkCmdBeginRendering(cmd, &rendering);
+    // One attachment and no colour, the way the pipeline was compiled -- from a
+    // fragment stage that declares no outputs. TOP_OF_PIPE because nothing outside this
+    // command buffer holds the map.
+    const Texture* const views[] = {frame.depth};
+    if (!BeginPass(vk, cmd, shadow.pass, views, nullptr, 1,
+                   VkRect2D{{0, 0}, extent}, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT)) {
+        return;
+    }
 
     // The layout comes from the pipeline that is about to be bound, not from a program
     // the pass holds. What a draw receives -- which sets, which push range -- is the

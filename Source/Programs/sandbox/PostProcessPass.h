@@ -34,6 +34,12 @@
 // however many the swapchain handed back rather than one per frame in flight. What it
 // can hold is the description of that image, which is the same for all of them.
 struct PostProcessPass {
+    // CLEAR, where it was DONT_CARE while the draw covered everything. It does not any
+    // more: a window whose shape differs from the source's leaves bars, and this is what
+    // is in them. The render area is the whole target, so the clear reaches them --
+    // a clear follows the render area, not the viewport.
+    RenderPassDesc pass;
+
     // One per frame in flight. Non-owning: the scene pass owns these images.
     const Texture* source[kFramesInFlight]{};
 

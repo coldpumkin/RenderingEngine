@@ -149,6 +149,10 @@ struct ViewOptionsUniform {
 // ImGui keeps its widget state in a global context, so this holds only what we own
 // and must destroy. One instance; a second would fight over that context.
 struct Gui {
+    // LOAD, unlike every other pass here: this one draws on top of a finished picture
+    // rather than replacing it. That is also why it issues no attachment barrier.
+    RenderPassDesc pass;
+
     const VulkanDevice* dev = nullptr;   // non-owning, needed to destroy
 
     // The atlas ImGui bakes its glyphs into, as one of our textures. Uploaded once:

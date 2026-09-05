@@ -75,6 +75,16 @@ bool CreateScenePass(const Descriptors& descriptors,
 
     out->mesh = &mesh;
     out->pipeline = &pipeline;
+
+    out->pass.useCount = 2;
+    out->pass.uses[0].load = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    out->pass.uses[0].store = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    out->pass.uses[0].clear.color = VkClearColorValue{{0.0f, 0.0f, 0.0f, 1.0f}};
+    out->pass.uses[0].resolve = VK_RESOLVE_MODE_AVERAGE_BIT;
+    // Clear 1.0 = farthest, paired with the pipeline's compareOp LESS.
+    out->pass.uses[1].load = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    out->pass.uses[1].store = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    out->pass.uses[1].clear.depthStencil.depth = 1.0f;
     out->wirePipeline = &wirePipeline;
 
     // Both variants have to answer to the same set layouts, or the sets filled below
@@ -229,41 +239,6 @@ void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
     const SceneTargets& targets = *frame.targets;
     const VkExtent2D extent = targets.color.desc.extent;   // render resolution, not window size
 
-    // imageView is the multisample image, resolveImageView is what survives the pass.
-    // vkCmdEndRendering does the averaging, so there is no second pass and no
-    // vkCmdResolveImage.
-    //
-    // storeOp DONT_CARE goes with that: only the resolved copy is read afterwards, so
-    // writing the multisample image back would be pure bandwidth. The resolve still
-    // happens -- resolveMode is what drives it, not storeOp.
-    VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-    color.imageView = targets.color.view.handle;
-    color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    color.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
-    color.resolveImageView = targets.resolve.view.handle;
-    color.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    color.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    color.clearValue.color = VkClearColorValue{{0.0f, 0.0f, 0.0f, 1.0f}};
-
-    // Clear 1.0 = farthest, paired with the pipeline's compareOp=LESS.
-    // DONT_CARE: depth is used only within this frame.
-    VkRenderingAttachmentInfo depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-    depth.imageView = targets.depth.view.handle;
-    depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-    depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    depth.clearValue.depthStencil.depth = 1.0f;
-
-    // The three barriers, read out of the two attachments above. TOP_OF_PIPE for all
-    // of them: nothing outside this command buffer holds any of these images.
-    RecordAttachmentTransition(vk, cmd, targets.color.image.handle,
-                               VK_IMAGE_ASPECT_COLOR_BIT, color,
-                               VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT);
-    RecordAttachmentTransition(vk, cmd, targets.depth.image.handle,
-                               VK_IMAGE_ASPECT_DEPTH_BIT, depth,
-                               VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT);
-
     // The resolve is not derived, and the reason is worth the four lines. It is a
     // second image the colour attachment names, written at EndRendering rather than by
     // any draw, and what makes UNDEFINED right for it is resolveMode covering the whole
@@ -274,16 +249,18 @@ void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
                            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                            VK_IMAGE_LAYOUT_UNDEFINED,
-                           color.resolveImageLayout);
+                           VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
-    VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
-    rendering.renderArea.extent = extent;
-    rendering.layerCount = 1;
-    rendering.colorAttachmentCount = 1;
-    rendering.pColorAttachments = &color;
-    rendering.pDepthAttachment = &depth;
-
-    vk.vkCmdBeginRendering(cmd, &rendering);
+    // The multisample colour, then the depth, in the order the desc declares them. The
+    // resolve rides along beside the colour: vkCmdEndRendering does the averaging, so
+    // there is no second pass and no vkCmdResolveImage. TOP_OF_PIPE because nothing
+    // outside this command buffer holds any of these images.
+    const Texture* const views[] = {&targets.color, &targets.depth};
+    const Texture* const resolves[] = {&targets.resolve, nullptr};
+    if (!BeginPass(vk, cmd, scene.pass, views, resolves, 2,
+                   VkRect2D{{0, 0}, extent}, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT)) {
+        return;
+    }
 
     // Up, because our world is y-up, and the pass is where that belongs: every draw in
     // here shares one viewport, and no pipeline had to be compiled knowing it.

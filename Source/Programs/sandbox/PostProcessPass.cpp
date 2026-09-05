@@ -26,6 +26,11 @@ bool CreatePostProcessPass(const Descriptors& descriptors,
     const ShaderProgram& program = *pipeline.program;
 
     out->pipeline = &pipeline;
+
+    out->pass.useCount = 1;
+    out->pass.uses[0].load = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    out->pass.uses[0].store = VK_ATTACHMENT_STORE_OP_STORE;
+    out->pass.uses[0].clear.color = VkClearColorValue{{0.0f, 0.0f, 0.0f, 1.0f}};
     out->target = &target;
 
     // What it writes, against what the pipeline baked -- the same comparison the other
@@ -123,41 +128,17 @@ void RecordPostProcessPass(const FrameSlot& slot, const PostProcessPass& post,
 
     // The image this pass draws into. Window sized, unlike the scene pass -- the
     // sampler's LINEAR filter scales.
-    VkRenderingAttachmentInfo swapColor{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-    swapColor.imageView = dest.view.handle;
-    swapColor.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-
-    // CLEAR, where it used to be DONT_CARE because the draw covered everything. It
-    // does not any more: a window whose shape differs from the source's leaves bars,
-    // and this is what is in them. renderArea below is still the whole target, so the
-    // clear reaches them -- a clear follows the render area and not the viewport.
-    //
-    // Unconditional, so a window at the source's own shape pays a clear it does not
-    // need. Making it conditional would put the same decision in two places, and this
-    // is a full-screen write the driver does with the fast path.
-    swapColor.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    swapColor.clearValue.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
-    swapColor.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-
-    // Read out of the attachment above: CLEAR is what makes whatever the presentation
-    // engine left here dead, so oldLayout comes out UNDEFINED.
-    //
-    // The waited stage is the one argument this pass has to know rather than derive.
-    // The presentation engine owns this image until the acquire, and SubmitFrame's
-    // semaphore waits at COLOR_ATTACHMENT_OUTPUT for it -- a transition scheduled
-    // ahead of that would run before the acquire. Every other attachment here is
-    // TOP_OF_PIPE because nothing outside the command buffer holds it.
-    RecordAttachmentTransition(vk, cmd, dest.image.handle, VK_IMAGE_ASPECT_COLOR_BIT,
-                               swapColor,
-                               VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT);
-
-    VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
-    rendering.renderArea.extent = destExtent;
-    rendering.layerCount = 1;
-    rendering.colorAttachmentCount = 1;
-    rendering.pColorAttachments = &swapColor;
-
-    vk.vkCmdBeginRendering(cmd, &rendering);
+    // The waited stage is the one thing here that cannot be derived. The presentation
+    // engine owns this image until the acquire, and SubmitFrame's semaphore waits at
+    // COLOR_ATTACHMENT_OUTPUT for it -- a transition scheduled ahead of that would run
+    // before the acquire. Every other attachment in this program is TOP_OF_PIPE because
+    // nothing outside the command buffer holds it.
+    const Texture* const views[] = {&dest};
+    if (!BeginPass(vk, cmd, post.pass, views, nullptr, 1,
+                   VkRect2D{{0, 0}, destExtent},
+                   VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT)) {
+        return;
+    }
 
     // The area is the whole point. fullscreen.vert's uv runs 0..1 over the source no
     // matter what, so the shape of the picture is decided here and nowhere else: hand

@@ -75,6 +75,55 @@ struct AttachmentFormats {
 AttachmentFormats AttachmentFormatsOf(const TextureDesc* const targets[],
                                       uint32_t count) noexcept;
 
+// What happens to one attachment over one pass, and every field of it is fixed as long
+// as the pass means the same thing. The image it happens to is not: that changes with
+// the frame in flight, so it is an argument to BeginPass.
+//
+// resolveMode is the line between the two. "This pass resolves" is what the pass is;
+// "into that image" is this frame's.
+struct AttachmentUse {
+    VkAttachmentLoadOp load = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    VkAttachmentStoreOp store = VK_ATTACHMENT_STORE_OP_STORE;
+    VkClearValue clear{};                                    // read only when load is CLEAR
+    VkResolveModeFlagBits resolve = VK_RESOLVE_MODE_NONE;    // NONE is no resolve
+};
+
+// One render pass instance, as far as it is settled before there is a frame.
+//
+// uses[] is positional with the views handed to BeginPass, the same way targets[] is
+// positional in a GraphicsPipelineDesc -- and which of them is the depth one is read
+// from each view's own usage, not from where it sits.
+struct RenderPassDesc {
+    AttachmentUse uses[kMaxColorTargets + 1]{};
+    uint32_t useCount = 0;
+
+    uint32_t layerCount = 1;
+    uint32_t viewMask = 0;             // needs multiview, which we do not ask for
+    VkRenderingFlags flags = 0;        // suspend/resume, for one instance across buffers
+};
+
+// Effect: puts every attachment where it is about to be used, then begins the render
+//         pass instance desc describes over these views.
+//
+// The barriers come from here because their two inputs do: a loadOp that overwrites
+// makes the old contents dead, and the layout follows from what the image is. Written
+// by hand they were the same two values read a second time, in another file.
+//
+// An attachment whose loadOp is LOAD gets none. Loading reads what came before, and
+// what wrote it is not in this call -- that barrier belongs to whoever wrote it.
+//
+// views[i] is what uses[i] applies to, and resolves[i] is where uses[i].resolve sends
+// it -- null wherever resolve is NONE. waitedStage is what already waits on these
+// images from outside this command buffer, TOP_OF_PIPE when nothing does.
+//
+// Contract: count must equal desc.useCount. Refused rather than trusted, since a view
+//           without its AttachmentUse would load and store by accident.
+bool BeginPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
+               const RenderPassDesc& desc,
+               const Texture* const views[], const Texture* const resolves[],
+               uint32_t count, VkRect2D area,
+               VkPipelineStageFlags2 waitedStage) noexcept;
+
 // The comparison the pass creations make: the descs they were handed, projected, and
 // what their pipeline actually baked. Nobody else can see both ends.
 inline bool SameAttachmentFormats(const AttachmentFormats& a,

@@ -201,6 +201,13 @@ bool ResizeSceneTargets(const VulkanDevice& dev, const SceneTargetDescs& descs,
 struct ScenePass {
     const Mesh* mesh = nullptr;
 
+    // What this pass does to its two attachments, settled once. The colour resolves:
+    // storeOp DONT_CARE goes with that, because only the resolved copy is read
+    // afterwards and writing the multisample image back would be pure bandwidth --
+    // resolveMode is what drives the averaging, not storeOp. The depth is DONT_CARE
+    // for a different reason: it is used only inside this frame.
+    RenderPassDesc pass;
+
     // No program here. What a draw receives -- which set layouts, which push range --
     // is the pipeline's, and recording reads it off whichever variant it just chose.
     //

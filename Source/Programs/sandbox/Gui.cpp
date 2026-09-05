@@ -222,6 +222,10 @@ bool CreateGuiSet(const Descriptors& descriptors,
     const ShaderProgram& program = *pipeline.program;
 
     out->pipeline = &pipeline;
+
+    out->pass.useCount = 1;
+    out->pass.uses[0].load = VK_ATTACHMENT_LOAD_OP_LOAD;
+    out->pass.uses[0].store = VK_ATTACHMENT_STORE_OP_STORE;
     if (!AllocateSets(descriptors, program.setLayouts[0], 1, &out->set)) {
         return false;
     }
@@ -495,24 +499,16 @@ void RecordGuiPass(const FrameSlot& slot, Gui& gui, const Texture& target) noexc
     const VolkDeviceTable& vk = slot.dev->table;
     VkCommandBuffer cmd = slot.cmd;
 
-    // LOAD, unlike the two passes before it: this one draws on top of a finished
-    // picture rather than replacing it.
+    // No barrier comes out of this one: loadOp is LOAD, so BeginPass issues none.
     //
     // Contract: whatever drew here must already be ordered before this. RecordFrame
     // issues that barrier -- what came first is not this pass's to know.
-    VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-    color.imageView = target.view.handle;
-    color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    color.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-    color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-
-    VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
-    rendering.renderArea.extent = target.desc.extent;
-    rendering.layerCount = 1;
-    rendering.colorAttachmentCount = 1;
-    rendering.pColorAttachments = &color;
-
-    vk.vkCmdBeginRendering(cmd, &rendering);
+    const Texture* const views[] = {&target};
+    if (!BeginPass(vk, cmd, gui.pass, views, nullptr, 1,
+                   VkRect2D{{0, 0}, target.desc.extent},
+                   VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT)) {
+        return;
+    }
 
     // Every default: ImGui works in window pixels with the origin at the top left,
     // its triangles have no consistent winding so nothing is culled, and there is no
