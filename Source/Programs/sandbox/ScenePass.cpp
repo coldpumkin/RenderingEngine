@@ -9,11 +9,11 @@
 
 #include <glm/matrix.hpp>   // inverse, transpose
 
-SceneTargetDescs MakeSceneTargets(VkExtent2D extent, VkFormat colour, VkFormat depth,
-                                  VkSampleCountFlagBits samples) noexcept {
+SceneTargetDescs MakeSceneTargets(VkExtent2D extent, VkFormat colour,
+                                  const TargetCapabilities& caps) noexcept {
     return SceneTargetDescs{
         // No SAMPLED: a sampler2D cannot read a multisample image.
-        {extent, colour, samples, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT},
+        {extent, colour, caps.samples, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT},
 
         // The only image that leaves this pass. SAMPLED because the post pass reads
         // it, TRANSFER_SRC because the capture does -- both bits are edges rather
@@ -24,7 +24,8 @@ SceneTargetDescs MakeSceneTargets(VkExtent2D extent, VkFormat colour, VkFormat d
              | VK_IMAGE_USAGE_SAMPLED_BIT
              | VK_IMAGE_USAGE_TRANSFER_SRC_BIT},
 
-        {extent, depth, samples, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT},
+        {extent, caps.depthFormat, caps.samples,
+         VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT},
     };
 }
 

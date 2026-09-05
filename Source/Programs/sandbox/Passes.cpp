@@ -91,9 +91,9 @@ VkImageUsageFlags DepthTargetUsage() noexcept {
     // The arguments do not reach usage, so any values will do. Calling the real
     // functions is the point -- a hand-written union here would drift the day one of
     // them changes what it asks for.
-    return MakeSceneTargets(VkExtent2D{}, VK_FORMAT_UNDEFINED, VK_FORMAT_UNDEFINED,
-                            VK_SAMPLE_COUNT_1_BIT).depth.usage
-         | MakeShadowTarget(VkExtent2D{}, VK_FORMAT_UNDEFINED).usage;
+    return MakeSceneTargets(VkExtent2D{}, VK_FORMAT_UNDEFINED,
+                            TargetCapabilities{}).depth.usage
+         | MakeShadowTarget(VkExtent2D{}, TargetCapabilities{}).usage;
 }
 
 void SetDrawModel(DrawItem* item, const glm::mat4& model) noexcept {

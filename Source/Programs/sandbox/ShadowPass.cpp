@@ -5,8 +5,9 @@
 
 #include <iterator>   // std::size
 
-TextureDesc MakeShadowTarget(VkExtent2D extent, VkFormat depth) noexcept {
-    return TextureDesc{extent, depth, VK_SAMPLE_COUNT_1_BIT,
+TextureDesc MakeShadowTarget(VkExtent2D extent, const TargetCapabilities& caps) noexcept {
+    // caps.samples goes unread on purpose -- see the header.
+    return TextureDesc{extent, caps.depthFormat, VK_SAMPLE_COUNT_1_BIT,
                        VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
                            | VK_IMAGE_USAGE_SAMPLED_BIT};
 }

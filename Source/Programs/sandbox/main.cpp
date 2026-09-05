@@ -596,10 +596,9 @@ int main() {
     if (!QueryTargetCapabilities(inst, selection.gpu, DepthTargetUsage(),
                                  kDesiredSampleCount, &caps)) { return 1; }
 
-    SceneTargetDescs sceneTargetDescs = MakeSceneTargets(DesiredRenderExtent(window),
-                                                         kRenderColorFormat,
-                                                         caps.depthFormat, caps.samples);
-    const TextureDesc shadowTarget = MakeShadowTarget(kShadowExtent, caps.depthFormat);
+    SceneTargetDescs sceneTargetDescs =
+        MakeSceneTargets(DesiredRenderExtent(window), kRenderColorFormat, caps);
+    const TextureDesc shadowTarget = MakeShadowTarget(kShadowExtent, caps);
 
     // Device -- and past it, everything that needs one
     // ========================================================================
@@ -1020,8 +1019,7 @@ int main() {
             // Described again at the new size, by the same call that described them
             // the first time. Only the extent differs, so the pipelines stand and the
             // scene pass's pointers still name the right objects.
-            sceneTargetDescs = MakeSceneTargets(wanted, kRenderColorFormat,
-                                                caps.depthFormat, caps.samples);
+            sceneTargetDescs = MakeSceneTargets(wanted, kRenderColorFormat, caps);
 
             bool remade = true;
             for (uint32_t i = 0; i < kFramesInFlight && remade; ++i) {

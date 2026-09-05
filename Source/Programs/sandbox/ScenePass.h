@@ -120,12 +120,17 @@ struct SceneTargetDescs {
     TextureDesc depth;     // multisample. Never read outside the frame
 };
 
-// Output: the three, from one size and the formats
+// Output: the three, from one size, one choice and what the device answered
 //
 // The expansion rule, which used to be four lines inside CreateScenePass and a
 // sentence in its comment. Two callers now -- creation and every resize.
-SceneTargetDescs MakeSceneTargets(VkExtent2D extent, VkFormat colour, VkFormat depth,
-                                  VkSampleCountFlagBits samples) noexcept;
+//
+// colour is the one field a caller decides: the render chain's format is ours, not the
+// device's, so TargetCapabilities has no opinion on it. Depth and the sample count are
+// the device's answers and come whole -- which is what lets the resolve refuse the
+// sample count while the other two take it.
+SceneTargetDescs MakeSceneTargets(VkExtent2D extent, VkFormat colour,
+                                  const TargetCapabilities& caps) noexcept;
 
 // The three images those descs describe, made together and remade together
 //

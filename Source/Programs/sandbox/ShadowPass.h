@@ -16,10 +16,16 @@
 
 // Output: the one image the shadow pass makes
 //
-// One sample, always: averaging depths across an edge produces a value no surface was
-// ever at, and every fragment comparing against it is wrong. SAMPLED because the scene
-// pass reads it -- the second of the two edges.
-TextureDesc MakeShadowTarget(VkExtent2D extent, VkFormat depth) noexcept;
+// Input is the shape every target maker here takes: how big, what this caller chose,
+// and what the device answered. This one chooses nothing, so the middle is absent.
+//
+// **caps.samples is read and refused.** One sample, always: averaging depths across an
+// edge produces a value no surface was ever at, and every fragment comparing against
+// it is wrong. Taking the whole of what the device offers is what makes that a
+// decision here rather than an argument main forgot to pass.
+//
+// SAMPLED because the scene pass reads it -- the second of the two edges.
+TextureDesc MakeShadowTarget(VkExtent2D extent, const TargetCapabilities& caps) noexcept;
 
 // Output: what the shadow pipeline is compiled from
 //
