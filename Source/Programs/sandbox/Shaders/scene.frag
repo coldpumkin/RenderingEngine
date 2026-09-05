@@ -1,34 +1,49 @@
 #version 450
 
-// All world space but the last, which is on the surface rather than in the scene.
-// The order is scene.vert's, and the two files agree on it by location.
+// scene.frag -- one fragment, to one colour
+// ============================================================================
+//
+//   in                          from                   update
+//   -------------------------------------------------------------------------
+//   fragWorldPos fragNormal
+//   fragTangent fragUV          scene.vert, interpolated   per fragment
+//   camera.viewPos              set 0, binding 0           per frame
+//   light                       set 0, binding 1           per frame
+//   shadow shadowMap            set 0, binding 2 and 3     per frame
+//   view                        set 0, binding 4           per frame (the panel)
+//   baseColor normalMap
+//   mtl metallicRoughnessMap    set 1, bindings 0..3       per material
+//   pc.alpha                    push constant              per draw
+//
+//   out
+//   -------------------------------------------------------------------------
+//   outColor                    location 0
+//
+// Every update frequency in the program meets here. That is what a fragment stage is:
+// the place a per-vertex value, a per-material texture and a per-frame light become
+// one number.
+//
+// Set 0 and set 1 are two sets because their contents are counted differently -- one
+// per frame in flight, one per material. In one set the count would be their product,
+// each copy carrying the same camera.
+
+// All world space but the last, which is a coordinate on the surface. The order is
+// scene.vert's, and the two files agree by location.
 layout(location = 0) in vec3 fragWorldPos;
 layout(location = 1) in vec3 fragNormal;
 layout(location = 2) in vec4 fragTangent;
 layout(location = 3) in vec2 fragUV;
 
-// Declared in the order the values are decided: the frame's, then the material's,
-// then this draw's. A set is a set because of how its contents are counted, so that
-// order is also the reason there are two of them.
-
-// Set 0 is the frame's, and it holds two subjects rather than one. They were a single
-// block called Scene until it was read field by field: the camera's two come from the
-// keyboard, the light's three from the clock, and the light's matrix is wanted by the
-// shadow pass as well while nothing of the camera's is. Different reasons to change
-// and a different number of readers, which is two of the three grounds for splitting.
-//
-// Binding 0, the camera. Only viewPos is read here, so it is the only field declared
-// -- 128 is where it starts, and stating that beats declaring two matrices this stage
-// never touches. The same thing the push block below does, for the same reason.
+// Where the eye is. Only this field, at the offset it sits at: the two matrices in
+// front of it are the vertex stage's.
 //
 // Contract: 128 is offsetof(CameraUniform, viewPos) in Passes.h -- view then proj.
 layout(set = 0, binding = 0) uniform Camera {
     layout(offset = 128) vec4 viewPos;
 } camera;
 
-// Binding 1, the light -- what arrives at a surface. No matrix: what this does to a
-// pixel is dot(normal, toLight) and a multiply by a colour, and neither needs to know
-// where the light looks from.
+// What arrives at a surface. No matrix here: a fragment needs a direction and a
+// colour, and where the light looks *from* is the shadow's business below.
 //
 // Contract: same fields as LightUniform in Passes.h.
 layout(set = 0, binding = 1) uniform Light {
@@ -36,18 +51,17 @@ layout(set = 0, binding = 1) uniform Light {
     vec4 color;       // rgb = colour, a = ambient
 } light;
 
-// Bindings 2 and 3, the shadowing of that light -- one fact in two halves. The matrix
-// puts this fragment where the map was drawn from, and the map says what was nearest
-// there. **Neither is used outside ShadowFactor**, which is why they are apart from
-// the block above: a light is a direction and a colour, and its being a viewpoint is
-// something shadow mapping needs rather than something the light has.
+// The same light as a viewpoint -- one fact in two halves. The matrix puts a fragment
+// where the map was drawn from, and the map says what was nearest there.
+//
+// Apart from the block above because neither is used outside ShadowFactor: being a
+// viewpoint is something shadow mapping needs, not something a light has.
 //
 // The two cannot disagree by construction: binding 2 is the buffer the shadow pass was
-// handed, so the matrix is the one that drew the map beside it.
+// handed, so this matrix is the one that drew the map beside it.
 //
-// A plain sampler2D, so this reads the stored depth and compares it here. A
-// comparison sampler would do the test in hardware and give free 2x2 filtering, and
-// that is what the first soft edge will ask for.
+// A plain sampler2D, so the comparison happens here. A comparison sampler would do it
+// in hardware with free 2x2 filtering, which is what a soft edge would ask for.
 layout(set = 0, binding = 2) uniform Shadow {
     mat4 lightView;
     mat4 lightProj;
@@ -55,9 +69,8 @@ layout(set = 0, binding = 2) uniform Shadow {
 
 layout(set = 0, binding = 3) uniform sampler2D shadowMap;
 
-// Binding 4: what to leave out, so a feature can be compared against its own absence
-// without rebuilding. Counted per frame in flight like the rest, and owned by the
-// panel -- nothing the scene computes decides any of it.
+// What to leave out, so a feature can be compared against its own absence without
+// rebuilding. Owned by the panel -- nothing the scene computes decides any of it.
 //
 // Contract: field order matches ViewOptionsUniform in Gui.h.
 layout(set = 0, binding = 4) uniform View {
@@ -69,23 +82,20 @@ layout(set = 0, binding = 4) uniform View {
     float useMetallicRoughness;
 } view;
 
-// Set 1 is the material's -- three bindings, not three sets, because all three are
-// counted the same way: one per material. Separate from set 0 because that one is
-// counted per frame in flight, and putting both in one set would need their product,
-// each copy carrying the same camera.
+// Set 1, per material. Four bindings and one set: all four are counted the same way.
 //
-// Contract: three bindings here, three in the material layout, in this order.
+// Contract: this order is MaterialSet() in Passes.h, which every program that draws a
+//           surface is checked against.
 layout(set = 1, binding = 0) uniform sampler2D baseColor;
 
-// glTF stores it tangent space, so it needs the TBN below.
+// glTF stores this in tangent space, so it needs the TBN built in main.
 //
-// Contract: this image must be UNORM. It is a direction, not a colour, and reading it
-//           as SRGB would bend every normal toward the flat one.
+// Contract: this image must be UNORM. It is a direction, not a colour -- read as SRGB
+//           every normal bends toward the flat one.
 layout(set = 1, binding = 1) uniform sampler2D normalMap;
 
-// What the material is apart from its images. In the set rather than the push block
-// because it is counted by materials: the push block goes out once per draw, so a
-// value that is one per material would ride along four times too often.
+// What the material is apart from its images. In the set and not the push block
+// because it is counted per material; the push block goes out once per draw.
 //
 // Contract: field order and std140 padding match MaterialParams in Passes.h.
 layout(set = 1, binding = 2) uniform MaterialBlock {
@@ -98,25 +108,15 @@ layout(set = 1, binding = 2) uniform MaterialBlock {
 // glTF packs two numbers into one image: green is roughness, blue is metallic. Red is
 // unused here -- some tools write occlusion into it, which we do not read.
 //
-// Contract: this image must be UNORM. These are numbers the shader multiplies, not
-//           light the eye sees, and SRGB would bend every one of them.
+// Contract: this image must be UNORM, for the same reason as the normal map. These are
+//           numbers the shader multiplies, not light the eye sees.
 layout(set = 1, binding = 3) uniform sampler2D metallicRoughnessMap;
 
-// This draw's, and nothing else: the push block is the one thing sent for every draw
-// whatever the order.
+// Per draw. One field, at the offset it actually sits at -- a stage declares what it
+// reads, and a field's offset comes from every field in front of it.
 //
-// One field, at the offset it actually sits at. A stage declares what it reads, not
-// what the block contains -- but a field's offset comes from every field in front of
-// it, so naming a subset means saying where the subset starts.
-//
-// Written out as mat4 + three vec4 before it, this stage would have to carry a normal
-// matrix it never touches only to put alpha in the right place. It said
-// "mat4 model; float alpha;" instead, which put alpha at 64 and read the first column
-// of the normal matrix -- about 125 under our uniform scale. Nothing showed, because
-// blending is off and the alpha channel is discarded.
-//
-// Contract: 112 is offsetof(PushConstants, alpha) in Passes.h. Nothing checks it --
-//           the .spv reports the block's size and the layer compares that, and a field
+// Contract: 112 is offsetof(PushConstants, alpha) in Passes.h. Nothing checks it: the
+//           .spv reports the block's extent and the layer compares that, and a field
 //           inside it is past what either side can see.
 layout(push_constant) uniform Push {
     layout(offset = 112) float alpha;
@@ -126,26 +126,24 @@ layout(location = 0) out vec4 outColor;
 
 // Output: 1 where the light reaches this point, 0 where something else got there first
 //
-// ndotl steers the bias: a surface edge-on to the light spans many depths inside one
-// shadow texel, so it needs more slack than one facing the light does. Without it the
-// choice is between acne on the flat surfaces and a gap under every object.
+// ndotl steers the bias. A surface edge-on to the light spans many depths inside one
+// shadow texel and needs more slack than one facing it; without that the choice is
+// between acne on the flat surfaces and a gap under every object.
 float ShadowFactor(vec3 worldPos, float ndotl) {
     const vec4 clip = shadow.lightProj * (shadow.lightView * vec4(worldPos, 1.0));
 
     // The light is directional, so its projection is orthographic and w is 1. Divided
-    // anyway -- this line is what would have to change for a spot light, and it should
-    // be visible rather than assumed.
+    // anyway: this is the line a spot light would change, and it should be visible.
     const vec3 ndc = clip.xyz / clip.w;
 
-    // Contract: this maps ndc to uv the way the shadow pipeline's viewport lays the
-    //           map out -- v grows downward, which is ViewportY::Down and the default
-    //           it is left at. Flip one and the shadows land mirrored about the
-    //           horizontal; nothing reports it, because both sides are legal alone.
+    // Contract: this maps ndc to uv the way the shadow pipeline's viewport lays the map
+    //           out -- v grows downward, which is ViewportY::Down. Flip one and the
+    //           shadows land mirrored; nothing reports it, both sides being legal alone.
     const vec2 uv = ndc.xy * 0.5 + 0.5;
 
     // Outside the map is not "in shadow": the light's ortho box covers the scene we
-    // chose, and anything past it has no depth to compare against. The sampler wraps,
-    // so without this the far end of the atrium would be shaded by the near end.
+    // chose, and past it there is no depth to compare against. The sampler wraps, so
+    // without this the far end of the atrium would be shaded by the near end.
     if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || ndc.z > 1.0) {
         return 1.0;
     }
@@ -155,72 +153,48 @@ float ShadowFactor(vec3 worldPos, float ndotl) {
 }
 
 void main() {
-    // Before the lighting: a thrown-away fragment should cost nothing after this
-    // point, and discard is what glTF alphaMode MASK means.
+    // --- coverage: does this fragment exist at all -------------------------
     //
-    // The alpha is the material's, not the push constant's -- one says which texels
+    // Before the lighting, so a thrown-away fragment costs nothing after this point.
+    // discard is what glTF alphaMode MASK means.
+    //
+    // The alpha here is the material's, not the push constant's: one says which texels
     // exist, the other how see-through the whole surface is. glTF multiplies the
-    // texture's by the factor's, which is why both are here.
+    // texture's by the factor's, which is why both appear.
     const vec4 sampled = texture(baseColor, fragUV);
     const float coverage = sampled.a * mtl.baseColorFactor.a;
     if (view.useAlphaMask > 0.5 && coverage < mtl.alphaCutoff) { discard; }
 
-    // Normalized here because interpolation across the triangle shortens it.
+    // --- the surface frame: which way does this point face ------------------
+    //
+    // Normalized because interpolation across the triangle shortens it.
     const vec3 geometric = normalize(fragNormal);
 
-    // Gram-Schmidt: interpolation leaves the tangent slightly off perpendicular, and
+    // Gram-Schmidt. Interpolation leaves the tangent slightly off perpendicular, and
     // the TBN has to be orthonormal or the bent normal comes out skewed.
     const vec3 tangent = normalize(fragTangent.xyz - geometric * dot(geometric, fragTangent.xyz));
     const vec3 bitangent = cross(geometric, tangent) * fragTangent.w;
     const mat3 tbn = mat3(tangent, bitangent, geometric);
 
-    // Stored 0..1, used -1..1. A flat texel is (0.5, 0.5, 1.0), which comes back as
-    // +z -- the geometric normal, unchanged.
+    // Stored 0..1, used -1..1. A flat texel is (0.5, 0.5, 1.0), which comes back as +z
+    // -- the geometric normal, unchanged.
     const vec3 tangentNormal = texture(normalMap, fragUV).xyz * 2.0 - 1.0;
     const vec3 normal = view.useNormalMap > 0.5 ? normalize(tbn * tangentNormal)
                                                  : geometric;
-    const vec3 toLight = normalize(light.direction.xyz);
-    const float lambert = max(dot(normal, toLight), 0.0);
 
-    // Blinn-Phong: the halfway vector stands in for the mirror direction, and lines up
-    // with the normal exactly when the surface reflects the light at the eye.
-    // What the surface is made of. Texture times factor, the same rule base colour
-    // follows -- glTF means neither alone.
+    // --- what the material is ----------------------------------------------
     //
-    // Off, both take the value a material with no answer would have: fully rough and
-    // not metal, which is the flat plastic everything looked like before this was
-    // read.
+    // Texture times factor, which is what glTF means by either -- neither alone is it.
+    //
+    // Switched off, both take the value a material with no answer would have: fully
+    // rough and not metal, which is the flat plastic everything looked like before
+    // this was read.
     const vec2 mr = texture(metallicRoughnessMap, fragUV).gb;
     const float roughness = view.useMetallicRoughness > 0.5
                           ? clamp(mr.x * mtl.roughness, 0.04, 1.0) : 1.0;
     const float metallic = view.useMetallicRoughness > 0.5 ? mr.y * mtl.metallic : 0.0;
 
-    const vec3 toEye = normalize(camera.viewPos.xyz - fragWorldPos);
-    const vec3 halfway = normalize(toLight + toEye);
-
-    // Roughness as a Blinn-Phong exponent. **This is not PBR** -- there is no GGX
-    // distribution, no Fresnel and no energy conservation here. What it buys is that
-    // roughness now comes from the asset instead of one constant for the whole scene,
-    // so marble and cloth stop having the same highlight.
-    //
-    // The mapping is the usual one: a smooth surface concentrates the highlight, a
-    // rough one spreads it. 2/a^4 - 2 with a = roughness^2 is the standard
-    // correspondence; this is the same curve without the arithmetic.
-    const float shininess = mix(256.0, 4.0, roughness);
-    const float highlight = pow(max(dot(normal, halfway), 0.0), shininess);
-
-    // Gated on lambert: a surface facing away from the light cannot shine.
-    const float specular = highlight * step(0.0001, lambert) * view.useSpecular;
-
-    // Skipped where the surface already faces away: it is unlit either way, and the
-    // bias is meaningless at a grazing angle.
-    const float shade = (view.useShadow > 0.5 && lambert > 0.0)
-                      ? ShadowFactor(fragWorldPos, lambert) : 1.0;
-
-    // Diffuse takes the surface colour, specular does not -- a highlight is the light
-    // itself reflected, not the paint.
-    // A flat grey when it is off, so the shape and the lighting stay readable.
-    // Texture times factor is what glTF means by base colour -- neither alone is it.
+    // A flat grey when base colour is off, so the shape and the lighting stay readable.
     const vec3 albedo = view.useBaseColor > 0.5
                       ? sampled.rgb * mtl.baseColorFactor.rgb
                       : vec3(0.8);
@@ -231,15 +205,44 @@ void main() {
     const vec3 specularColor = mix(vec3(0.04), albedo, metallic);
     const vec3 diffuseColor = albedo * (1.0 - metallic);
 
-    // Ambient is outside the shade: a shadowed surface is still lit by the room. It
-    // reaches the reflected term too, which is not what a real renderer does -- there
-    // an environment map is what a metal reflects.
+    // --- how much light arrives ---------------------------------------------
+    const vec3 toLight = normalize(light.direction.xyz);
+    const float lambert = max(dot(normal, toLight), 0.0);
+
+    // Blinn-Phong. The halfway vector stands in for the mirror direction and lines up
+    // with the normal exactly when the surface reflects the light at the eye.
+    const vec3 toEye = normalize(camera.viewPos.xyz - fragWorldPos);
+    const vec3 halfway = normalize(toLight + toEye);
+
+    // Roughness as a Blinn-Phong exponent. **This is not PBR** -- no GGX distribution,
+    // no Fresnel, no energy conservation. What it buys is roughness coming from the
+    // asset instead of one constant for the scene, so marble and cloth stop having the
+    // same highlight.
     //
-    // Without one, a metal has no diffuse and only a highlight, so every metal surface
-    // not facing the light goes black. Sponza has several (the curtain rods, the
-    // planters) and they did exactly that. The ambient standing in for a reflection is
-    // the cheapest thing that is not a black hole, and it is the line that changes the
-    // day an environment map arrives.
+    // Smooth concentrates the highlight, rough spreads it. 2/a^4 - 2 with a =
+    // roughness^2 is the standard correspondence; this is that curve without the
+    // arithmetic.
+    const float shininess = mix(256.0, 4.0, roughness);
+    const float highlight = pow(max(dot(normal, halfway), 0.0), shininess);
+
+    // Gated on lambert: a surface facing away from the light cannot shine.
+    const float specular = highlight * step(0.0001, lambert) * view.useSpecular;
+
+    // Skipped where the surface already faces away -- unlit either way, and the bias is
+    // meaningless at a grazing angle.
+    const float shade = (view.useShadow > 0.5 && lambert > 0.0)
+                      ? ShadowFactor(fragWorldPos, lambert) : 1.0;
+
+    // --- put it together -----------------------------------------------------
+    //
+    // Diffuse takes the surface colour, specular takes the light's: a highlight is the
+    // light itself reflected, not the paint.
+    //
+    // Ambient sits outside the shade, because a shadowed surface is still lit by the
+    // room. It reaches the reflected term too, which a real renderer would not do --
+    // there an environment map is what a metal reflects. Without one a metal has no
+    // diffuse and only a highlight, so every metal surface facing away goes black.
+    // Sponza has several and they did exactly that.
     const vec3 lit =
         (light.color.rgb * lambert * shade + light.color.a) * diffuseColor
         + (light.color.rgb * specular * shade + light.color.a) * specularColor;

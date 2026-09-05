@@ -1,7 +1,13 @@
 #version 450
 
-// A full-screen triangle. **No vertex buffer**: gl_VertexIndex makes the three points,
-// which is why this pipeline's vertex layout has stride 0.
+// fullscreen.vert -- three points that cover the screen, from nothing
+//
+//   in    gl_VertexIndex, and nothing else. **No vertex buffer**, which is why this
+//         pipeline's vertex layout has stride 0
+//   out   gl_Position to the rasterizer, uv to the fragment stage
+//
+// Paired with post.frag today; a lighting stage would pair this same module with a
+// different fragment shader.
 //
 // One triangle larger than the screen rather than a quad of two. The scissor clips the
 // overhang so the result is the same, and a quad shades the pixels along the diagonal
