@@ -83,11 +83,15 @@ bool QuerySurfaceExtent(const VulkanInstance& inst,
 }
 
 TextureDesc SwapchainTargetDesc(VkSurfaceFormatKHR format, VkExtent2D extent) noexcept {
-    // One sample and colour attachment only: a presentable image has no depth, cannot
-    // be multisampled, and nothing here samples one. Every field is the presentation
-    // engine's, which is what makes this the one target desc we do not decide.
+    // One sample: a presentable image has no depth and cannot be multisampled. Every
+    // field here is the presentation engine's, which makes this the one target desc we
+    // do not decide.
+    //
+    // TRANSFER_SRC matches what CreateSwapchain asks the surface for, so a reader can
+    // see from the desc that a frame may be copied out of one of these.
     return TextureDesc{extent, format.format, VK_SAMPLE_COUNT_1_BIT,
-                       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT};
+                       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+                           | VK_IMAGE_USAGE_TRANSFER_SRC_BIT};
 }
 
 TextureDesc SwapchainTargetDesc(const Window& window) noexcept {
@@ -171,10 +175,19 @@ bool CreateSwapchain(const VulkanInstance& inst,
     info.imageColorSpace = surfaceFormat.colorSpace;
     info.imageExtent = extent;
     info.imageArrayLayers = 1;
-    // The post-process pass draws straight into these, so COLOR_ATTACHMENT is all
-    // that is needed -- and it is the one usage the spec always puts in
-    // supportedUsageFlags, so there is nothing to check.
+    // COLOR_ATTACHMENT because passes draw straight into these, and it is the one usage
+    // the spec always puts in supportedUsageFlags.
+    //
+    // TRANSFER_SRC so a frame can be read back off the presented image rather than off
+    // something earlier in the chain. Asked for always and not only while capturing: a
+    // capture has to be of the same images a normal run presents, or it measures a path
+    // nobody runs. Checked, because unlike the first this one is optional.
     info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    if ((caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0) {
+        info.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    } else {
+        LOG("[vk] the surface does not allow TRANSFER_SRC; a frame cannot be read back\n");
+    }
     // Only the graphics queue touches a swapchain image. Compute writing here
     // directly would mean CONCURRENT or a queue family ownership transfer, both of
     // which cost something -- picked when there is a reason to.

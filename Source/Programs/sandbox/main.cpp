@@ -112,8 +112,10 @@ struct MaterialSource {
 // whatever is at those coordinates (the same binary measured 0.95% and 14.26% black on
 // two runs). So two runs of one build are identical and a diff is only ever code.
 //
-// Contract: the subject is the resolve, at whatever size the targets are and before
-//           the panel goes on top. Two captures compare only if taken the same way.
+// Contract: the subject is the presented image, at the window's size and with every
+//           pass in it. Two captures compare only if taken the same way, so moving the
+//           subject changes every recorded hash at once -- which is what happened when
+//           it stopped being the scene's resolve.
 
 static void Put32(uint8_t* at, uint32_t value) noexcept {
     at[0] = static_cast<uint8_t>(value);
@@ -946,6 +948,11 @@ int main() {
     // Read once, and dt still comes from the real clock or the camera stops answering.
     const bool fixedTime =
         std::getenv("LAMBDA_FIXED_TIME") != nullptr || capturePath != nullptr;
+
+    // Which frame a capture is of. 1 and not 0 because the panel is not in frame 0 --
+    // see the capture itself, below the submit.
+    constexpr uint32_t kCaptureFrame = 1;
+    uint32_t framesDrawn = 0;
     constexpr float kFixedTime = 1.0f;   // any constant. 1.0 puts the light off-axis
 
     // Inside the atrium, looking along it. The old value put the camera at the origin
@@ -1012,9 +1019,15 @@ int main() {
         //
         // One clock reading, two values: t is absolute (object spin), dt is the gap
         // (camera movement). Reading twice would let them drift apart.
+        //
+        // Both fixed together, and dt matters as much as t: the panel prints a frame
+        // time, so a real one puts the machine's speed into the picture. Two runs of
+        // one build differed by that alone until this line existed. 1/60 rather than 0
+        // -- a zero gap is a frame nothing could have moved in.
         const double now = glfwGetTime();
         const float t = fixedTime ? kFixedTime : static_cast<float>(now);
-        const float dt = static_cast<float>(now - lastTime);
+        const float dt = fixedTime ? 1.0f / 60.0f
+                                   : static_cast<float>(now - lastTime);
         lastTime = now;
 
         // Camera -- input to a view
@@ -1169,19 +1182,29 @@ int main() {
         if (!SubmitFrame(dev, slot, target)) {
             break;
         }
-        if (!PresentFrame(dev, &window, target)) {
-            break;
-        }
 
         // One frame, then out. Everything the picture depends on is settled before the
         // loop -- textures uploaded, camera at its start -- so waiting longer only adds
         // whatever the clock and the keyboard did meanwhile.
         //
-        // The wait is for this frame's own submit: colorResolve is being written by
-        // the commands just sent, and ReadTexturePixels copies from it.
-        if (capturePath != nullptr) {
+        // Between submit and present, and the position is the point. The subject is the
+        // image the frame actually shows, so every pass is in it -- the post pass's
+        // letterboxing and the panel included. Reading an earlier image left both out,
+        // and a change to either moved nothing.
+        //
+        // Not the first frame, and that is measured rather than assumed: ImGui builds
+        // no vertices for a window on the frame it is created, so a capture of frame 0
+        // has no panel in it however late in the frame it is taken. The clock is fixed,
+        // nothing is typed, and every draw list is rebuilt from scratch -- so frame 1
+        // is as reproducible as frame 0 was.
+        //
+        // The wait is for this frame's own submit: these commands are still writing the
+        // image ReadTexturePixels copies from. Present is skipped afterwards, because
+        // the loop ends here and nothing would see it.
+        framesDrawn += 1;
+        if (capturePath != nullptr && framesDrawn > kCaptureFrame) {
             dev.table.vkDeviceWaitIdle(dev.handle);
-            const Texture& shot = *sceneColor[slot.index];
+            const Texture& shot = *target.texture;
 
             // Contract: WriteBmp reads red first, and ReadTexturePixels hands back the
             //           image's own channel order -- BGRA included. Refused rather
@@ -1194,14 +1217,20 @@ int main() {
                 break;
             }
 
+            // PRESENT_SRC because that is where RecordFrame leaves it -- the layout a
+            // presentable image is in when the frame is done with it.
             std::vector<uint8_t> pixels;
             if (ReadTexturePixels(dev, commands, shot,
-                                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, &pixels)
+                                  VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, &pixels)
                     && WriteBmp(capturePath, shot.desc.extent.width,
                                 shot.desc.extent.height, pixels.data())) {
                 LOG("[capture] %ux%u -> %s\n",
                     shot.desc.extent.width, shot.desc.extent.height, capturePath);
             }
+            break;
+        }
+
+        if (!PresentFrame(dev, &window, target)) {
             break;
         }
 
