@@ -78,6 +78,14 @@ bool Reflect(const std::vector<uint32_t>& code, const char* path,
         return false;
     }
 
+    // Which stage this is, read unconditionally. It used to be picked up only inside
+    // the push-block branch, which left a stage that declares no push constants
+    // reporting 0 -- and then the argument position was the only thing that said what
+    // a .spv was. Feeding all 8x8 pairs of our shaders to CheckStageInterface let 8
+    // through, 4 of them nonsense (two vertex, two fragment, one reversed): every one
+    // a stage error, none an interface error.
+    out->stage = static_cast<VkShaderStageFlags>(module.shader_stage);
+
     uint32_t inputCount = 0;
     spvReflectEnumerateInputVariables(&module, &inputCount, nullptr);
     std::vector<SpvReflectInterfaceVariable*> inputs(inputCount);
@@ -129,9 +137,6 @@ bool Reflect(const std::vector<uint32_t>& code, const char* path,
     if (blockCount != 0) {
         spvReflectEnumeratePushConstantBlocks(&module, &blockCount, blocks.data());
         out->pushSize = blocks[0]->size;
-        // The stage is the shader's own. Two stages sharing one block each report
-        // themselves, and the pipeline ors them together.
-        out->pushStages = static_cast<VkShaderStageFlags>(module.shader_stage);
     }
 
     uint32_t bindingCount = 0;
@@ -163,6 +168,18 @@ bool Reflect(const std::vector<uint32_t>& code, const char* path,
 }
 
 }   // namespace
+
+const char* StageName(VkShaderStageFlags stage) noexcept {
+    switch (stage) {
+        case VK_SHADER_STAGE_VERTEX_BIT:                  return "vertex";
+        case VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT:    return "tess control";
+        case VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT: return "tess evaluation";
+        case VK_SHADER_STAGE_GEOMETRY_BIT:                return "geometry";
+        case VK_SHADER_STAGE_FRAGMENT_BIT:                return "fragment";
+        case VK_SHADER_STAGE_COMPUTE_BIT:                 return "compute";
+        default:                                          return "unknown";
+    }
+}
 
 bool ReflectShaderFile(const char* path, ShaderInterface* out) noexcept {
     std::vector<uint32_t> code;
@@ -298,6 +315,17 @@ bool CreateShaderProgram(const VulkanDevice& dev,
         return false;
     }
 
+    // The .spv says which stage it is; the argument position only says where the
+    // caller put it. Checking the two against each other is what the position used to
+    // be trusted for.
+    if (out->vertInterface.stage != VK_SHADER_STAGE_VERTEX_BIT
+            || out->fragInterface.stage != VK_SHADER_STAGE_FRAGMENT_BIT) {
+        LOG("[vk] %s is a %s stage and %s is a %s one\n",
+            vertPath, StageName(out->vertInterface.stage),
+            fragPath, StageName(out->fragInterface.stage));
+        return false;
+    }
+
     if (!CheckStageInterface(out->vertInterface, out->fragInterface,
                              vertPath, fragPath)) {
         return false;
@@ -327,7 +355,7 @@ bool CreateShaderProgram(const VulkanDevice& dev,
     // which is a contract in the shaders and unchecked here -- the .spv reports an
     // extent, and a field inside it is past what either side can see.
     VkPushConstantRange pushRange{};
-    pushRange.stageFlags = out->vertInterface.pushStages | out->fragInterface.pushStages;
+    pushRange.stageFlags = out->vertInterface.PushStages() | out->fragInterface.PushStages();
     pushRange.size = out->vertInterface.pushSize > out->fragInterface.pushSize
                          ? out->vertInterface.pushSize
                          : out->fragInterface.pushSize;

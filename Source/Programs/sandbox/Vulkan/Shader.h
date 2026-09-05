@@ -77,6 +77,16 @@ struct SetInterface {
 };
 
 struct ShaderInterface {
+    // Which stage this .spv is, out of the .spv. Exactly one bit -- a module has one
+    // stage -- and the bits are already in pipeline order:
+    //
+    //   VERTEX 0x1 < TESC 0x2 < TESE 0x4 < GEOMETRY 0x8 < FRAGMENT 0x10
+    //   COMPUTE 0x20 alone, no neighbours
+    //
+    // 0 means reflection did not report one, which is a refusal: without it the
+    // argument position is the only thing saying what a file is.
+    VkShaderStageFlags stage = 0;
+
     uint32_t inputCount = 0;         // vertex attributes, built-ins excluded
     uint32_t maxInputLocation = 0;   // highest location + 1, so gaps show up
 
@@ -93,10 +103,17 @@ struct ShaderInterface {
     InterfaceSlot outputs[kMaxOutputSlots]{};
 
     uint32_t pushSize = 0;                    // 0 when the stage declares no block
-    VkShaderStageFlags pushStages = 0;        // the stage itself, if it reads one
 
     SetInterface sets[kMaxSets];
+
+    // Derived, not stored: a stage contributes itself to the push range exactly when
+    // it declares a block. Two fields would let "declares one but contributes none"
+    // be expressible.
+    VkShaderStageFlags PushStages() const noexcept { return pushSize != 0 ? stage : 0; }
 };
+
+// For messages. A stage is one bit, so this is a lookup, not a decomposition.
+const char* StageName(VkShaderStageFlags stage) noexcept;
 
 // A set layout and what the shaders asked for. The handle is opaque, so none of
 // this can be asked back for. types is indexed by binding number; a gap is left at 0.
