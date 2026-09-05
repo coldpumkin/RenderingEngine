@@ -510,47 +510,58 @@ ShaderProgram::~ShaderProgram() {
     }
 }
 
-// Every format anything here puts in a VertexLayout, and nothing else. Unknown is a
-// refusal rather than a guess: a format nobody classified would otherwise pass the
-// check by accident.
+// Every format anything here names, and nothing else. Unknown is a refusal rather than
+// a guess: a format nobody classified would otherwise pass a check by accident.
 //
-// UNORM and SRGB are Float. What the bytes are is not what the shader reads -- the
-// conversion belongs to the format, which is exactly why the shader's own type cannot
-// stand in for this.
-NumericKind KindOfFormat(VkFormat format) noexcept {
+// One table for both answers, because a format states them together and a shader type
+// states them together. Two functions would be two switches over these same cases, and
+// the second one is the half that used to be a literal at the call site.
+//
+// Grouped by the pair rather than by the kind: R32G32B32_SFLOAT and R32G32B32A32_SFLOAT
+// are the same kind and not the same format to a shader.
+FormatChannels ChannelsOfFormat(VkFormat format) noexcept {
     switch (format) {
         case VK_FORMAT_R8_UNORM:
+        case VK_FORMAT_R32_SFLOAT:
+            return {NumericKind::Float, 1};
         case VK_FORMAT_R8G8_UNORM:
+        case VK_FORMAT_R16G16_SFLOAT:
+        case VK_FORMAT_R32G32_SFLOAT:
+            return {NumericKind::Float, 2};
+        case VK_FORMAT_R32G32B32_SFLOAT:
+            return {NumericKind::Float, 3};
         case VK_FORMAT_R8G8B8A8_UNORM:
         case VK_FORMAT_R8G8B8A8_SNORM:
         case VK_FORMAT_R8G8B8A8_SRGB:
         case VK_FORMAT_B8G8R8A8_UNORM:
         case VK_FORMAT_B8G8R8A8_SRGB:
-        case VK_FORMAT_R16G16_SFLOAT:
         case VK_FORMAT_R16G16B16A16_SFLOAT:
-        case VK_FORMAT_R32_SFLOAT:
-        case VK_FORMAT_R32G32_SFLOAT:
-        case VK_FORMAT_R32G32B32_SFLOAT:
         case VK_FORMAT_R32G32B32A32_SFLOAT:
-            return NumericKind::Float;
+            return {NumericKind::Float, 4};
 
+        case VK_FORMAT_R32_UINT:
+            return {NumericKind::Uint, 1};
+        case VK_FORMAT_R32G32_UINT:
+            return {NumericKind::Uint, 2};
+        case VK_FORMAT_R32G32B32_UINT:
+            return {NumericKind::Uint, 3};
         case VK_FORMAT_R8G8B8A8_UINT:
         case VK_FORMAT_R16G16B16A16_UINT:
-        case VK_FORMAT_R32_UINT:
-        case VK_FORMAT_R32G32_UINT:
-        case VK_FORMAT_R32G32B32_UINT:
         case VK_FORMAT_R32G32B32A32_UINT:
-            return NumericKind::Uint;
+            return {NumericKind::Uint, 4};
 
+        case VK_FORMAT_R32_SINT:
+            return {NumericKind::Sint, 1};
+        case VK_FORMAT_R32G32_SINT:
+            return {NumericKind::Sint, 2};
+        case VK_FORMAT_R32G32B32_SINT:
+            return {NumericKind::Sint, 3};
         case VK_FORMAT_R8G8B8A8_SINT:
         case VK_FORMAT_R16G16B16A16_SINT:
-        case VK_FORMAT_R32_SINT:
-        case VK_FORMAT_R32G32_SINT:
-        case VK_FORMAT_R32G32B32_SINT:
         case VK_FORMAT_R32G32B32A32_SINT:
-            return NumericKind::Sint;
+            return {NumericKind::Sint, 4};
 
         default:
-            return NumericKind::Unknown;
+            return {};
     }
 }

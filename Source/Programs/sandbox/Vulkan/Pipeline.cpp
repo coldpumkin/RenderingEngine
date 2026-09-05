@@ -86,9 +86,13 @@ static bool CheckVertexInterface(const GraphicsPipelineDesc& desc,
         // Vulkan converts inside a kind and not across one, so this is the line that
         // actually matters. R8G8B8A8_UNORM feeding a vec4 passes; R32G32B32A32_UINT
         // feeding one does not, and nothing else would have said so.
-        const NumericKind supplied = KindOfFormat(attribute->format);
+        // The kind and not the count, and that asymmetry with the output end is the
+        // spec's. Vulkan defines what a vertex input gets for channels the format does
+        // not supply -- (0, 0, 0, 1) -- so a vec4 fed by a three-channel format is
+        // legal and defined. Nothing is undefined here, so there is nothing to refuse.
+        const NumericKind supplied = ChannelsOfFormat(attribute->format).kind;
         if (supplied == NumericKind::Unknown) {
-            LOG("[vk] %s: location %u uses format %d, which KindOfFormat does not know\n",
+            LOG("[vk] %s: location %u uses format %d, which ChannelsOfFormat does not know\n",
                 vertPath, slot.location, attribute->format);
             return false;
         }
@@ -141,24 +145,28 @@ static bool CheckOutputInterface(const AttachmentFormats& formats,
         // refuses a gap, which is what makes the index and the location the same
         // number here.
         const VkFormat target = formats.color[slot.location];
-        const NumericKind written = KindOfFormat(target);
-        if (written == NumericKind::Unknown) {
-            LOG("[vk] %s: the colour format %d is one KindOfFormat does not know\n",
+        const FormatChannels stored = ChannelsOfFormat(target);
+        if (stored.kind == NumericKind::Unknown) {
+            LOG("[vk] %s: the colour format %d is one ChannelsOfFormat does not know\n",
                 fragPath, static_cast<int>(target));
             return false;
         }
-        if (written != slot.kind) {
+        if (stored.kind != slot.kind) {
             LOG("[vk] %s: location %u writes %s into an attachment that stores %s\n",
-                fragPath, slot.location, KindName(slot.kind), KindName(written));
+                fragPath, slot.location, KindName(slot.kind), KindName(stored.kind));
             return false;
         }
 
-        // Four channels in the attachment and three written leaves alpha undefined,
-        // which is not an error to Vulkan and is one here: every format we use has
-        // four, and a shader writing fewer is a shader that forgot one.
-        if (slot.componentCount != 4) {
-            LOG("[vk] %s: location %u writes %u components; the attachment has 4\n",
-                fragPath, slot.location, slot.componentCount);
+        // The other half of what the same format states. A channel the fragment stage
+        // does not write is undefined -- Vulkan defines a fill for a vertex input and
+        // none for this -- so unlike the vertex end, the count is a refusal here.
+        //
+        // The number comes from the format for the same reason the kind does: it is one
+        // declaration, and reading half of it while writing the other half as a literal
+        // is how the two drift apart.
+        if (stored.count != slot.componentCount) {
+            LOG("[vk] %s: location %u writes %u components into an attachment of %u\n",
+                fragPath, slot.location, slot.componentCount, stored.count);
             return false;
         }
     }

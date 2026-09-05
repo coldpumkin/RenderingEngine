@@ -79,10 +79,28 @@ inline const char* KindName(NumericKind kind) noexcept {
     }
 }
 
-// Output: what a resource format delivers to a shader. Unknown for anything not
-//         listed, which is a refusal rather than a guess -- add the format here when
-//         one is used.
-NumericKind KindOfFormat(VkFormat format) noexcept;
+// What a resource format and a shader type both state, and the only two things they
+// both state.
+//
+// A VkFormat names three things -- which channels, how many bits each is in memory,
+// and how those bits are read as a number. A shader type names two: how many
+// components, and which kind of number. The bit width and the packing are missing from
+// the second on purpose: the hardware converts, so one shader reads an 8-bit and a
+// 32-bit resource with the same vec4, which is why the format belongs to the resource
+// and the type to the shader.
+//
+// The conversion is free inside a kind and absent across one. UNORM, SNORM, SFLOAT and
+// SRGB all deliver float; UINT delivers unsigned, SINT signed. So SRGB against UNORM is
+// past what any check here can see -- same kind, same count -- and a normal map read as
+// SRGB is silent for that reason.
+struct FormatChannels {
+    NumericKind kind = NumericKind::Unknown;
+    uint32_t count = 0;              // 0 alongside Unknown: a format we did not classify
+};
+
+// Output: the pair above. Unknown/0 for anything not listed, which is a refusal rather
+//         than a guess -- add the format there when one is used.
+FormatChannels ChannelsOfFormat(VkFormat format) noexcept;
 
 // What one set declares. types is indexed by binding number, so a gap stays a gap.
 struct SetInterface {
