@@ -2,17 +2,36 @@
 # a new pair rather than growing an existing file. No abstraction layer -- structs and
 # free functions.
 #
-# Three layers, and the arrows only point one way. **No header under Vulkan/ includes
-# anything above it**, and that is the whole of the rule:
+# The include graph is a DAG, and these are the groups of one topological order of it.
+# **Nothing under Vulkan/ includes anything above it** -- headers or .cpp, as of 09-06
+# -- and that is the whole of the rule.
 #
-#   main.cpp  ->  Renderer  ->  Gui . Passes . Vertex  ->  Vulkan/*
+#   main.cpp
+#     -> Renderer.h
+#          -> Shadow . Scene . Geometry . Lighting . PostProcess Pass
+#               -> Passes . Pipelines . Gui
+#                    -> Config . Vertex
+#                         -> Vulkan/*
 #
-# Inside Vulkan/ it runs one way too:
-#   Core <- Instance <- Device <- { Swapchain, Commands, Buffer, Image, Shader }
-#                                    ^                              ^
-#                                  Window                      Pipeline, Descriptors
-#                          (the surface is instance level,
-#                           and the window holds the swapchain)
+# **One arrow runs the other way and it is meant to.** Passes.h forward declares the
+# five passes and sits below them; Passes.cpp includes all five, because RecordFrame is
+# the thing that orders them. The pair straddles the boundary on purpose -- what a pass
+# is, is above; what the passes share, is below.
+#
+# The only edge out of Vulkan/ was Swapchain.cpp reading kDesiredSwapchainImages from
+# Config.h. It is a Window field the caller writes now, so the cut is clean: this
+# directory could be lifted out whole.
+#
+# Inside Vulkan/, one way as well. Every edge, measured rather than drawn from memory:
+#
+#   Core          <- Instance <- Device <- Image, Shader, Commands
+#   Image         <- Texture  <- Attachments <- Swapchain, Pipeline
+#   Device        <- Buffer   <- Mesh, Descriptors
+#   Shader        <- VertexLayout <- Mesh, Pipeline
+#   Instance, Swapchain <- Window <- Frame
+#   Core          <- Barrier
+#
+# (the surface is instance level, and the window holds the swapchain)
 add_executable(sandbox
     Config.h                # compile-time knobs
 

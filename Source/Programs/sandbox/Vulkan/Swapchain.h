@@ -48,6 +48,7 @@ bool CreateSwapchain(const VulkanInstance& inst,
                      VkSurfaceKHR surface,
                      VkSurfaceFormatKHR surfaceFormat,
                      VkExtent2D extent,
+                     uint32_t desiredImages,
                      VkSwapchainKHR oldSwapchain,
                      Swapchain* out) noexcept;
 

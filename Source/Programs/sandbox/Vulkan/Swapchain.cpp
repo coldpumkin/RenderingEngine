@@ -1,6 +1,5 @@
 ﻿#include "Vulkan/Swapchain.h"
 
-#include "Config.h"
 #include "Vulkan/Window.h"
 
 #include <memory>
@@ -136,6 +135,7 @@ bool CreateSwapchain(const VulkanInstance& inst,
                      VkSurfaceKHR surface,
                      VkSurfaceFormatKHR surfaceFormat,
                      VkExtent2D extent,
+                     uint32_t desiredImages,
                      VkSwapchainKHR oldSwapchain,
                      Swapchain* out) noexcept {
     Swapchain& sc = *out;
@@ -160,9 +160,17 @@ bool CreateSwapchain(const VulkanInstance& inst,
         return false;
     }
 
+    // The caller's number, and 0 means the caller never said one. Refused rather
+    // than clamped: the clamp below would turn it into the surface's minimum, which
+    // is a legal swapchain and would hide the mistake.
+    if (desiredImages == 0) {
+        LOG("[vk] a swapchain was asked for with no image count\n");
+        return false;
+    }
+
     // Clamped to what the surface allows. maxImageCount == 0 means no upper bound, so
     // it is left out of the clamp rather than treated as zero.
-    uint32_t imageCount = kDesiredSwapchainImages;
+    uint32_t imageCount = desiredImages;
     if (imageCount < caps.minImageCount) { imageCount = caps.minImageCount; }
     if (caps.maxImageCount > 0 && imageCount > caps.maxImageCount) {
         imageCount = caps.maxImageCount;
@@ -311,6 +319,7 @@ bool EnsureSwapchain(const VulkanDevice& dev, Window* window) noexcept {
     auto fresh = std::make_unique<Swapchain>();
     const bool created = CreateSwapchain(*window->inst, dev, window->surface,
                                          window->surfaceFormat, window->surfaceExtent,
+                                         window->desiredImages,
                                          retiring, fresh.get());
 
     // Released **after** the new one is made, and not destroyed here: present may

@@ -52,6 +52,21 @@ struct Window {
     GLFWwindow* handle = nullptr;
     VkSurfaceKHR surface = VK_NULL_HANDLE;
 
+    // How many images we want the swapchain to rotate. **A policy and not a fact
+    // about anything here**, which is why it is a field the caller writes rather
+    // than a constant this layer reads -- nothing under Vulkan/ includes Config.h,
+    // and this was the last thing that did.
+    //
+    // Carried on the Window because EnsureSwapchain runs from BeginFrame, and a
+    // frame is not where a number like this can come from. It sits beside
+    // surfaceFormat for the same reason: settled once at startup, read on every
+    // recreation.
+    //
+    // Contract: set before the first EnsureSwapchain. 0 is refused rather than
+    //           clamped -- a swapchain of the surface's minimum is a legal thing to
+    //           make and not what forgetting to set this means.
+    uint32_t desiredImages = 0;
+
     // The format belongs to the surface rather than the swapchain -- it is decided by
     // the (GPU, surface) pair. Keeping it here means a pipeline does not have to wait
     // for a swapchain to exist. SelectSurfaceFormat fills it in rather than

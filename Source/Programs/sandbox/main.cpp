@@ -566,6 +566,11 @@ int main() {
     // colour still does not follow from it -- Attachments.cpp counts the cases.
     if (!SelectSurfaceFormat(inst, selection.gpu, &window)) { return 1; }
 
+    // Beside the format because it is the same kind of value: settled once, read on
+    // every swapchain recreation. **Written here and not read down there** -- how many
+    // images to rotate is our policy, and Vulkan/ includes nothing above itself.
+    window.desiredImages = kDesiredSwapchainImages;
+
     // Not checked: false means minimized, and nothing below needs a size. The loop
     // asks again every frame.
     QuerySurfaceExtent(inst, selection.gpu, &window);
