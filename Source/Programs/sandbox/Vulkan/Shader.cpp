@@ -206,28 +206,36 @@ VkShaderModule LoadShader(const VulkanDevice& dev, const char* path,
 }
 
 bool BuildSetLayout(const VulkanDevice& dev,
-                    const ShaderInterface& vert, const ShaderInterface& frag,
+                    const ProgramStage stages[], uint32_t stageCount,
                     uint32_t set, DescriptorLayout* out) noexcept {
-    const SetInterface& vertSet = vert.sets[set];
-    const SetInterface& fragSet = frag.sets[set];
+    // The union's end. Each stage reports how far its own declarations reach, and a
+    // set reaches as far as the furthest of them.
+    uint32_t count = 0;
+    for (uint32_t s = 0; s < stageCount; ++s) {
+        const uint32_t reach = stages[s].interface.sets[set].bindingCount;
+        if (reach > count) { count = reach; }
+    }
 
-    const uint32_t count = vertSet.bindingCount > fragSet.bindingCount
-                         ? vertSet.bindingCount : fragSet.bindingCount;
     VkDescriptorSetLayoutBinding bindings[kMaxBindingsPerSet]{};
     uint32_t used = 0;
     for (uint32_t i = 0; i < count; ++i) {
         // 0 reads as "this stage does not use it". A lone SAMPLER is also 0, and we
         // never declare one, so the two need not be told apart.
-        const VkDescriptorType inVert = vertSet.bindingTypes[i];
-        const VkDescriptorType inFrag = fragSet.bindingTypes[i];
-        if (inVert == 0 && inFrag == 0) { continue; }   // a hole in the numbering
+        VkDescriptorType type = static_cast<VkDescriptorType>(0);
+        VkShaderStageFlags stageFlags = 0;
+        for (uint32_t s = 0; s < stageCount; ++s) {
+            const VkDescriptorType declared = stages[s].interface.sets[set].bindingTypes[i];
+            if (declared == 0) { continue; }
+            type = declared;   // the last stage that declares it wins, as before
+            stageFlags |= stages[s].interface.stage;
+        }
+        if (stageFlags == 0) { continue; }   // a hole in the numbering
 
         bindings[used].binding = i;
-        bindings[used].descriptorType = inFrag != 0 ? inFrag : inVert;
+        bindings[used].descriptorType = type;
         bindings[used].descriptorCount = 1;
-        bindings[used].stageFlags = (inVert != 0 ? VK_SHADER_STAGE_VERTEX_BIT : 0)
-                                  | (inFrag != 0 ? VK_SHADER_STAGE_FRAGMENT_BIT : 0);
-        out->types[i] = bindings[used].descriptorType;
+        bindings[used].stageFlags = stageFlags;
+        out->types[i] = type;
         ++used;
     }
 
@@ -260,8 +268,16 @@ bool BuildSetLayout(const VulkanDevice& dev,
 // Locations must match one for one. A varying written and never read is legal Vulkan
 // and wasted interpolation; refusing it costs nothing here, since a stage that stops
 // reading something is a stage whose partner should stop writing it.
-static bool CheckStageInterface(const ShaderInterface& vs, const ShaderInterface& fs,
-                                const char* vertPath, const char* fragPath) noexcept {
+// Neighbours in the chain, not vertex-and-fragment: the rule is one, and it is that
+// the producer's outputs are the consumer's inputs. Which two stages those are is the
+// chain's business.
+static bool CheckStageInterface(const ProgramStage& producer,
+                                const ProgramStage& consumer) noexcept {
+    const ShaderInterface& vs = producer.interface;
+    const ShaderInterface& fs = consumer.interface;
+    const char* vertPath = producer.path;
+    const char* fragPath = consumer.path;
+
     if (vs.outputCount != fs.inputCount) {
         LOG("[vk] %s writes %u varyings and %s reads %u\n",
             vertPath, vs.outputCount, fragPath, fs.inputCount);
@@ -303,43 +319,76 @@ static bool CheckStageInterface(const ShaderInterface& vs, const ShaderInterface
 }
 
 bool CreateShaderProgram(const VulkanDevice& dev,
-                         const char* vertPath, const char* fragPath,
+                         const char* const paths[], uint32_t count,
                          ShaderProgram* out) noexcept {
     out->dev = &dev;   // set first: the destructor runs even if this fails halfway
-    out->vertPath = vertPath;
-    out->fragPath = fragPath;
 
-    out->vert = LoadShader(dev, vertPath, &out->vertInterface);
-    out->frag = LoadShader(dev, fragPath, &out->fragInterface);
-    if (out->vert == VK_NULL_HANDLE || out->frag == VK_NULL_HANDLE) {
+    if (count == 0 || count > kMaxStagesPerProgram) {
+        LOG("[vk] a program of %u stages, and we hold %u\n", count, kMaxStagesPerProgram);
         return false;
     }
 
-    // The .spv says which stage it is; the argument position only says where the
-    // caller put it. Checking the two against each other is what the position used to
-    // be trusted for.
-    if (out->vertInterface.stage != VK_SHADER_STAGE_VERTEX_BIT
-            || out->fragInterface.stage != VK_SHADER_STAGE_FRAGMENT_BIT) {
-        LOG("[vk] %s is a %s stage and %s is a %s one\n",
-            vertPath, StageName(out->vertInterface.stage),
-            fragPath, StageName(out->fragInterface.stage));
-        return false;
+    // Load first, then sort. What order the caller listed them in is not information:
+    // each .spv says which stage it is, and that is what the chain is built from.
+    for (uint32_t i = 0; i < count; ++i) {
+        out->stages[i].path = paths[i];
+        out->stages[i].module = LoadShader(dev, paths[i], &out->stages[i].interface);
+        if (out->stages[i].module == VK_NULL_HANDLE) {
+            out->stageCount = i + 1;   // so the destructor frees what did load
+            return false;
+        }
+    }
+    out->stageCount = count;
+
+    // Insertion sort by stage bit, which is pipeline order. Five elements at most.
+    for (uint32_t i = 1; i < count; ++i) {
+        ProgramStage held = out->stages[i];
+        uint32_t j = i;
+        while (j > 0 && out->stages[j - 1].interface.stage > held.interface.stage) {
+            out->stages[j] = out->stages[j - 1];
+            --j;
+        }
+        out->stages[j] = held;
     }
 
-    if (!CheckStageInterface(out->vertInterface, out->fragInterface,
-                             vertPath, fragPath)) {
-        return false;
+    // One chain, and the sort makes that a walk. Equal neighbours are the same stage
+    // twice; compute sorts above every graphics bit, so it is a chain of one or an
+    // error either way.
+    for (uint32_t i = 0; i < count; ++i) {
+        const VkShaderStageFlags stage = out->stages[i].interface.stage;
+        if (stage == 0) {
+            LOG("[vk] %s reports no stage\n", out->stages[i].path);
+            return false;
+        }
+        if (i > 0 && stage == out->stages[i - 1].interface.stage) {
+            LOG("[vk] %s and %s are both %s stages\n",
+                out->stages[i - 1].path, out->stages[i].path, StageName(stage));
+            return false;
+        }
+        if (count > 1 && stage == VK_SHADER_STAGE_COMPUTE_BIT) {
+            LOG("[vk] %s is compute, which takes no other stage beside it\n",
+                out->stages[i].path);
+            return false;
+        }
+    }
+
+    // Neighbours agree, and that is the only rule. Applied to a chain of one it says
+    // nothing, which is right: a lone stage has no partner to disagree with.
+    for (uint32_t i = 1; i < count; ++i) {
+        if (!CheckStageInterface(out->stages[i - 1], out->stages[i])) {
+            return false;
+        }
     }
 
     for (uint32_t set = 0; set < kMaxSets; ++set) {
-        if (!BuildSetLayout(dev, out->vertInterface, out->fragInterface, set,
+        if (!BuildSetLayout(dev, out->stages, out->stageCount, set,
                             &out->setLayouts[set])) {
             return false;
         }
     }
 
     // One range, covering what every stage together reaches. Each stage reports only
-    // itself: the flags are or-ed, and the size is the larger of the two.
+    // itself: the flags are or-ed and the sizes maxed, over however many there are.
     //
     // The max is the union's end, not a guess between two numbers that ought to match.
     // A stage declares the fields it reads and reflection reports the block's extent,
@@ -350,15 +399,16 @@ bool CreateShaderProgram(const VulkanDevice& dev,
     //   mesh      vert 112 B  frag 116 B  ->  116 B  VERTEX | FRAGMENT
     //   shadow    vert  64 B  frag   0 B  ->   64 B  VERTEX
     //
-    // The two stages do not declare the same block and do not have to. What they owe
-    // each other is that whatever each names sits at the offset the CPU wrote it to,
-    // which is a contract in the shaders and unchecked here -- the .spv reports an
-    // extent, and a field inside it is past what either side can see.
+    // The stages do not declare the same block and do not have to. What they owe each
+    // other is that whatever each names sits at the offset the CPU wrote it to, which
+    // is a contract in the shaders and unchecked here -- the .spv reports an extent,
+    // and a field inside it is past what either side can see.
     VkPushConstantRange pushRange{};
-    pushRange.stageFlags = out->vertInterface.PushStages() | out->fragInterface.PushStages();
-    pushRange.size = out->vertInterface.pushSize > out->fragInterface.pushSize
-                         ? out->vertInterface.pushSize
-                         : out->fragInterface.pushSize;
+    for (uint32_t i = 0; i < out->stageCount; ++i) {
+        const ShaderInterface& stage = out->stages[i].interface;
+        pushRange.stageFlags |= stage.PushStages();
+        if (stage.pushSize > pushRange.size) { pushRange.size = stage.pushSize; }
+    }
 
     VkPipelineLayoutCreateInfo info{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     if (pushRange.size != 0) {
@@ -377,7 +427,7 @@ bool CreateShaderProgram(const VulkanDevice& dev,
     // A layout is required even when every set is empty.
     if (dev.table.vkCreatePipelineLayout(dev.handle, &info, nullptr, &out->layout)
             != VK_SUCCESS) {
-        LOG("[vk] vkCreatePipelineLayout failed: %s\n", vertPath);
+        LOG("[vk] vkCreatePipelineLayout failed: %s\n", out->stages[0].path);
         return false;
     }
     return true;
@@ -392,8 +442,9 @@ ShaderProgram::~ShaderProgram() {
     for (const DescriptorLayout& set : setLayouts) {
         vk.vkDestroyDescriptorSetLayout(dev->handle, set.handle, nullptr);
     }
-    vk.vkDestroyShaderModule(dev->handle, vert, nullptr);
-    vk.vkDestroyShaderModule(dev->handle, frag, nullptr);
+    for (uint32_t i = 0; i < stageCount; ++i) {
+        vk.vkDestroyShaderModule(dev->handle, stages[i].module, nullptr);
+    }
 }
 
 // Every format anything here puts in a VertexLayout, and nothing else. Unknown is a

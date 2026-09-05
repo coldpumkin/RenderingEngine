@@ -123,14 +123,15 @@ struct DescriptorLayout {
     VkDescriptorType types[kMaxBindingsPerSet]{};
 };
 
-// Effect: builds one set's layout from what the two stages declare between them. Both
-//         are read: vertex asking for a uniform and fragment for a sampler is the
-//         usual shape.
+// Effect: builds one set's layout from what every stage declares between them. All are
+//         read: vertex asking for a uniform and fragment for a sampler is the usual
+//         shape, and the layout is their union.
 //
-// A set neither stage declares still gets a layout, with no bindings in it. Vulkan
-// numbers sets by position, so set 1 cannot be handed over without a set 0 beside it.
+// A set no stage declares still gets a layout, with no bindings in it. Vulkan numbers
+// sets by position, so set 1 cannot be handed over without a set 0 beside it.
+struct ProgramStage;
 bool BuildSetLayout(const VulkanDevice& dev,
-                    const ShaderInterface& vert, const ShaderInterface& frag,
+                    const ProgramStage stages[], uint32_t stageCount,
                     uint32_t set, DescriptorLayout* out) noexcept;
 
 // Effect: reads path and fills out. No device involved.
@@ -144,7 +145,7 @@ VkShaderModule LoadShader(const VulkanDevice& dev, const char* path,
                           ShaderInterface* out) noexcept;
 
 
-// ShaderProgram - a pair of shaders, and everything Vulkan wants before a pipeline
+// ShaderProgram - a chain of stages, and everything Vulkan wants before a pipeline
 // ============================================================================
 //
 // The interface, split from the variant. Everything in here comes out of the .spv and
@@ -159,13 +160,40 @@ VkShaderModule LoadShader(const VulkanDevice& dev, const char* path,
 //
 // The modules stay alive with it. A second variant should not reread the file, and
 // they cost nothing to keep.
+
+// How many stages one program may hold. The graphics chain is five long; compute is
+// one and stands alone.
+constexpr uint32_t kMaxStagesPerProgram = 5;
+
+// One .spv, everything we keep about it. The three used to be three fields each,
+// named for a stage -- which is what made "a program is a pair" true by construction.
+struct ProgramStage {
+    VkShaderModule module = VK_NULL_HANDLE;
+    ShaderInterface interface;
+
+    // For logs. A string literal from the call site, so holding the pointer is free.
+    const char* path = nullptr;
+};
+
 struct ShaderProgram {
     const VulkanDevice* dev = nullptr;   // non-owning, needed to destroy
 
-    VkShaderModule vert = VK_NULL_HANDLE;
-    VkShaderModule frag = VK_NULL_HANDLE;
-    ShaderInterface vertInterface;
-    ShaderInterface fragInterface;
+    // In stage-bit order, which is pipeline order: the bits are already sorted that
+    // way (VERTEX 0x1 ... FRAGMENT 0x10). So "the stage after this one" is the next
+    // element, and the two ends of the chain are the two whose partner is the CPU --
+    // stages[0] answers to a VertexLayout, the last one to an AttachmentFormats.
+    ProgramStage stages[kMaxStagesPerProgram];
+    uint32_t stageCount = 0;
+
+    // Output: the stage with this bit, or nullptr. Callers that need a particular one
+    //         ask for it rather than indexing: a fragment stage is not always last
+    //         (depth-only has none) and never at a fixed position.
+    const ProgramStage* Stage(VkShaderStageFlags stage) const noexcept {
+        for (uint32_t i = 0; i < stageCount; ++i) {
+            if (stages[i].interface.stage == stage) { return &stages[i]; }
+        }
+        return nullptr;
+    }
 
     // One per set the shaders may declare, in set order. A set nothing declares still
     // gets an entry with no bindings: Vulkan numbers sets by position, so set 1
@@ -176,20 +204,21 @@ struct ShaderProgram {
     DescriptorLayout setLayouts[kMaxSets];
     VkPipelineLayout layout = VK_NULL_HANDLE;
 
-    // For logs. String literals from the call site, so holding the pointers is free.
-    const char* vertPath = nullptr;
-    const char* fragPath = nullptr;
-
     ShaderProgram() = default;
     ~ShaderProgram();
     ShaderProgram(const ShaderProgram&) = delete;
     ShaderProgram& operator=(const ShaderProgram&) = delete;
 };
 
-// Effect: loads both stages, reads what they declare, and builds the set layouts and
-//         the pipeline layout from it.
+// Effect: loads every stage, reads what they declare, and builds the set layouts and
+//         the pipeline layout from it. Order of the paths does not matter -- each
+//         .spv says which stage it is and they are sorted into chain order.
 //
-// Contract: the two paths must outlive this -- they are kept for logging.
+// Output: false unless the stages form one chain: no stage twice, and compute alone if
+//         present. Gaps are not an error -- vertex straight to fragment is the chain
+//         four of ours are.
+//
+// Contract: the paths must outlive this -- they are kept for logging.
 bool CreateShaderProgram(const VulkanDevice& dev,
-                         const char* vertPath, const char* fragPath,
+                         const char* const paths[], uint32_t count,
                          ShaderProgram* out) noexcept;

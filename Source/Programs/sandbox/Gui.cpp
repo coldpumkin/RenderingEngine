@@ -102,8 +102,12 @@ void ShowPipeline(const char* name, const Pipeline* pipeline) noexcept {
                 name,
                 pipeline->blending == Blending::Opaque ? "opaque" : "translucent",
                 static_cast<uint32_t>(pipeline->formats.samples));
-    const char* frag = pipeline->program != nullptr ? pipeline->program->fragPath : nullptr;
-    ImGui::Text("         %s", frag != nullptr ? frag : "-");
+    // The fragment stage, asked for by stage: what a pipeline draws with is the one
+    // the panel names, and a depth-only program has none to name.
+    const ProgramStage* frag = pipeline->program != nullptr
+                             ? pipeline->program->Stage(VK_SHADER_STAGE_FRAGMENT_BIT)
+                             : nullptr;
+    ImGui::Text("         %s", frag != nullptr ? frag->path : "-");
 }
 
 }   // namespace

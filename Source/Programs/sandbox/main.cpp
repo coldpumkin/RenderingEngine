@@ -622,7 +622,8 @@ int main() {
     // Depth only, and first because the scene pass reads what it draws. What that
     // means for the pipeline is the pass's to say, not this file's -- the two things
     // it needs from here are the buffer's layout and the image it draws into.
-    if (!CreateShaderProgram(dev, "Shaders/shadow.vert.spv", "Shaders/shadow.frag.spv",
+    const char* shadowStages[] = {"Shaders/shadow.vert.spv", "Shaders/shadow.frag.spv"};
+    if (!CreateShaderProgram(dev, shadowStages, static_cast<uint32_t>(std::size(shadowStages)),
                              &renderer.shadowProgram)) { return 1; }
 
     const GraphicsPipelineDesc shadowDesc = MakeShadowPipeline(VertexInput(), shadowTarget);
@@ -631,7 +632,8 @@ int main() {
 
     // The same vertex layout as the shadow pass: it describes the buffer, and each
     // vertex stage reads out of it the locations it declares.
-    if (!CreateShaderProgram(dev, "Shaders/scene.vert.spv", "Shaders/scene.frag.spv",
+    const char* sceneStages[] = {"Shaders/scene.vert.spv", "Shaders/scene.frag.spv"};
+    if (!CreateShaderProgram(dev, sceneStages, static_cast<uint32_t>(std::size(sceneStages)),
                              &renderer.sceneProgram)) { return 1; }
 
     const GraphicsPipelineDesc opaqueDesc =
@@ -646,8 +648,8 @@ int main() {
 
     // fullscreen.vert keeps its name because it is the half that is not post's: a
     // lighting pass will pair the same module with a different fragment stage.
-    if (!CreateShaderProgram(dev, "Shaders/fullscreen.vert.spv",
-                             "Shaders/post.frag.spv",
+    const char* postStages[] = {"Shaders/fullscreen.vert.spv", "Shaders/post.frag.spv"};
+    if (!CreateShaderProgram(dev, postStages, static_cast<uint32_t>(std::size(postStages)),
                              &renderer.postProgram)) { return 1; }
 
     const GraphicsPipelineDesc postDesc = MakePostPipeline(swapchainTarget);
@@ -655,7 +657,8 @@ int main() {
                                 &renderer.postPipeline)) { return 1; }
 
     // The panel, on top of what the post pass leaves -- the same image.
-    if (!CreateShaderProgram(dev, "Shaders/gui.vert.spv", "Shaders/gui.frag.spv",
+    const char* guiStages[] = {"Shaders/gui.vert.spv", "Shaders/gui.frag.spv"};
+    if (!CreateShaderProgram(dev, guiStages, static_cast<uint32_t>(std::size(guiStages)),
                              &renderer.guiProgram)) { return 1; }
 
     const GraphicsPipelineDesc guiDesc = MakeGuiPipeline(swapchainTarget);

@@ -220,20 +220,37 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     pipeline.polygonMode = desc.polygonMode;
     pipeline.blending = desc.blending;
 
-    if (!CheckVertexInterface(desc, program.vertInterface, program.vertPath)
-            || !CheckOutputInterface(formats, program.fragInterface, program.fragPath)) {
+    // The two ends of the chain, which are the two stages with a CPU-side partner: a
+    // vertex stage answers to a VertexLayout, a fragment stage to an AttachmentFormats.
+    // Asked for by stage rather than by position -- a fragment stage is optional, and
+    // its absence is what a depth-only program is.
+    const ProgramStage* vertStage = program.Stage(VK_SHADER_STAGE_VERTEX_BIT);
+    const ProgramStage* fragStage = program.Stage(VK_SHADER_STAGE_FRAGMENT_BIT);
+    if (vertStage == nullptr) {
+        LOG("[vk] a graphics pipeline needs a vertex stage: %s\n", program.stages[0].path);
         return false;
     }
 
-    VkPipelineShaderStageCreateInfo stages[2]{};
-    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-    stages[0].module = program.vert;
-    stages[0].pName = "main";           // entry point name
-    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    stages[1].module = program.frag;
-    stages[1].pName = "main";
+    // No fragment stage writes nothing, which is what CheckOutputInterface is already
+    // built to compare against -- the same answer shadow.frag's empty main gave.
+    static const ShaderInterface kWritesNothing;
+    if (!CheckVertexInterface(desc, vertStage->interface, vertStage->path)
+            || !CheckOutputInterface(formats,
+                                     fragStage != nullptr ? fragStage->interface
+                                                          : kWritesNothing,
+                                     fragStage != nullptr ? fragStage->path
+                                                          : "no fragment stage")) {
+        return false;
+    }
+
+    VkPipelineShaderStageCreateInfo stages[kMaxStagesPerProgram]{};
+    for (uint32_t i = 0; i < program.stageCount; ++i) {
+        stages[i].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[i].stage =
+            static_cast<VkShaderStageFlagBits>(program.stages[i].interface.stage);
+        stages[i].module = program.stages[i].module;
+        stages[i].pName = "main";       // entry point name
+    }
 
     // --- Input: how bytes become vertices, vertices become primitives -------
     // Layout comes from desc. The topology is fixed for both.
@@ -257,8 +274,8 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
         const VertexAttribute& supplied = layout.attributes[i];
 
         bool read = false;
-        for (uint32_t j = 0; j < program.vertInterface.inputCount; ++j) {
-            if (program.vertInterface.inputs[j].location == supplied.location) {
+        for (uint32_t j = 0; j < vertStage->interface.inputCount; ++j) {
+            if (vertStage->interface.inputs[j].location == supplied.location) {
                 read = true;
                 break;
             }
@@ -412,7 +429,7 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
 
     VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
     info.pNext = &pipelineRendering;
-    info.stageCount = 2;
+    info.stageCount = program.stageCount;
     info.pStages = stages;
     info.pVertexInputState = &vertexInput;
     info.pInputAssemblyState = &inputAssembly;
@@ -431,7 +448,7 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     // The modules are not destroyed here any more: they are the program's, and a second
     // variant built from it still needs them.
     if (created != VK_SUCCESS) {
-        LOG("[vk] vkCreateGraphicsPipelines failed (%d): %s\n", created, program.vertPath);
+        LOG("[vk] vkCreateGraphicsPipelines failed (%d): %s\n", created, vertStage->path);
         return false;
     }
     return true;
