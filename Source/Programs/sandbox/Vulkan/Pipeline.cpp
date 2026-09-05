@@ -95,12 +95,11 @@ static bool CheckVertexInterface(const GraphicsPipelineDesc& desc,
     const VertexLayout& layout = desc.vertexLayout;
 
     // Walked from the shader's side, and the direction is the point. The layout
-    // describes the buffer, which is one thing; the shaders reading it are several,
-    // and each reads the locations it needs. scene.vert takes all four of ours,
-    // shadow.vert takes position, and both are built from the same layout.
+    // describes one buffer; the vertex stages reading it are several, and each takes
+    // the locations it declares.
     //
-    // So a layout supplying more than this shader reads is not an error -- Vulkan
-    // ignores the surplus. What it may not do is leave out something the shader reads,
+    // So a layout supplying more than this stage reads is not an error -- Vulkan
+    // ignores the surplus. What it may not do is leave out something the stage reads,
     // or supply it as the wrong kind of number.
     for (uint32_t i = 0; i < vs.inputCount; ++i) {
         const InterfaceSlot& slot = vs.inputs[i];
@@ -269,7 +268,7 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     }
 
     // No fragment stage writes nothing, which is what CheckOutputInterface is already
-    // built to compare against, and the answer an empty fragment main used to give.
+    // built to compare against.
     static const ShaderInterface kWritesNothing;
     if (!CheckVertexInterface(desc, vertStage->interface, vertStage->path)
             || !CheckOutputInterface(formats,
@@ -297,11 +296,9 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     const VertexLayout& layout = desc.vertexLayout;
     VkVertexInputBindingDescription binding{0, layout.stride, VK_VERTEX_INPUT_RATE_VERTEX};
 
-    // What this stage reads, not everything the buffer holds. The layout describes one
-    // buffer and several shaders read it: scene.vert takes all four of our attributes,
-    // shadow.vert takes position. Declaring the rest here draws correctly and the
-    // validation layer warns once per pipeline that the attribute is not consumed --
-    // so the surplus is dropped rather than passed on.
+    // What this stage reads, not everything the buffer holds. Declaring the surplus
+    // draws correctly and the validation layer warns once per pipeline that the
+    // attribute is not consumed, so it is dropped rather than passed on.
     //
     // The same shape as the fragment end, where colorAttachmentCount comes from the
     // .spv rather than from a number written here.
@@ -347,38 +344,12 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     viewportState.viewportCount = 1;
     viewportState.scissorCount = 1;
 
-    // Three items are not baked.
-    //
-    // viewport/scissor because they follow the window, and baking them would rebuild
-    // every pipeline on a resize.
-    //
-    // cullMode because the asset decides it per draw: glTF doubleSided is a material
-    // property, and Sponza has both kinds. Baking it meant a second pipeline that
-    // differed in one field -- two shader compiles for one register.
-    //
-    // The reason all three are cheap to leave out is the same: none of them changes
-    // the machine code. They are register values the driver sets before the draw.
-    // blending or the sample count would be a different answer -- those change what
-    // the fragment shader compiles to, and leaving them dynamic makes the compiler
-    // assume the worst.
-    //
-    // Contract: a dynamic state must be set before every draw with this pipeline.
-    //           Vulkan does not remember one across a command buffer.
-    // All of them core in Vulkan 1.3, which we require. Every one is a register the
-    // hardware reads per draw, so making it dynamic costs nothing at compile time and
-    // saves a pipeline per value.
-    //
     if (desc.dynamicCount > kMaxDynamicStates) {
         LOG("[vk] a desc declaring %u dynamic states, and we hold %u\n",
             desc.dynamicCount, kMaxDynamicStates);
         return false;
     }
 
-    // Which of these is dynamic and which is baked is not about how often a value
-    // changes. viewport, cull, winding and the depth test are registers the hardware
-    // reads per draw; polygonMode, blending, sample count and the attachment formats
-    // change what the driver compiles, so those stay in the desc. The wireframe
-    // pipeline exists because of that line and nothing else does.
     VkPipelineDynamicStateCreateInfo dynamicState{
         VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
     dynamicState.dynamicStateCount = desc.dynamicCount;
@@ -421,9 +392,9 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     blendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
     blendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
 
-    // One state per colour attachment, and Vulkan reads that many -- the same state
-    // for each, because blending is the pipeline's answer rather than a target's.
-    // Zero leaves pAttachments unread.
+    // One state per colour attachment, and Vulkan reads that many. The same state for
+    // each, which is what Blending being one value means -- Vulkan allows them to
+    // differ. Zero leaves pAttachments unread.
     VkPipelineColorBlendAttachmentState blendAttachments[kMaxColorTargets];
     for (uint32_t i = 0; i < formats.colorCount; ++i) {
         blendAttachments[i] = blendAttachment;
