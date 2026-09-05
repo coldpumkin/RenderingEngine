@@ -298,12 +298,22 @@ struct DrawStats {
     uint32_t cullChanges = 0;
 };
 
-// What the panel decided about rasterization, as the three values this pass uses.
+// What the panel decided about rasterization, as the six values this pass uses.
 // Gathered into one struct so the signature does not grow a parameter per checkbox.
+//
+// Two kinds in one struct, and the first field is the odd one:
+//
+//   polygonMode   picks which pipeline is bound. It is compiled in, so a second
+//                 value is a second pipeline
+//   the five      go out as vkCmdSet* after that pipeline is bound. This pass is
+//                 where their values are decided, and the panel is where they live
+//
+// The five are the whole of this pass's dynamic state apart from viewportY, which no
+// checkbox reaches -- so the pipeline desc names viewportY and nothing else.
 struct SceneRasterOptions {
-    // A polygonMode and not a bool, unlike the four below it. Those are VkBool32 on
-    // the other side; this one is a three-valued enum, and calling it "wireframe"
-    // meant only two of the three could be asked for.
+    // A polygonMode and not a bool, unlike the five below it. Those are VkBool32 or a
+    // flag on the other side; this one is a three-valued enum, and calling it
+    // "wireframe" meant only two of the three could be asked for.
     VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL;
     bool depthTest = true;
     bool depthWrite = true;

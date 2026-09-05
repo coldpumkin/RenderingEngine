@@ -267,19 +267,23 @@ void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
         return;
     }
 
-    // Up, because our world is y-up, and the pass is where that belongs: every draw in
-    // here shares one viewport, and no pipeline had to be compiled knowing it.
+    // Written whole rather than copied and overwritten, one line per owner. Every one
+    // of these is dynamic state, so none of it was compiled in and the whole set costs
+    // one call per pass -- which is the difference between these and the wireframe
+    // switch beside them, where polygonMode forced a second pipeline.
     //
-    // Five of these come from the panel. None of them is compiled in, so the whole
-    // set costs one call per pass -- which is the difference between this and the
-    // wireframe switch beside them, where polygonMode forced a second pipeline.
+    // viewportY is the pipeline's: it follows the projection the world was built with,
+    // and no checkbox reaches it. The five below are the panel's, and the panel is the
+    // only place their defaults are written -- a second copy in the pipeline desc
+    // would be a value nothing reads, and so a value nobody could catch being wrong.
     //
-    // cull is the starting value; the loop below changes it per draw unless the panel
-    // overrode it.
-    // The pipeline's own, with the panel's answers written over the four it owns. The
-    // one pass of the four that overrides anything, and the only reason BindPipeline
-    // has a second form.
-    RasterState state = pipeline.raster;
+    // This is the one pass of the four that names any of them, and the only reason
+    // BindPipeline has a second form.
+    RasterState state{};
+    state.viewportY = pipeline.raster.viewportY;
+
+    // The starting value only; the loop below sets it per draw from each material,
+    // unless the panel overrode it for every draw.
     state.cull = raster.cull == kCullFromMaterial ? VK_CULL_MODE_NONE : raster.cull;
     state.depthTest = raster.depthTest ? VK_TRUE : VK_FALSE;
     state.depthWrite = raster.depthWrite ? VK_TRUE : VK_FALSE;

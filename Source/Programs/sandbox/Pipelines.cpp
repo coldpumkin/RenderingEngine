@@ -37,11 +37,12 @@ GraphicsPipelineDesc SceneDesc(const ShaderProgram& program,
     desc.blend[0] = NoBlend();
 
     // Up, because a y-up world's projection was built that way; the winding rides along
-    // in the same field. cull starts at NONE and a draw changes it per material, so
-    // what is here is the value a draw inherits before its material speaks.
+    // in the same field.
+    //
+    // The one raster field this pipeline owns. The rest of the state this pass draws
+    // with belongs to the panel, which writes every one of them at record time -- so
+    // naming a depth or cull value here would be writing a value nothing reads.
     desc.raster.viewportY = ViewportY::Up;
-    desc.raster.depthTest = VK_TRUE;
-    desc.raster.depthWrite = VK_TRUE;
     return desc;
 }
 
