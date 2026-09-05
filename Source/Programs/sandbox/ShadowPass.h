@@ -32,7 +32,7 @@ TextureDesc MakeShadowTarget(VkExtent2D extent, const TargetCapabilities& caps) 
 // The two target fields of a pipeline come from different stages, and this pass is
 // where that is clearest:
 //
-//   colour   the fragment stage's outputs. shadow.frag writes none, so there are no
+//   colour   the fragment stage's outputs. This program has no fragment stage, so no
 //            colour targets -- and CheckOutputInterface compares the two, so leaving
 //            this empty is a restatement that is checked rather than trusted
 //   depth    no stage's output. It arrives from gl_Position through the fixed-function

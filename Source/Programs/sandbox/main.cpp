@@ -622,7 +622,9 @@ int main() {
     // Depth only, and first because the scene pass reads what it draws. What that
     // means for the pipeline is the pass's to say, not this file's -- the two things
     // it needs from here are the buffer's layout and the image it draws into.
-    const char* shadowStages[] = {"Shaders/shadow.vert.spv", "Shaders/shadow.frag.spv"};
+    // One stage. The pass writes depth and nothing else, and depth is written by the
+    // fixed-function test from gl_Position -- so there is no fragment stage to name.
+    const char* shadowStages[] = {"Shaders/shadow.vert.spv"};
     if (!CreateShaderProgram(dev, shadowStages, static_cast<uint32_t>(std::size(shadowStages)),
                              &renderer.shadowProgram)) { return 1; }
 

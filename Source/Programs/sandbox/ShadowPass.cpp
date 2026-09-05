@@ -17,7 +17,7 @@ GraphicsPipelineDesc MakeShadowPipeline(const VertexLayout& mesh,
     GraphicsPipelineDesc desc;
     desc.vertexLayout = mesh;
     // One target, and its usage says it is the depth one. No colour follows, which
-    // is what shadow.frag declaring no outputs means -- polygonMode stays FILL and
+    // is what a program with no fragment stage means -- polygonMode stays FILL and
     // blending stays Opaque, the second of which is dead here: blend state is per
     // colour attachment and there are none.
     desc.targets[0] = &target;

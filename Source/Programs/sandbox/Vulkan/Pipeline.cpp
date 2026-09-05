@@ -232,7 +232,7 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     }
 
     // No fragment stage writes nothing, which is what CheckOutputInterface is already
-    // built to compare against -- the same answer shadow.frag's empty main gave.
+    // built to compare against, and the answer an empty fragment main used to give.
     static const ShaderInterface kWritesNothing;
     if (!CheckVertexInterface(desc, vertStage->interface, vertStage->path)
             || !CheckOutputInterface(formats,
