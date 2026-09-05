@@ -308,6 +308,13 @@ void BuildGui(Gui* gui, const GuiFrameInfo& info) noexcept {
     // AlwaysAutoResize, not a size: every one of these is a list whose length is a
     // fact about the program, and a scrollbar would hide the part that changed.
     if (ImGui::Begin("View", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        // The headings are the switches' route to the GPU, not what they look like.
+        // Every one of these is a checkbox and they cost three different things, and
+        // which group a switch is in is the whole of that answer.
+        //
+        // A switch that moved group would be a real change and not a rename:
+        // wireframe below is the case, because polygonMode is compiled in.
+        ImGui::SeparatorText("lighting  -  uniform, set 0");
         ImGui::Checkbox("normal map", &options->normalMap);   // gui->options, edited in place
         ImGui::Checkbox("base colour", &options->baseColor);
         ImGui::Checkbox("specular", &options->specular);
@@ -315,13 +322,10 @@ void BuildGui(Gui* gui, const GuiFrameInfo& info) noexcept {
         ImGui::Checkbox("shadow", &options->shadow);
         ImGui::Checkbox("metal/rough", &options->metallicRoughness);
 
-        // Separated because these are a different kind of switch: the five above turn
-        // a term of the lighting off, these change how the same draws are rasterized.
-        ImGui::Separator();
-        // wireframe is the odd one here: polygonMode is compiled in, so it picks a
-        // pipeline variant. Everything else on this list is dynamic state and costs
-        // one command in the pass that sets it.
-        ImGui::Checkbox("wireframe", &options->wireframe);
+        // The six above turn a term of the lighting off and reach the shader as
+        // floats; these five change how the same draws are rasterized and never
+        // reach a shader at all. One vkCmdSet* each, issued once for the pass.
+        ImGui::SeparatorText("raster  -  commands");
         ImGui::Checkbox("depth test", &options->depthTest);
         ImGui::Checkbox("depth write", &options->depthWrite);
         ImGui::Checkbox("discard raster", &options->rasterizerDiscard);
@@ -344,8 +348,14 @@ void BuildGui(Gui* gui, const GuiFrameInfo& info) noexcept {
             options->depthCompare = static_cast<ViewOptions::DepthCompare>(compare);
         }
 
+        // Alone, because it is the only switch here the driver has to compile for.
+        // polygonMode is baked, so the two values are two pipelines and ticking this
+        // binds the other one -- the five above cost a command, this one cost a
+        // second CreateGraphicsPipeline at startup.
+        ImGui::SeparatorText("pipeline  -  compiled");
+        ImGui::Checkbox("wireframe", &options->wireframe);
 
-        ImGui::Separator();
+        ImGui::SeparatorText("frame");
         // Both numbers, because they answer different questions: the rate is what a
         // person reads, the milliseconds are what a change moves. A guard on the
         // first frame, where the gap is zero.
@@ -368,9 +378,13 @@ void BuildGui(Gui* gui, const GuiFrameInfo& info) noexcept {
 
     // Four sections, one window, collapsed by default. Five windows did not fit at
     // 1280x720 and the one you wanted was always the one off screen.
-    // Below View, which is a fixed height: four checkboxes and four lines. FirstUseEver,
-    // so dragging it wins and this is only where it starts.
-    ImGui::SetNextWindowPos(ImVec2(12.0f, 330.0f), ImGuiCond_FirstUseEver);
+    //
+    // Beside View rather than below it. It sat at y=330 while View still had four
+    // checkboxes; View has twelve switches now and runs past 500 px, so this covered
+    // the lower half of it -- measured, four of the switches were unreachable. There
+    // is no room to stack them at 720 and there is 800 px of it across, so the two
+    // windows are two columns. FirstUseEver, so dragging either one wins.
+    ImGui::SetNextWindowPos(ImVec2(480.0f, 12.0f), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Inspect", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::End();
         ImGui::Render();
