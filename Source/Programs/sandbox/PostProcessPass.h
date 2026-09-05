@@ -77,7 +77,8 @@ bool CreatePostProcessPass(const Descriptors& descriptors,
 // nothing here is hidden behind anything.
 //
 // Contract: target must outlive CreateGraphicsPipeline. The desc points at it.
-GraphicsPipelineDesc MakePostPipeline(const TextureDesc& target) noexcept;
+GraphicsPipelineDesc MakePostPipeline(const ShaderProgram& program,
+                                      const TextureDesc& target) noexcept;
 
 
 // Input:  the pass (its source and pipeline), the slot (cmd, which frame), and the

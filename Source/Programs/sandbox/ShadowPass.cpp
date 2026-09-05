@@ -12,9 +12,11 @@ TextureDesc MakeShadowTarget(VkExtent2D extent, const TargetCapabilities& caps) 
                            | VK_IMAGE_USAGE_SAMPLED_BIT};
 }
 
-GraphicsPipelineDesc MakeShadowPipeline(const VertexLayout& mesh,
+GraphicsPipelineDesc MakeShadowPipeline(const ShaderProgram& program,
+                                        const VertexLayout& mesh,
                                         const TextureDesc& target) noexcept {
     GraphicsPipelineDesc desc;
+    desc.program = &program;
     desc.vertexLayout = mesh;
     // One target, and its usage says it is the depth one. No colour follows, which
     // is what a program with no fragment stage means -- polygonMode stays FILL and

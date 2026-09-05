@@ -206,12 +206,17 @@ static bool CheckOutputInterface(const AttachmentFormats& formats,
 // Nearly all of it is baked at creation - that is what a Vulkan pipeline is - and
 // pDynamicState is the escape hatch. Two items take it here.
 bool CreateGraphicsPipeline(const VulkanDevice& dev,
-                                   const ShaderProgram& program,
-                                   const GraphicsPipelineDesc& desc,
-                                   Pipeline* out) noexcept {
+                            const GraphicsPipelineDesc& desc,
+                            Pipeline* out) noexcept {
     Pipeline& pipeline = *out;
     pipeline.dev = &dev;
-    pipeline.program = &program;
+
+    if (desc.program == nullptr) {
+        LOG("[vk] a pipeline desc with no program\n");
+        return false;
+    }
+    const ShaderProgram& program = *desc.program;
+    pipeline.program = desc.program;
 
     // The shaders, their set layouts and their pipeline layout are the program's --
     // several pipelines share one. Only the state below is this variant's.
@@ -309,7 +314,7 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
         VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
     // Compiled in, unlike the depth state below. See the note in Pipeline.h: the
     // dynamic version of this only moves within a topology class.
-    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;   // 3 vertices = 1 triangle
+    inputAssembly.topology = desc.topology;
 
     // --- Raster: where the primitive lands and which side faces us ----------
     // Counts are fixed, the two values are set at record time, the rest is desc.

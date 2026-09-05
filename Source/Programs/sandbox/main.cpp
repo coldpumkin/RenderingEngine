@@ -628,9 +628,9 @@ int main() {
     if (!CreateShaderProgram(dev, shadowStages, static_cast<uint32_t>(std::size(shadowStages)),
                              &renderer.shadowProgram)) { return 1; }
 
-    const GraphicsPipelineDesc shadowDesc = MakeShadowPipeline(VertexInput(), shadowTarget);
-    if (!CreateGraphicsPipeline(dev, renderer.shadowProgram, shadowDesc,
-                                &renderer.shadowPipeline)) { return 1; }
+    const GraphicsPipelineDesc shadowDesc =
+        MakeShadowPipeline(renderer.shadowProgram, VertexInput(), shadowTarget);
+    if (!CreateGraphicsPipeline(dev, shadowDesc, &renderer.shadowPipeline)) { return 1; }
 
     // The same vertex layout as the shadow pass: it describes the buffer, and each
     // vertex stage reads out of it the locations it declares.
@@ -639,14 +639,12 @@ int main() {
                              &renderer.sceneProgram)) { return 1; }
 
     const GraphicsPipelineDesc opaqueDesc =
-        MakeScenePipeline(VertexInput(), sceneTargetDescs);
-    if (!CreateGraphicsPipeline(dev, renderer.sceneProgram, opaqueDesc,
-                                &renderer.scenePipeline)) { return 1; }
+        MakeScenePipeline(renderer.sceneProgram, VertexInput(), sceneTargetDescs);
+    if (!CreateGraphicsPipeline(dev, opaqueDesc, &renderer.scenePipeline)) { return 1; }
 
     const GraphicsPipelineDesc wireDesc =
-        MakeSceneWirePipeline(VertexInput(), sceneTargetDescs);
-    if (!CreateGraphicsPipeline(dev, renderer.sceneProgram, wireDesc,
-                                &renderer.sceneWirePipeline)) { return 1; }
+        MakeSceneWirePipeline(renderer.sceneProgram, VertexInput(), sceneTargetDescs);
+    if (!CreateGraphicsPipeline(dev, wireDesc, &renderer.sceneWirePipeline)) { return 1; }
 
     // fullscreen.vert keeps its name because it is the half that is not post's: a
     // lighting pass will pair the same module with a different fragment stage.
@@ -654,18 +652,18 @@ int main() {
     if (!CreateShaderProgram(dev, postStages, static_cast<uint32_t>(std::size(postStages)),
                              &renderer.postProgram)) { return 1; }
 
-    const GraphicsPipelineDesc postDesc = MakePostPipeline(swapchainTarget);
-    if (!CreateGraphicsPipeline(dev, renderer.postProgram, postDesc,
-                                &renderer.postPipeline)) { return 1; }
+    const GraphicsPipelineDesc postDesc =
+        MakePostPipeline(renderer.postProgram, swapchainTarget);
+    if (!CreateGraphicsPipeline(dev, postDesc, &renderer.postPipeline)) { return 1; }
 
     // The panel, on top of what the post pass leaves -- the same image.
     const char* guiStages[] = {"Shaders/gui.vert.spv", "Shaders/gui.frag.spv"};
     if (!CreateShaderProgram(dev, guiStages, static_cast<uint32_t>(std::size(guiStages)),
                              &renderer.guiProgram)) { return 1; }
 
-    const GraphicsPipelineDesc guiDesc = MakeGuiPipeline(swapchainTarget);
-    if (!CreateGraphicsPipeline(dev, renderer.guiProgram, guiDesc,
-                                &renderer.guiPipeline)) { return 1; }
+    const GraphicsPipelineDesc guiDesc =
+        MakeGuiPipeline(renderer.guiProgram, swapchainTarget);
+    if (!CreateGraphicsPipeline(dev, guiDesc, &renderer.guiPipeline)) { return 1; }
 
     // Scene -- the mesh and the draw list, from one file
     // ------------------------------------------------------------------------

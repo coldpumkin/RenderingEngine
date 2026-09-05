@@ -2,8 +2,10 @@
 
 #include "Vulkan/Barrier.h"
 
-GraphicsPipelineDesc MakePostPipeline(const TextureDesc& target) noexcept {
+GraphicsPipelineDesc MakePostPipeline(const ShaderProgram& program,
+                                      const TextureDesc& target) noexcept {
     GraphicsPipelineDesc desc;
+    desc.program = &program;
     desc.targets[0] = &target;
 
     // Down, the opposite of the scene pass: fullscreen.vert builds its own uv from

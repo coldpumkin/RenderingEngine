@@ -45,7 +45,8 @@ TextureDesc MakeShadowTarget(VkExtent2D extent, const TargetCapabilities& caps) 
 //
 // Contract: both arguments must outlive CreateGraphicsPipeline. The desc points at
 //           the target instead of copying it.
-GraphicsPipelineDesc MakeShadowPipeline(const VertexLayout& mesh,
+GraphicsPipelineDesc MakeShadowPipeline(const ShaderProgram& program,
+                                        const VertexLayout& mesh,
                                         const TextureDesc& target) noexcept;
 
 // The first pass here with no colour attachment. Its product is a depth image the

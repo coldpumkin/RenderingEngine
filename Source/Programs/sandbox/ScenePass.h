@@ -151,7 +151,8 @@ struct SceneTargets {
 // what scene.frag declares and CheckOutputInterface compares this against.
 //
 // Contract: targets must outlive CreateGraphicsPipeline. The desc points into it.
-GraphicsPipelineDesc MakeScenePipeline(const VertexLayout& mesh,
+GraphicsPipelineDesc MakeScenePipeline(const ShaderProgram& program,
+                                       const VertexLayout& mesh,
                                        const SceneTargetDescs& targets) noexcept;
 
 // Output: the same pipeline with polygonMode LINE
@@ -160,7 +161,8 @@ GraphicsPipelineDesc MakeScenePipeline(const VertexLayout& mesh,
 // whole of what a second variant is -- and because sharing a ShaderProgram is what
 // lets every set drawn from it fit both. LINE needs fillModeNonSolid, requested in
 // Core.h.
-GraphicsPipelineDesc MakeSceneWirePipeline(const VertexLayout& mesh,
+GraphicsPipelineDesc MakeSceneWirePipeline(const ShaderProgram& program,
+                                           const VertexLayout& mesh,
                                            const SceneTargetDescs& targets) noexcept;
 
 // Effect: makes the three, or remakes them at a new size

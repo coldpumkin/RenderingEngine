@@ -112,8 +112,10 @@ void ShowPipeline(const char* name, const Pipeline* pipeline) noexcept {
 
 }   // namespace
 
-GraphicsPipelineDesc MakeGuiPipeline(const TextureDesc& target) noexcept {
+GraphicsPipelineDesc MakeGuiPipeline(const ShaderProgram& program,
+                                     const TextureDesc& target) noexcept {
     GraphicsPipelineDesc desc;
+    desc.program = &program;
     desc.vertexLayout = GuiVertexInput();
     desc.targets[0] = &target;
     desc.blending = Blending::Translucent;

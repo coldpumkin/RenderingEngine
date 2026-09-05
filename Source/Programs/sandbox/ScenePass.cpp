@@ -29,9 +29,11 @@ SceneTargetDescs MakeSceneTargets(VkExtent2D extent, VkFormat colour,
     };
 }
 
-GraphicsPipelineDesc MakeScenePipeline(const VertexLayout& mesh,
+GraphicsPipelineDesc MakeScenePipeline(const ShaderProgram& program,
+                                       const VertexLayout& mesh,
                                        const SceneTargetDescs& targets) noexcept {
     GraphicsPipelineDesc desc;
+    desc.program = &program;
     desc.vertexLayout = mesh;
     desc.targets[0] = &targets.color;
     desc.targets[1] = &targets.depth;
@@ -47,9 +49,10 @@ GraphicsPipelineDesc MakeScenePipeline(const VertexLayout& mesh,
     return desc;
 }
 
-GraphicsPipelineDesc MakeSceneWirePipeline(const VertexLayout& mesh,
+GraphicsPipelineDesc MakeSceneWirePipeline(const ShaderProgram& program,
+                                           const VertexLayout& mesh,
                                            const SceneTargetDescs& targets) noexcept {
-    GraphicsPipelineDesc desc = MakeScenePipeline(mesh, targets);
+    GraphicsPipelineDesc desc = MakeScenePipeline(program, mesh, targets);
     desc.polygonMode = VK_POLYGON_MODE_LINE;
     return desc;
 }

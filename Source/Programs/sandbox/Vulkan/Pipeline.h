@@ -172,9 +172,25 @@ enum class Blending {
 // a baked-in contract read the same one.
 struct GraphicsPipelineDesc {
 
+    // Which shaders run, and with them everything reflection read: the set layouts and
+    // the pipeline layout a draw binds through. Borrowed rather than owned -- several
+    // pipelines share one, which is what makes the scene's fill and line variants two
+    // pipelines and not two programs.
+    const ShaderProgram* program = nullptr;
+
     // stride 0 means no vertex buffer - the shader builds its points from
     // gl_VertexIndex.
     VertexLayout vertexLayout;
+
+    // How the vertices group into primitives. Every pipeline here says the same thing
+    // and it is still a field: what one pipeline agrees with the others about is this
+    // program's arrangement, not part of what a pipeline is. Left out, a desc does not
+    // say how its own draws are assembled.
+    //
+    // Not in RasterState, though a VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY exists: without
+    // extendedDynamicState3 it only moves inside a class -- list to strip, not
+    // triangles to lines. Tried, and the validation layer said so at the first draw.
+    VkPrimitiveTopology topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 
     // What it draws into, as the descriptions the images are made from -- one type
     // says what a target is, and this points at it rather than restating any of it.
@@ -263,6 +279,5 @@ void DestroyPipeline(const VulkanDevice& dev, Pipeline* pipeline) noexcept;
 //           the images, so this is the one that stays a contract.
 //           LINE polygonMode needs fillModeNonSolid, which is no longer requested.
 bool CreateGraphicsPipeline(const VulkanDevice& dev,
-                            const ShaderProgram& program,
                             const GraphicsPipelineDesc& desc,
                             Pipeline* out) noexcept;

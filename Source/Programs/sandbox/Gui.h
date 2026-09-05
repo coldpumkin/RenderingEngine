@@ -49,7 +49,8 @@ VertexLayout GuiVertexInput() noexcept;
 // anything. No depth -- it draws last, on top, and nothing hides behind it.
 //
 // Contract: target must outlive CreateGraphicsPipeline. The desc points at it.
-GraphicsPipelineDesc MakeGuiPipeline(const TextureDesc& target) noexcept;
+GraphicsPipelineDesc MakeGuiPipeline(const ShaderProgram& program,
+                                     const TextureDesc& target) noexcept;
 
 // Pixels to clip space. No camera and no model matrix -- the panel is already in
 // window pixels, and this is the whole of an orthographic screen-space transform.
