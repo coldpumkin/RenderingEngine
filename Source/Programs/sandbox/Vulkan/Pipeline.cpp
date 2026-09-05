@@ -2,7 +2,6 @@
 
 #include "Vulkan/Shader.h"
 
-#include <iterator>   // std::size
 
 // Negating height alone puts the image off screen: the origin has to move down by
 // the same amount. The two lines are one thing, and with an offset the amount is
@@ -23,26 +22,55 @@ VkViewport MakeViewport(VkRect2D area, ViewportY y) noexcept {
     return viewport;
 }
 
-// Every dynamic state, in one place. The list here and kDynamicStates below have to
-// agree: one missing from this function is a validation error at the first draw, one
-// missing from that array is a value silently taken from the pipeline instead.
+// Every dynamic state, in one place -- and now the only place. There used to be a
+// second list below and a comment asking the two to agree.
+// Walked from the pipeline's own list, so the states declared at creation and the
+// calls made here cannot drift: one of them missing used to be a validation error at
+// the first draw, and there is no longer a second list for it to be missing from.
 static void SetRasterState(const VolkDeviceTable& vk, VkCommandBuffer cmd,
+                           const VkDynamicState states[], uint32_t count,
                            VkRect2D area, const RasterState& raster) noexcept {
-    const VkViewport viewport = MakeViewport(area, raster.viewportY);
-    vk.vkCmdSetViewport(cmd, 0, 1, &viewport);
-    vk.vkCmdSetFrontFace(cmd, FrontFaceFor(raster.viewportY));
-
-    // Pixels outside this are discarded, and the same rect: the viewport already
-    // confines the primitives to it, so this discards nothing either way. It is the
-    // area and not the whole target only because that is the rect this call was
-    // handed -- when the two differ, so will these, and that will be the point.
-    vk.vkCmdSetScissor(cmd, 0, 1, &area);
-
-    vk.vkCmdSetCullMode(cmd, raster.cull);
-    vk.vkCmdSetDepthTestEnable(cmd, raster.depthTest);
-    vk.vkCmdSetDepthWriteEnable(cmd, raster.depthWrite);
-    vk.vkCmdSetDepthCompareOp(cmd, raster.depthCompare);
-    vk.vkCmdSetRasterizerDiscardEnable(cmd, raster.rasterizerDiscard);
+    for (uint32_t i = 0; i < count; ++i) {
+        switch (states[i]) {
+            case VK_DYNAMIC_STATE_VIEWPORT: {
+                const VkViewport viewport = MakeViewport(area, raster.viewportY);
+                vk.vkCmdSetViewport(cmd, 0, 1, &viewport);
+                break;
+            }
+            // Pixels outside this are discarded, and the same rect: the viewport
+            // already confines the primitives to it, so this discards nothing either
+            // way. It is the area and not the whole target only because that is the
+            // rect this call was handed -- when the two differ, so will these, and
+            // that will be the point.
+            case VK_DYNAMIC_STATE_SCISSOR:
+                vk.vkCmdSetScissor(cmd, 0, 1, &area);
+                break;
+            case VK_DYNAMIC_STATE_FRONT_FACE:
+                vk.vkCmdSetFrontFace(cmd, FrontFaceFor(raster.viewportY));
+                break;
+            case VK_DYNAMIC_STATE_CULL_MODE:
+                vk.vkCmdSetCullMode(cmd, raster.cull);
+                break;
+            case VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE:
+                vk.vkCmdSetDepthTestEnable(cmd, raster.depthTest);
+                break;
+            case VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE:
+                vk.vkCmdSetDepthWriteEnable(cmd, raster.depthWrite);
+                break;
+            case VK_DYNAMIC_STATE_DEPTH_COMPARE_OP:
+                vk.vkCmdSetDepthCompareOp(cmd, raster.depthCompare);
+                break;
+            case VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE:
+                vk.vkCmdSetRasterizerDiscardEnable(cmd, raster.rasterizerDiscard);
+                break;
+            default:
+                // A state declared with nothing here to fill it. Vulkan would say so at
+                // the first draw; saying it once at record time names the state.
+                LOG("[vk] dynamic state %d is declared and never set\n",
+                    static_cast<int>(states[i]));
+                break;
+        }
+    }
 }
 
 void BindPipeline(const VolkDeviceTable& vk, VkCommandBuffer cmd,
@@ -56,7 +84,7 @@ void BindPipeline(const VolkDeviceTable& vk, VkCommandBuffer cmd,
     // State before bind. Vulkan allows either order -- both are read at the draw, not
     // here -- and this one keeps the two halves of the pipeline adjacent in the file:
     // what it was compiled with, then what it was left to issue.
-    SetRasterState(vk, cmd, area, instead);
+    SetRasterState(vk, cmd, pipeline.dynamicStates, pipeline.dynamicCount, area, instead);
     vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.handle);
 }
 
@@ -234,6 +262,10 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     pipeline.polygonMode = desc.polygonMode;
     pipeline.blending = desc.blending;
     pipeline.raster = desc.raster;
+    pipeline.dynamicCount = desc.dynamicCount;
+    for (uint32_t i = 0; i < desc.dynamicCount; ++i) {
+        pipeline.dynamicStates[i] = desc.dynamicStates[i];
+    }
 
     // The two ends of the chain, which are the two stages with a CPU-side partner: a
     // vertex stage answers to a VertexLayout, a fragment stage to an AttachmentFormats.
@@ -346,18 +378,13 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     // hardware reads per draw, so making it dynamic costs nothing at compile time and
     // saves a pipeline per value.
     //
-    // Contract: SetRasterState issues exactly this list. One here without a command
-    //           there is a validation error at the first draw.
-    constexpr VkDynamicState kDynamicStates[] = {
-        VK_DYNAMIC_STATE_VIEWPORT,
-        VK_DYNAMIC_STATE_SCISSOR,
-        VK_DYNAMIC_STATE_CULL_MODE,
-        VK_DYNAMIC_STATE_FRONT_FACE,
-        VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE,
-        VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE,
-        VK_DYNAMIC_STATE_DEPTH_COMPARE_OP,
-        VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE,
-    };
+    // The list is the desc's. What it means and why these are cheap is written beside
+    // the field.
+    if (desc.dynamicCount > kMaxDynamicStates) {
+        LOG("[vk] a desc declaring %u dynamic states, and we hold %u\n",
+            desc.dynamicCount, kMaxDynamicStates);
+        return false;
+    }
 
     // Which of these is dynamic and which is baked is not about how often a value
     // changes. viewport, cull, winding and the depth test are registers the hardware
@@ -366,14 +393,18 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     // pipeline exists because of that line and nothing else does.
     VkPipelineDynamicStateCreateInfo dynamicState{
         VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
-    dynamicState.dynamicStateCount = static_cast<uint32_t>(std::size(kDynamicStates));
-    dynamicState.pDynamicStates = kDynamicStates;
+    dynamicState.dynamicStateCount = desc.dynamicCount;
+    dynamicState.pDynamicStates = desc.dynamicStates;
 
     VkPipelineRasterizationStateCreateInfo rasterization{
         VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
     rasterization.polygonMode = desc.polygonMode;
-    // cullMode and frontFace are both dynamic, so neither is read from here. They are
-    // the pass's: one viewport for every draw in it, and the winding that goes with it.
+    // The same values BindPipeline would issue. Written in rather than left at zero,
+    // because whether they are read here or ignored in favour of a command is the
+    // desc's to say, and one value serves both answers.
+    rasterization.cullMode = desc.raster.cull;
+    rasterization.frontFace = FrontFaceFor(desc.raster.viewportY);
+    rasterization.rasterizerDiscardEnable = desc.raster.rasterizerDiscard;
     rasterization.lineWidth = 1.0f;   // used by LINE only. Above 1.0 needs wideLines
 
     // --- Fragment output: samples, blending, depth --------------------------
@@ -420,12 +451,12 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     const bool useDepth = formats.depth != VK_FORMAT_UNDEFINED;
     VkPipelineDepthStencilStateCreateInfo depthStencil{
         VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-    // All three ignored: they are dynamic, and SetRasterState issues them. Filled in
-    // anyway, because a create-info left at zero reads as forgotten rather than as
-    // overridden.
-    depthStencil.depthTestEnable = VK_TRUE;
-    depthStencil.depthWriteEnable = VK_TRUE;
-    depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+    // The desc's own, for the same reason as the raster ones above. These used to be
+    // three placeholders standing in for values nobody could name here, back when the
+    // list that ignored them was a constant in this function.
+    depthStencil.depthTestEnable = desc.raster.depthTest;
+    depthStencil.depthWriteEnable = desc.raster.depthWrite;
+    depthStencil.depthCompareOp = desc.raster.depthCompare;
 
     // --- What it draws into: attachment formats -----------------------------
     // Dynamic rendering writes the formats here instead of into a VkRenderPass.

@@ -71,6 +71,10 @@ VkViewport MakeViewport(VkRect2D area, ViewportY y) noexcept;
 // So being in the dynamic-state enum is not the same as being free to change. Drawing
 // this mesh as points would take a second pipeline, and a vertex shader that writes
 // gl_PointSize, which the layer also asked for.
+// Every dynamic state this program uses fits in this. A ceiling we impose, not a
+// counted value -- Vulkan's enum is far longer and most of it needs an extension.
+constexpr uint32_t kMaxDynamicStates = 8;
+
 struct RasterState {
     // Decides the viewport's sign and the winding test together. Their pairing is the
     // reason it is one field: apart, a pass could set a viewport and inherit whatever
@@ -219,14 +223,45 @@ struct GraphicsPipelineDesc {
     Blending blending = Blending::Opaque;
 
     // The other half of this struct, and the reason the split above is still readable
-    // field by field: everything up to here is compiled in, and this is issued as
-    // commands when the pipeline is bound.
+    // field by field: everything up to here is compiled in, and this is what the
+    // states below are filled with -- baked into the pipeline, or issued as commands
+    // when it is bound, depending on which of them this desc declares dynamic. The
+    // value is the same either way, which is what makes one field enough.
     //
     // It is here rather than at the call site because which states are dynamic is
-    // decided at creation -- the pipeline declares the list -- and a value issued from
-    // somewhere else is a second list that has to agree with it by hand. One
-    // declaration, so there is nothing left to agree.
+    // decided at creation, and a value issued from somewhere else is a second list
+    // that has to agree with it by hand.
     RasterState raster;
+
+    // Which of them the driver leaves as registers. Declared per desc rather than
+    // fixed for the file, because it is part of saying how one pipeline runs: a
+    // pipeline that bakes its cull mode and one that sets it per draw are two
+    // different pipelines, and nothing outside this struct should be what tells them
+    // apart.
+    //
+    // The default is every one this program uses, and the two at the front are not
+    // really optional: a baked viewport needs a VkViewport at creation, and the extent
+    // is not known until there is a swapchain.
+    //
+    // All of them are core in Vulkan 1.3, which we require, and all are registers the
+    // hardware reads per draw -- so declaring one costs nothing at compile time and
+    // saves a pipeline per value. blending or the sample count would be a different
+    // answer: those change what the fragment shader compiles to.
+    //
+    // Contract: a dynamic state must be set before every draw with this pipeline.
+    //           Vulkan does not remember one across a command buffer. BindPipeline
+    //           issues exactly this list, which is why it is the same list.
+    VkDynamicState dynamicStates[kMaxDynamicStates] = {
+        VK_DYNAMIC_STATE_VIEWPORT,
+        VK_DYNAMIC_STATE_SCISSOR,
+        VK_DYNAMIC_STATE_CULL_MODE,
+        VK_DYNAMIC_STATE_FRONT_FACE,
+        VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE,
+        VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE,
+        VK_DYNAMIC_STATE_DEPTH_COMPARE_OP,
+        VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE,
+    };
+    uint32_t dynamicCount = 8;
 };
 
 // Dynamic rendering bakes the attachment formats in. Size is not baked - viewport
@@ -252,9 +287,13 @@ struct Pipeline {
     VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL;
     Blending blending = Blending::Opaque;
 
-    // What it issues, kept for the same reason as the four above: a copy beside a
-    // pipeline is a second value that can disagree with what it was created with.
+    // What it issues and which states it issues, kept for the same reason as the four
+    // above: a copy beside a pipeline is a second value that can disagree with what it
+    // was created with. Here the disagreement Vulkan would notice is between the list
+    // declared at creation and the calls made at record time, so they are one list.
     RasterState raster;
+    VkDynamicState dynamicStates[kMaxDynamicStates]{};
+    uint32_t dynamicCount = 0;
 
     Pipeline() = default;
     ~Pipeline();
