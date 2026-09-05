@@ -165,11 +165,10 @@ struct Gui {
     VkDescriptorSet set = VK_NULL_HANDLE;   // drawn from our pool, names font
 
     // Non-owning, like the passes' own. Held so recording takes the same shape as
-    // theirs: the pass knows these, the caller does not carry them.
+    // theirs: the pass knows this, the caller does not carry it.
     //
-    // Two, for the reason the other passes hold two: the program is the interface
-    // every pipeline here would share, the pipeline is the one variant.
-    const ShaderProgram* program = nullptr;
+    // One, not two: the program is the pipeline's, which records what it was built
+    // from, and what a draw receives is the pipeline's fact.
     const Pipeline* pipeline = nullptr;
 
     // Written at record time, so one pair per frame in flight. Fixed size: growing

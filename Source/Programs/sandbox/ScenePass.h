@@ -220,22 +220,14 @@ bool ResizeSceneTargets(const VulkanDevice& dev, const SceneTargetDescs& descs,
 struct ScenePass {
     const Mesh* mesh = nullptr;
 
-    // The shader interface every draw in this pass answers to: set layouts, push
-    // range, pipeline layout. It is the pass's and not a pipeline's, because a pass
-    // may hold several pipelines and they all bind through this one.
+    // No program here. What a draw receives -- which set layouts, which push range --
+    // is the pipeline's, and recording reads it off whichever variant it just chose.
     //
-    // What Vulkan requires of a draw here is only that its pipeline was compiled for
-    // these attachment formats. Sharing a program is our restriction, not the API's:
-    // recording binds set 0 and pushes constants through this one layout, so a
-    // pipeline from a different program would have to bring its own -- and every draw
-    // would then carry which layout to use.
+    // It used to be the pass's, on the grounds that several pipelines bind through one
+    // layout. That is true of these two and it is not what a pass is: Vulkan admits any
+    // pipeline compiled for the same attachment formats, and nothing more. Holding the
+    // program here turned our recording shortcut into a rule the pass enforced.
     //
-    // That is the shape a second program in one pass would take, and it is why
-    // "one program per pass" is written here rather than assumed: the day a draw needs
-    // a different set layout against the same attachments, this field becomes the
-    // draw's rather than the pass's.
-    const ShaderProgram* program = nullptr;
-
     // Two variants of the one program, and the pass picks between them at record
     // time. They differ in polygonMode and in nothing else -- same shaders, same set
     // layouts, same push range, same attachment formats.

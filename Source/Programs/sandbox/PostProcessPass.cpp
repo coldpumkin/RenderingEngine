@@ -12,7 +12,8 @@ void RefreshPostProcessPass(const Descriptors& descriptors,
                             PostProcessPass* post) noexcept {
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
         const BindingValue values[] = {{&post->source[i]->view}};
-        UpdateSet(descriptors, post->program->setLayouts[kFrameSet], post->sets[i],
+        UpdateSet(descriptors, post->pipeline->program->setLayouts[kFrameSet],
+                  post->sets[i],
                   values, 1);
     }
 }
@@ -30,7 +31,6 @@ bool CreatePostProcessPass(const Descriptors& descriptors,
     }
     const ShaderProgram& program = *pipeline.program;
 
-    out->program = &program;
     out->pipeline = &pipeline;
     out->target = &target;
 
@@ -106,7 +106,9 @@ void RecordPostProcessPass(const FrameSlot& slot, const PostProcessPass& post,
     const VolkDeviceTable& vk = slot.dev->table;
     VkCommandBuffer cmd = slot.cmd;
     const Pipeline& pipeline = *post.pipeline;
-    const VkPipelineLayout layout = post.program->layout;
+    // From the pipeline about to be bound, not from a program the pass holds: what a
+    // draw receives is the pipeline's fact.
+    const VkPipelineLayout layout = pipeline.program->layout;
 
     // Handed in rather than found: this pass does not know what drew it. The set
     // bound below names this same image, both picked by slot.index.

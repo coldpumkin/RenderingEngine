@@ -9,8 +9,8 @@
 //   mesh, draws    the scene pass's        the scene pass draws the same list
 //   the set        this pass makes it      nobody
 //
-// Nothing in the first three rows is owned here. What the pass is, is its program,
-// its pipeline, and one descriptor set per frame in flight.
+// Nothing in the first three rows is owned here. What the pass is, is a pipeline it
+// names and one descriptor set per frame in flight.
 
 #include "Passes.h"
 
@@ -52,11 +52,13 @@ GraphicsPipelineDesc MakeShadowPipeline(const VertexLayout& mesh,
 // scene pass samples, which makes it also the first thing depth does outside the
 // frame that produced it.
 //
-// Its own set and its own program, but not its own viewpoint: the matrix it draws
-// with is a FrameShadow, handed in, and scene.frag reads that same buffer.
+// Its own set, but not its own viewpoint: the matrix it draws with is a FrameShadow,
+// handed in, and scene.frag reads that same buffer.
 struct ShadowPass {
     const Mesh* mesh = nullptr;
-    const ShaderProgram* program = nullptr;
+
+    // No program: a pipeline records the one it was built from, and what a draw
+    // receives is the pipeline's fact rather than the pass's.
     const Pipeline* pipeline = nullptr;
 
     // Per frame in flight for the reason the scene's attachments are: the GPU still

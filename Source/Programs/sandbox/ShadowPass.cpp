@@ -39,7 +39,6 @@ bool CreateShadowPass(const Descriptors& descriptors,
     const ShaderProgram& program = *pipeline.program;
 
     out->mesh = &mesh;
-    out->program = &program;
     out->pipeline = &pipeline;
 
     // The same comparison the scene pass makes, because both pipelines are built from
@@ -135,9 +134,16 @@ void RecordShadowPass(const FrameSlot& slot, const ShadowPass& shadow,
     raster.depthWrite = VK_TRUE;
     SetRasterState(vk, cmd, VkRect2D{{0, 0}, extent}, raster);
 
-    vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadow.pipeline->handle);
+    // The layout comes from the pipeline that is about to be bound, not from a program
+    // the pass holds. What a draw receives -- which sets, which push range -- is the
+    // pipeline's fact; a pass is a group of pipelines that agree about attachments,
+    // and Vulkan asks for nothing more than that of the group.
+    const Pipeline& pipeline = *shadow.pipeline;
+    const VkPipelineLayout layout = pipeline.program->layout;
+
+    vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.handle);
     vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                               shadow.program->layout, kFrameSet, 1, &frame.set,
+                               layout, kFrameSet, 1, &frame.set,
                                0, nullptr);
 
     const Mesh& mesh = *shadow.mesh;
@@ -151,7 +157,7 @@ void RecordShadowPass(const FrameSlot& slot, const ShadowPass& shadow,
 
         // The model matrix alone. shadow.vert declares the front of the same block the
         // scene shaders declare all of, so the offset is shared and the size is not.
-        vk.vkCmdPushConstants(cmd, shadow.program->layout, VK_SHADER_STAGE_VERTEX_BIT,
+        vk.vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_VERTEX_BIT,
                               0, sizeof(item.model), &item.model);
         vk.vkCmdDrawIndexed(cmd, item.range.count, 1, item.range.firstIndex,
                             item.vertexOffset, 0);

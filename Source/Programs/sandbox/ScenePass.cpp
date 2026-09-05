@@ -90,7 +90,6 @@ bool CreateScenePass(const Descriptors& descriptors,
     const ShaderProgram& program = *pipeline.program;
 
     out->mesh = &mesh;
-    out->program = &program;
     out->pipeline = &pipeline;
     out->wirePipeline = &wirePipeline;
 
@@ -226,19 +225,19 @@ void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
     VkCommandBuffer cmd = slot.cmd;
     const Mesh& mesh = *scene.mesh;
 
-    // One choice for the whole pass. Both were built from scene.program, so every set
-    // allocated for this pass fits either one and nothing below changes.
-    // Picked by what each variant was baked with, not by which field it sits in. A
-    // Pipeline records its polygonMode, so the choice reads that rather than assuming
-    // wirePipeline is the LINE one -- and a third mode would be a third variant here
-    // and no change to what the panel sends.
+    // One choice for the whole pass, picked by what each variant was baked with rather
+    // than by which field it sits in. A Pipeline records its polygonMode, so the choice
+    // reads that instead of assuming wirePipeline is the LINE one -- and a third mode
+    // would be a third variant here and no change to what the panel sends.
     const Pipeline& pipeline = raster.polygonMode == scene.wirePipeline->polygonMode
                                    ? *scene.wirePipeline : *scene.pipeline;
 
-    // Sets and push constants go through the pass's layout, not the pipeline's: every
-    // pipeline a draw here can name was built from the same program, so this is the
-    // one thing that stays put when the bound pipeline changes.
-    const VkPipelineLayout layout = scene.program->layout;
+    // The layout comes from the pipeline that was just chosen, not from a program the
+    // pass holds. What a draw receives -- which sets, which push range -- is the
+    // pipeline's fact. A pass is a group of pipelines that agree about attachments,
+    // which is all Vulkan asks of the group; that ours happen to share one program is
+    // a property of these two variants and not of being in one pass.
+    const VkPipelineLayout layout = pipeline.program->layout;
 
     // This slot's frame of the pass. The set that names these attachments is in the
     // same PerFrame, so the two cannot be picked apart by a wrong index.

@@ -42,8 +42,8 @@ struct PostProcessPass {
     // arrives, which is why RecordFrame reads it off that image and not off here.
     const TextureDesc* target = nullptr;
 
-    const ShaderProgram* program = nullptr;   // the interface, shared. non-owning
-    const Pipeline* pipeline = nullptr;       // the one variant. non-owning
+    // No program: it is the pipeline's, which records what it was built from.
+    const Pipeline* pipeline = nullptr;   // the one variant. non-owning
 
     // One per frame in flight, because each names the source above it. Flat rather
     // than a PerFrame like the scene pass, since a set is all there is.

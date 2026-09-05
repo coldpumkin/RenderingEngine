@@ -225,7 +225,6 @@ bool CreateGuiSet(const Descriptors& descriptors,
     }
     const ShaderProgram& program = *pipeline.program;
 
-    out->program = &program;
     out->pipeline = &pipeline;
     if (!AllocateSets(descriptors, program.setLayouts[0], 1, &out->set)) {
         return false;
@@ -454,11 +453,13 @@ void BuildGui(Gui* gui, const GuiFrameInfo& info) noexcept {
 void RecordGuiPass(const FrameSlot& slot, Gui& gui, const Texture& target) noexcept {
     const ImDrawData* draws = ImGui::GetDrawData();
     if (draws == nullptr || draws->TotalVtxCount == 0 || gui.pipeline == nullptr
-            || gui.program == nullptr) {
+            || gui.pipeline->program == nullptr) {
         return;
     }
     const Pipeline& pipeline = *gui.pipeline;
-    const VkPipelineLayout layout = gui.program->layout;
+    // From the pipeline, not from a program this pass holds: what a draw receives is
+    // the pipeline's fact.
+    const VkPipelineLayout layout = pipeline.program->layout;
 
     const VkDeviceSize vertexBytes =
         static_cast<VkDeviceSize>(draws->TotalVtxCount) * sizeof(ImDrawVert);
