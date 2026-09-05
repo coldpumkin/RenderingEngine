@@ -87,8 +87,10 @@ struct ShaderInterface {
     // argument position is the only thing saying what a file is.
     VkShaderStageFlags stage = 0;
 
-    uint32_t inputCount = 0;         // vertex attributes, built-ins excluded
-    uint32_t maxInputLocation = 0;   // highest location + 1, so gaps show up
+    // Reflection refuses a gap, so these two are equal by the time anyone reads them.
+    // The second is kept because that is what the refusal is measured against.
+    uint32_t inputCount = 0;         // built-ins excluded
+    uint32_t maxInputLocation = 0;   // highest location + 1
 
     // In declaration order, not indexed by location -- the caller looks a location up
     // rather than assuming the two coincide.
@@ -135,7 +137,13 @@ bool BuildSetLayout(const VulkanDevice& dev,
                     uint32_t set, DescriptorLayout* out) noexcept;
 
 // Effect: reads path and fills out. No device involved.
-// Output: false on a missing or malformed .spv, or more than kMaxBindingsPerSet.
+// Output: false on a missing or malformed .spv, more than kMaxBindingsPerSet, or a gap
+//         in the input or output locations.
+//
+// Every refusal here is a fact about this one file -- no resource, no partner stage --
+// which is why it is answerable without either. Checks that need a second side live
+// where that side arrives: a partner stage at CreateShaderProgram, a VertexLayout or
+// an AttachmentFormats at CreateGraphicsPipeline.
 bool ReflectShaderFile(const char* path, ShaderInterface* out) noexcept;
 
 // Same file, plus the VkShaderModule. Reads the file once for both.

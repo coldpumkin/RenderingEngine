@@ -59,15 +59,6 @@ static bool CheckVertexInterface(const GraphicsPipelineDesc& desc,
                                  const char* vertPath) noexcept {
     const VertexLayout& layout = desc.vertexLayout;
 
-    // Vulkan is fine with a shader reading locations 0 and 2 and a layout supplying
-    // both. We are not: in these shaders a gap means a location was removed and the
-    // layout not followed. Ours to relax if a real one ever turns up.
-    if (vs.inputCount != vs.maxInputLocation) {
-        LOG("[vk] %s has gaps in its input locations (%u inputs, highest is %u)\n",
-            vertPath, vs.inputCount, vs.maxInputLocation);
-        return false;
-    }
-
     // Walked from the shader's side, and the direction is the point. The layout
     // describes the buffer, which is one thing; the shaders reading it are several,
     // and each reads the locations it needs. scene.vert takes all four of ours,
@@ -130,12 +121,6 @@ static bool CheckVertexInterface(const GraphicsPipelineDesc& desc,
 static bool CheckOutputInterface(const AttachmentFormats& formats,
                                  const ShaderInterface& fs,
                                  const char* fragPath) noexcept {
-    if (fs.outputCount != fs.maxOutputLocation) {
-        LOG("[vk] %s has gaps in its output locations (%u outputs, highest is %u)\n",
-            fragPath, fs.outputCount, fs.maxOutputLocation);
-        return false;
-    }
-
     // Zero is a real answer, not a missing one: a depth-only pass writes no colour and
     // its whole product is the depth image. So the question is not how many outputs
     // there are, it is whether the two sides agree -- a target with nothing to write
@@ -152,8 +137,9 @@ static bool CheckOutputInterface(const AttachmentFormats& formats,
     for (uint32_t i = 0; i < fs.outputCount; ++i) {
         const InterfaceSlot& slot = fs.outputs[i];
 
-        // Indexed by location, because that is what a shader writes to. The gap check
-        // above is what makes the index and the location the same number.
+        // Indexed by location, because that is what a shader writes to. Reflection
+        // refuses a gap, which is what makes the index and the location the same
+        // number here.
         const VkFormat target = formats.color[slot.location];
         const NumericKind written = KindOfFormat(target);
         if (written == NumericKind::Unknown) {

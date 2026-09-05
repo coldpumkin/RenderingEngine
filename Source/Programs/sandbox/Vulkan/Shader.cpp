@@ -163,6 +163,26 @@ bool Reflect(const std::vector<uint32_t>& code, const char* path,
         if (b->binding + 1 > set.bindingCount) { set.bindingCount = b->binding + 1; }
     }
 
+    // Gaps, both ends, before anyone else sees this. A gap is a fact about this one
+    // .spv -- no resource, no partner stage -- so it is answerable here, and here is
+    // once per file rather than once per pipeline built from it.
+    //
+    // Vulkan is fine with a shader declaring locations 0 and 2. We are not: in these
+    // shaders a gap means a location was removed and the other side not followed.
+    // Ours to relax if a real one ever turns up.
+    if (out->inputCount != out->maxInputLocation) {
+        LOG("[vk] %s has gaps in its input locations (%u inputs, highest is %u)\n",
+            path, out->inputCount, out->maxInputLocation);
+        spvReflectDestroyShaderModule(&module);
+        return false;
+    }
+    if (out->outputCount != out->maxOutputLocation) {
+        LOG("[vk] %s has gaps in its output locations (%u outputs, highest is %u)\n",
+            path, out->outputCount, out->maxOutputLocation);
+        spvReflectDestroyShaderModule(&module);
+        return false;
+    }
+
     spvReflectDestroyShaderModule(&module);
     return true;
 }
