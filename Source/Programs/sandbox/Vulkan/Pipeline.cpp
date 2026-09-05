@@ -22,11 +22,8 @@ VkViewport MakeViewport(VkRect2D area, ViewportY y) noexcept {
     return viewport;
 }
 
-// Every dynamic state, in one place -- and now the only place. There used to be a
-// second list below and a comment asking the two to agree.
-// Walked from the pipeline's own list, so the states declared at creation and the
-// calls made here cannot drift: one of them missing used to be a validation error at
-// the first draw, and there is no longer a second list for it to be missing from.
+// Walked from the pipeline's own list, so what was declared at creation and what is
+// issued here cannot drift apart.
 static void SetRasterState(const VolkDeviceTable& vk, VkCommandBuffer cmd,
                            const VkDynamicState states[], uint32_t count,
                            VkRect2D area, const RasterState& raster) noexcept {
@@ -37,11 +34,8 @@ static void SetRasterState(const VolkDeviceTable& vk, VkCommandBuffer cmd,
                 vk.vkCmdSetViewport(cmd, 0, 1, &viewport);
                 break;
             }
-            // Pixels outside this are discarded, and the same rect: the viewport
-            // already confines the primitives to it, so this discards nothing either
-            // way. It is the area and not the whole target only because that is the
-            // rect this call was handed -- when the two differ, so will these, and
-            // that will be the point.
+            // The same rect as the viewport, which already confines the primitives
+            // to it -- so this discards nothing until the two are told to differ.
             case VK_DYNAMIC_STATE_SCISSOR:
                 vk.vkCmdSetScissor(cmd, 0, 1, &area);
                 break;
@@ -64,8 +58,8 @@ static void SetRasterState(const VolkDeviceTable& vk, VkCommandBuffer cmd,
                 vk.vkCmdSetRasterizerDiscardEnable(cmd, raster.rasterizerDiscard);
                 break;
             default:
-                // A state declared with nothing here to fill it. Vulkan would say so at
-                // the first draw; saying it once at record time names the state.
+                // Declared with nothing here to fill it. Vulkan says so at the first
+                // draw; this names which state.
                 LOG("[vk] dynamic state %d is declared and never set\n",
                     static_cast<int>(states[i]));
                 break;
@@ -81,9 +75,7 @@ void BindPipeline(const VolkDeviceTable& vk, VkCommandBuffer cmd,
 void BindPipeline(const VolkDeviceTable& vk, VkCommandBuffer cmd,
                   const Pipeline& pipeline, VkRect2D area,
                   const RasterState& instead) noexcept {
-    // State before bind. Vulkan allows either order -- both are read at the draw, not
-    // here -- and this one keeps the two halves of the pipeline adjacent in the file:
-    // what it was compiled with, then what it was left to issue.
+    // Either order is legal: both are read at the draw, not here.
     SetRasterState(vk, cmd, pipeline.dynamicStates, pipeline.dynamicCount, area, instead);
     vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.handle);
 }
@@ -126,13 +118,11 @@ static bool CheckVertexInterface(const GraphicsPipelineDesc& desc,
             return false;
         }
 
-        // Vulkan converts inside a kind and not across one, so this is the line that
-        // actually matters. R8G8B8A8_UNORM feeding a vec4 passes; R32G32B32A32_UINT
-        // feeding one does not, and nothing else would have said so.
-        // The kind and not the count, and that asymmetry with the output end is the
-        // spec's. Vulkan defines what a vertex input gets for channels the format does
-        // not supply -- (0, 0, 0, 1) -- so a vec4 fed by a three-channel format is
-        // legal and defined. Nothing is undefined here, so there is nothing to refuse.
+        // The kind and not the count. Vulkan converts inside a kind and not across one
+        // -- R8G8B8A8_UNORM feeds a vec4, R32G32B32A32_UINT does not -- while channels
+        // the format does not supply are defined to arrive as (0, 0, 0, 1). Nothing is
+        // undefined here, so there is nothing to refuse. The output end differs, and
+        // that asymmetry is the spec's.
         const NumericKind supplied = ChannelsOfFormat(attribute->format).kind;
         if (supplied == NumericKind::Unknown) {
             LOG("[vk] %s: location %u uses format %d, which ChannelsOfFormat does not know\n",
@@ -378,8 +368,6 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     // hardware reads per draw, so making it dynamic costs nothing at compile time and
     // saves a pipeline per value.
     //
-    // The list is the desc's. What it means and why these are cheap is written beside
-    // the field.
     if (desc.dynamicCount > kMaxDynamicStates) {
         LOG("[vk] a desc declaring %u dynamic states, and we hold %u\n",
             desc.dynamicCount, kMaxDynamicStates);
@@ -399,9 +387,8 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     VkPipelineRasterizationStateCreateInfo rasterization{
         VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
     rasterization.polygonMode = desc.polygonMode;
-    // The same values BindPipeline would issue. Written in rather than left at zero,
-    // because whether they are read here or ignored in favour of a command is the
-    // desc's to say, and one value serves both answers.
+    // The same values BindPipeline would issue: whether they are read here or ignored
+    // in favour of a command is what dynamicStates says.
     rasterization.cullMode = desc.raster.cull;
     rasterization.frontFace = FrontFaceFor(desc.raster.viewportY);
     rasterization.rasterizerDiscardEnable = desc.raster.rasterizerDiscard;
@@ -451,9 +438,7 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     const bool useDepth = formats.depth != VK_FORMAT_UNDEFINED;
     VkPipelineDepthStencilStateCreateInfo depthStencil{
         VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-    // The desc's own, for the same reason as the raster ones above. These used to be
-    // three placeholders standing in for values nobody could name here, back when the
-    // list that ignored them was a constant in this function.
+    // The desc's own, for the same reason as the raster ones above.
     depthStencil.depthTestEnable = desc.raster.depthTest;
     depthStencil.depthWriteEnable = desc.raster.depthWrite;
     depthStencil.depthCompareOp = desc.raster.depthCompare;

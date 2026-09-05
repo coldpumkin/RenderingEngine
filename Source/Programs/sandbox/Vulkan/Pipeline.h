@@ -5,18 +5,21 @@
 #include "Vulkan/Shader.h"
 #include "Vulkan/VertexLayout.h"
 
-// ViewportY - one sign that decides two things, both of them at record time
+// Pipeline - when each value is settled
 // ============================================================================
 //
-// A negative viewport height makes the shader side y-up, and the same negation flips
-// the winding test. So the sign chooses frontFace as well, and written by hand in two
-// places the two disagree silently until culling is turned on.
+//   compiled in        program . vertexLayout . topology . formats . samples
+//                      . polygonMode . blending
+//   declared dynamic   dynamicStates[], at creation
+//   issued per draw    raster, by BindPipeline
 //
-// Neither half is baked. The viewport never was -- it is dynamic state so a resize
-// rebuilds nothing -- and frontFace joined it: VK_DYNAMIC_STATE_FRONT_FACE is core in
-// Vulkan 1.3, which we require, and the winding test is a register the same way cull
-// mode is. That leaves the sign where it belongs, which is the pass: every draw in one
-// shares a viewport, and nothing about it has to be known when a pipeline is compiled.
+// The split is not how often a value changes. It is whether the driver has to compile
+// something different: a register costs a command, anything the machine code depends on
+// costs a pipeline.
+
+// A negative viewport height makes the shader side y-up, and the same negation flips
+// the winding test -- so one sign decides both. Written by hand in two places they
+// disagree silently until something is culled.
 //
 // Contract: both shaders emit triangles with positive shoelace area in clip space.
 //           Measured, not derived - the scene pass runs CULL_MODE_BACK.
@@ -32,53 +35,19 @@ constexpr VkFrontFace FrontFaceFor(ViewportY y) noexcept {
 }
 
 // Output: a viewport covering area, with the sign applied
-//
-// area rather than an extent because the rect a pass draws into is not always the
-// whole of what it draws on. Three of the four passes hand in the whole target; the
-// post pass hands in a smaller one and the difference is the bars.
 VkViewport MakeViewport(VkRect2D area, ViewportY y) noexcept;
 
-// RasterState - what a pass settles before its first draw
-// ============================================================================
-//
-// Every one of these is dynamic state, which means two things. It is not compiled in,
-// so changing it costs a command rather than a pipeline. And **Vulkan remembers none
-// of it across a command buffer**, so every pass has to set every one before it draws
-// -- not only the ones it cares about.
-//
-// That second half is why this is a struct. Listed by hand, each pass names seven
-// values and a new one means editing four passes; missed, the validation layer says
-// so but only at run time. As a value, a pass names what it wants and the defaults
-// answer for the rest.
-//
-// The defaults are what a pass that draws one flat thing wants: no culling, no depth,
-// triangles. The scene pass overrides most of them and the shadow pass two.
-//
-// What is *not* here is the other half of the same question. polygonMode, blending,
-// sample count and the attachment formats are compiled into a pipeline, so they live
-// in GraphicsPipelineDesc and a second value means a second pipeline. The split is
-// not how often something changes -- it is whether the driver has to compile
-// something different.
-//
-// Primitive topology looked like it belonged here and does not. There is a
-// VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY, but without extendedDynamicState3 it only
-// moves inside a class -- list to strip, not triangles to lines. Tried, and the
-// validation layer said so at the first draw:
-//
-//   the last primitive topology POINT_LIST set by vkCmdSetPrimitiveTopology is not
-//   compatible with the pipeline topology TRIANGLE_LIST
-//
-// So being in the dynamic-state enum is not the same as being free to change. Drawing
-// this mesh as points would take a second pipeline, and a vertex shader that writes
-// gl_PointSize, which the layer also asked for.
 // Every dynamic state this program uses fits in this. A ceiling we impose, not a
-// counted value -- Vulkan's enum is far longer and most of it needs an extension.
+// counted value.
 constexpr uint32_t kMaxDynamicStates = 8;
 
+// What a pipeline issues for the states it declared dynamic. **Vulkan remembers none of
+// them across a command buffer**, so every one is set before every draw -- which is why
+// this is a value with defaults rather than a list each pass names.
+//
+// The defaults are what a pass drawing one flat thing wants: no culling, no depth.
 struct RasterState {
-    // Decides the viewport's sign and the winding test together. Their pairing is the
-    // reason it is one field: apart, a pass could set a viewport and inherit whatever
-    // winding ran before it, which is invisible until something is culled.
+    // One field, because the viewport's sign and the winding test have to agree.
     ViewportY viewportY = ViewportY::Down;
 
     // The starting value. The scene pass changes it per draw, from the material.
@@ -90,167 +59,100 @@ struct RasterState {
     VkBool32 depthWrite = VK_FALSE;
     VkCompareOp depthCompare = VK_COMPARE_OP_LESS;   // clear is 1.0, so nearer wins
 
-
-    // Everything up to the rasterizer still runs; nothing after it does. What that
-    // leaves is a pass that costs its vertex work and writes nothing.
+    // Everything up to the rasterizer still runs; nothing after it does.
     VkBool32 rasterizerDiscard = VK_FALSE;
 };
 
 struct Pipeline;   // defined below: this call needs only its address
 
-// Effect: binds the pipeline and issues every state it left dynamic, in one call
+// Effect: binds the pipeline and issues every state it declared dynamic, in one call
 //
-// One call and not seven, so a pass cannot set some and inherit the rest -- and not a
-// free function either, because a dynamic state belongs to the pipeline that declared
-// it dynamic. Vulkan keeps no memory of these across a command buffer, so every one
-// has to be issued; issuing them from the pipeline is what makes the list that
-// declares them and the calls that fill them one thing rather than two.
-//
-// area stays an argument because it is not the pipeline's. Which states are dynamic is
-// settled at creation; what the viewport covers is the frame's, and a resize changes it
-// without rebuilding anything. The post pass hands in a letterboxed rect rather than
-// its whole target, which is the case that keeps this a parameter.
-//
-// The viewport built from area is the one place in this program where a coordinate
-// stops being a fraction and becomes a pixel. Two contracts meet on that line, they
-// are separate, and nothing checks either -- either one broken is a stretched picture
-// and neither says a word.
+// area is not the pipeline's: which states are dynamic is settled at creation, what the
+// viewport covers is the frame's. Three passes hand in the whole target; the post pass
+// hands in a letterboxed rect, which is why this takes a rect at all.
 //
 // Contract: 3D -> 2D. viewport.width / |viewport.height| equals the aspect the
-//           projection behind these primitives was built with. The shadow pass holds
-//           it by being square (its ortho box is), the scene pass by proj and this
-//           area both reading kRenderExtent.
+//           projection behind these primitives was built with. The shadow pass holds it
+//           by being square, the scene pass by proj and area both reading kRenderExtent.
 //
-// Contract: 2D -> 2D. A pass that draws an image rather than geometry owes the same
-//           thing with two extents -- what it samples against what it draws into --
-//           and it is a separate question, because there is no projection here to
-//           agree with. The post pass is the only one that owes it, and holds it by
-//           handing in a letterboxed area (LetterboxInto in Passes.cpp) instead of
-//           the whole target.
+// Contract: 2D -> 2D. A pass drawing an image owes the same between what it samples and
+//           what it draws into. The post pass is the only one, and holds it with
+//           LetterboxInto.
 //
-// area is why this takes a rect at all. Three passes pass {{0, 0}, extent} and always
-// will; the fourth is the reason the offset exists.
+// Neither is checked, and either one broken is a stretched picture that says nothing.
 void BindPipeline(const VolkDeviceTable& vk, VkCommandBuffer cmd,
                   const Pipeline& pipeline, VkRect2D area) noexcept;
 
-// The same, with values from somewhere else instead of the pipeline's own. Separate
-// rather than a defaulted argument, so a pass with nothing to override cannot name one
-// by accident -- the scene pass is the only caller, and what it hands in is the panel's
-// switches, a debug affordance rather than a second home for these values.
+// The same, with values from somewhere else. Separate rather than a defaulted argument,
+// so a pass with nothing to override cannot name one by accident. The scene pass is the
+// only caller; what it hands in is the panel's switches.
 void BindPipeline(const VolkDeviceTable& vk, VkCommandBuffer cmd,
                   const Pipeline& pipeline, VkRect2D area,
                   const RasterState& instead) noexcept;
 
-// Blending - whether the fragment is mixed with what is already there
-// ============================================================================
+// Compiled into the fragment output stage, so a second value is a second pipeline.
 //
-// It used to carry depth write with it, on the grounds that a translucent surface
-// writing depth hides what is drawn behind it later and one value cannot disagree
-// with itself. Depth write is dynamic state now, so the two are apart again and
-// keeping them in step is the recording side's -- a pass that binds a translucent
-// pipeline is the one that has to leave depthWrite off.
-//
-// Not made dynamic itself: blending changes what the driver compiles into the
-// fragment output stage, which is the line everything in GraphicsPipelineDesc is on.
+// Contract: a pass binding a Translucent pipeline leaves depthWrite off. Depth write is
+//           dynamic state, so nothing here holds the two together.
 enum class Blending {
     Opaque,
     Translucent,
 };
 
-// One pipeline's worth of decisions. Everything not here is the same in both of
-// ours and lives in CreateGraphicsPipeline. The rows are where each value comes
-// from, which is the whole reason this is a struct and not five arguments:
+// Everything one pipeline is created from, and the reason this is a struct rather than
+// arguments is that the rows come from different places:
 //
-//   the mesh supplies     vertexLayout
-//   the pass decides      formats
-//   the variant chooses   polygonMode . blending
+//   main supplies       program . vertexLayout . targets
+//   the pass decides    topology . polygonMode . blending . raster . dynamicStates
 //
-// The shaders are not here: what they require is ShaderProgram, and several pipelines
-// share one. What is left is exactly what two pipelines from one program can differ
-// in, plus the two agreements a pass owns both sides of.
-//
-// cullMode is not here. It is dynamic state now, set at record time like the
-// viewport -- see the note on VkDynamicState in the .cpp.
-//
-// The last row decides nothing: it carries values from Attachments so both sides of
-// a baked-in contract read the same one.
+// The sample count is not a field. It sits inside AttachmentFormats, projected from
+// targets -- a field of its own would make "the attachment is 4x and the pipeline is
+// 1x" expressible.
 struct GraphicsPipelineDesc {
 
-    // Which shaders run, and with them everything reflection read: the set layouts and
-    // the pipeline layout a draw binds through. Borrowed rather than owned -- several
-    // pipelines share one, which is what makes the scene's fill and line variants two
-    // pipelines and not two programs.
+    // Borrowed: several pipelines share one, which is what makes the scene's fill and
+    // line variants two pipelines and not two programs.
     const ShaderProgram* program = nullptr;
 
     // stride 0 means no vertex buffer - the shader builds its points from
     // gl_VertexIndex.
     VertexLayout vertexLayout;
 
-    // How the vertices group into primitives. Every pipeline here says the same thing
-    // and it is still a field: what one pipeline agrees with the others about is this
-    // program's arrangement, not part of what a pipeline is. Left out, a desc does not
-    // say how its own draws are assembled.
-    //
-    // Not in RasterState, though a VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY exists: without
-    // extendedDynamicState3 it only moves inside a class -- list to strip, not
-    // triangles to lines. Tried, and the validation layer said so at the first draw.
+    // Compiled in. VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY exists, but without
+    // extendedDynamicState3 it only moves inside a class -- list to strip, not triangles
+    // to lines. Tried, and the validation layer said so at the first draw.
     VkPrimitiveTopology topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 
-    // What it draws into, as the descriptions the images are made from -- one type
-    // says what a target is, and this points at it rather than restating any of it.
+    // What it draws into. One list, because each desc's usage already says whether it is
+    // a colour or a depth target: colour order is the list's order, depth has no
+    // position, and the first null ends it. One longer than the colour ceiling.
     //
-    // One list, because each desc's usage already says whether it is a colour or a
-    // depth target. Sorting them into two fields here would be this file saying a
-    // second time what every entry says once. Colour order is the list's order;
-    // depth is found by its usage and has no position.
+    // Pointers, read during creation only -- a resize remakes these descs at a new
+    // extent and rebuilds no pipeline, so Pipeline keeps the projection instead.
     //
-    // Pointers, and read during creation only: Pipeline keeps the projection instead.
-    // A resize remakes these descs at a new extent (ResizeSceneTargets) and rebuilds
-    // no pipeline, so what is kept has to be the part that does not move.
-    //
-    // The first null ends the list. An empty one is a pipeline that draws nowhere,
-    // which CheckOutputInterface refuses unless the fragment stage writes nothing.
-    //
-    // One longer than the colour ceiling: every colour target plus the depth one.
+    // An empty list is a pipeline that draws nowhere, which CheckOutputInterface refuses
+    // unless the fragment stage writes nothing.
     const TextureDesc* targets[kMaxColorTargets + 1]{};
 
-
-    // FILL is the only value anything passes right now. LINE needs the device's
-    // fillModeNonSolid, which we stopped requesting -- switching to it means adding
-    // that back in Core.h and Device.cpp's candidate check.
+    // Contract: LINE needs the device's fillModeNonSolid, which we stopped requesting --
+    //           switching to it means adding that back in Core.h and Device.cpp.
     VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL;
 
     Blending blending = Blending::Opaque;
 
-    // The other half of this struct, and the reason the split above is still readable
-    // field by field: everything up to here is compiled in, and this is what the
-    // states below are filled with -- baked into the pipeline, or issued as commands
-    // when it is bound, depending on which of them this desc declares dynamic. The
-    // value is the same either way, which is what makes one field enough.
-    //
-    // It is here rather than at the call site because which states are dynamic is
-    // decided at creation, and a value issued from somewhere else is a second list
-    // that has to agree with it by hand.
+    // What every state below is filled with -- baked into the pipeline, or issued by
+    // BindPipeline if dynamicStates names it. One value serves both answers.
     RasterState raster;
 
-    // Which of them the driver leaves as registers. Declared per desc rather than
-    // fixed for the file, because it is part of saying how one pipeline runs: a
-    // pipeline that bakes its cull mode and one that sets it per draw are two
-    // different pipelines, and nothing outside this struct should be what tells them
-    // apart.
+    // Which of them the driver leaves as registers. Per desc rather than fixed for the
+    // file, because a pipeline that bakes its cull mode and one that sets it per draw
+    // are two different pipelines.
     //
-    // The default is every one this program uses, and the two at the front are not
-    // really optional: a baked viewport needs a VkViewport at creation, and the extent
-    // is not known until there is a swapchain.
-    //
-    // All of them are core in Vulkan 1.3, which we require, and all are registers the
-    // hardware reads per draw -- so declaring one costs nothing at compile time and
-    // saves a pipeline per value. blending or the sample count would be a different
-    // answer: those change what the fragment shader compiles to.
+    // The two at the front are not really optional: a baked viewport needs a VkViewport
+    // at creation, and the extent is not known until there is a swapchain.
     //
     // Contract: a dynamic state must be set before every draw with this pipeline.
-    //           Vulkan does not remember one across a command buffer. BindPipeline
-    //           issues exactly this list, which is why it is the same list.
+    //           BindPipeline issues exactly this list, which is why it is the same list.
     VkDynamicState dynamicStates[kMaxDynamicStates] = {
         VK_DYNAMIC_STATE_VIEWPORT,
         VK_DYNAMIC_STATE_SCISSOR,
@@ -264,33 +166,23 @@ struct GraphicsPipelineDesc {
     uint32_t dynamicCount = 8;
 };
 
-// Dynamic rendering bakes the attachment formats in. Size is not baked - viewport
-// and scissor are dynamic state, so a resize rebuilds nothing.
 struct Pipeline {
     const VulkanDevice* dev = nullptr;   // non-owning, needed to destroy
 
-    // The interface this variant was built against. Borrowed: several pipelines share
-    // one, which is the reason it is not in here. Recording binds sets and pushes
-    // constants through program->layout, not through anything this owns.
+    // Borrowed, and shared between variants. Recording binds sets and pushes constants
+    // through program->layout, not through anything this owns.
     const ShaderProgram* program = nullptr;
 
     VkPipeline handle = VK_NULL_HANDLE;
 
-    // What it was compiled against, and the whole of what a later check can ask about
-    // it. Not the desc it came from: that points at TextureDescs whose extents move.
-    //
-    // Keeping them here is what lets callers stop carrying their own -- a copy beside
-    // a pipeline is a second value that can disagree with what was baked, and after
-    // the fact there is nothing to check it against.
+    // What it was created with, kept so callers stop carrying their own: a copy beside a
+    // pipeline is a second value that can disagree with what was baked, and after the
+    // fact there is nothing to check it against. Not the desc, which points at
+    // TextureDescs whose extents move.
     VertexLayout vertexLayout;
     AttachmentFormats formats;
     VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL;
     Blending blending = Blending::Opaque;
-
-    // What it issues and which states it issues, kept for the same reason as the four
-    // above: a copy beside a pipeline is a second value that can disagree with what it
-    // was created with. Here the disagreement Vulkan would notice is between the list
-    // declared at creation and the calls made at record time, so they are one list.
     RasterState raster;
     VkDynamicState dynamicStates[kMaxDynamicStates]{};
     uint32_t dynamicCount = 0;
@@ -301,22 +193,21 @@ struct Pipeline {
     Pipeline& operator=(const Pipeline&) = delete;
 };
 
-// Effect: destroys the compiled object and leaves the struct empty. The layout and
-//         set layouts are the program's and are not touched, so a rebuild would keep
-//         every set already allocated. Only the destructor calls this today.
+// Effect: destroys the compiled object and leaves the struct empty. The layout and set
+//         layouts are the program's and are not touched, so a rebuild would keep every
+//         set already allocated.
 //
-// Contract: every command buffer using this pipeline must have finished, so the
-//           caller calls vkDeviceWaitIdle - one frame's fence is not enough.
+// Contract: every command buffer using this pipeline must have finished, so the caller
+//           calls vkDeviceWaitIdle - one frame's fence is not enough.
 void DestroyPipeline(const VulkanDevice& dev, Pipeline* pipeline) noexcept;
 
 
-// Effect: builds one pipeline from a program and a desc, after checking both ends of
-//         the shader boundary -- the layout against the vertex stage's inputs, the
-//         colour formats against the fragment stage's outputs.
+// Effect: builds one pipeline from the desc, after checking both ends of the shader
+//         boundary -- the layout against the vertex stage's inputs, the colour formats
+//         against the fragment stage's outputs.
 //
-// Contract: formats must be what the attachments actually are. Nothing here can see
-//           the images, so this is the one that stays a contract.
-//           LINE polygonMode needs fillModeNonSolid, which is no longer requested.
+// Contract: formats must be what the attachments actually are. Nothing here can see the
+//           images, so this is the one that stays a contract.
 bool CreateGraphicsPipeline(const VulkanDevice& dev,
                             const GraphicsPipelineDesc& desc,
                             Pipeline* out) noexcept;
