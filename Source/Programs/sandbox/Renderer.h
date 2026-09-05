@@ -35,6 +35,7 @@
 #include "Gui.h"
 #include "Passes.h"
 #include "PostProcessPass.h"
+#include "ScenePass.h"
 #include "ShadowPass.h"   // both held by value below, so the definitions have to be here
 #include "Vulkan/Descriptors.h"
 #include "Vulkan/Frame.h"

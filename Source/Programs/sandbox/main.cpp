@@ -40,6 +40,7 @@
 #include "Passes.h"             // what we draw. main assembles it and hands it the frame
 #include "PostProcessPass.h"      // named here: main makes its pipeline and its sets
 #include "Renderer.h"            // everything that needs a device, grouped by kind
+#include "ScenePass.h"            // named here: its targets, its pipelines and its sets
 #include "ShadowPass.h"           // named here: its target, its pipeline and its sets
 #include "Vertex.h"
 #include "Vulkan/Attachments.h"   // main picks what we draw into, not the device layer
