@@ -7,6 +7,7 @@
 
 #include <GLFW/glfw3.h>
 
+#include <cstdlib>    // getenv, for the switch a capture cannot click
 #include <cstring>    // memcpy
 #include <iterator>   // std::size
 
@@ -130,6 +131,15 @@ VertexLayout GuiVertexInput() noexcept {
 bool CreateGui(const VulkanDevice& dev, const Commands& commands,
                Window& window, Gui* out) noexcept {
     out->dev = &dev;
+
+    // The starting value of the one switch a capture has to be able to ask for.
+    // **Read here rather than in main**, which is the same rule as everything else on
+    // this panel: main knows about no switch, and this is a switch.
+    //
+    // Presence is on, the way LAMBDA_FIXED_TIME is. A person clicks the checkbox; this
+    // exists because capture.ps1 cannot, and without it the only way to run the
+    // deferred path was to edit this default and rebuild.
+    if (std::getenv("LAMBDA_DEFERRED") != nullptr) { out->options.deferred = true; }
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
