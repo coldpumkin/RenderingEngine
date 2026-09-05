@@ -34,6 +34,7 @@
 #include "Config.h"
 #include "Gui.h"
 #include "Passes.h"
+#include "Pipelines.h"
 #include "PostProcessPass.h"
 #include "ScenePass.h"
 #include "ShadowPass.h"   // both held by value below, so the definitions have to be here
@@ -46,60 +47,15 @@
 #include <vector>
 
 struct Renderer {
-    // --- WHAT the shaders require -----------------------------------------
+    // --- HOW to run it ----------------------------------------------------
     //
-    // Three programs, one per pair of shaders. Each is the interface: set layouts,
-    // push range, pipeline layout -- everything read out of the .spv and nothing
-    // chosen by a caller.
+    // The programs and the pipelines, in Pipelines.h. What runs on the GPU and how is
+    // that file's; what work is being done is a pass's, and the two meet only at the
+    // TextureDescs both point at.
     //
-    //   program   shaders                vertex          sets
-    //   shadow    shadow.vert/frag       position (48)   0 the light's matrix
-    //   scene     scene.vert/frag         Vertex (48)     0 frame, 1 material
-    //   post      fullscreen.vert + post.frag   none            0 the scene's resolve
-    //   gui       gui.vert/frag          ImDrawVert      0 the font atlas
-    //
-    // The shadow row reads the same buffer over the same stride as the scene row and
-    // declares one attribute of it. A layout feeds what its shader reads, and this one
-    // reads position.
-    //
-    // The empty middle cell is the interesting one: a shader that builds its own
-    // vertices needs no layout at all, and that is a property of the shader rather
-    // than of the pass it happens to be in.
-    //
-    // Declared first, so they are destroyed last. Every pipeline points at one, and
-    // every descriptor set was drawn from one of their layouts.
-    ShaderProgram shadowProgram;
-    ShaderProgram sceneProgram;
-    ShaderProgram postProgram;
-    ShaderProgram guiProgram;
-
-    // --- HOW to draw ------------------------------------------------------
-    //
-    // A pipeline is one variant of a program: the state a pass admits, compiled.
-    // Today each program has exactly one, which is why the two look like one thing.
-    //
-    //   pipeline   from             target          polygon   blend
-    //   shadow     shadowProgram    depth only 1x   fill      opaque
-    //   scene      sceneProgram     color 4x        fill      opaque
-    //   sceneWire  sceneProgram     color 4x        line      opaque
-    //   post       postProgram   swapchain 1x    fill      opaque
-    //   gui        guiProgram       swapchain 1x    fill      translucent
-    //
-    // The middle two are the table earning its keep: one program, two rows, and the
-    // only column that differs is polygonMode. Every set drawn from sceneProgram fits
-    // both, so the scene pass swaps between them and rebinds nothing.
-    //
-    // "depth only" is a colour format of UNDEFINED, and it is checked rather than
-    // assumed: a fragment stage with no outputs and a pass with no colour attachment
-    // have to agree, and CreateGraphicsPipeline refuses the pair that does not.
-    //
-    // A second scene pipeline would appear in this table and nowhere else: it shares
-    // sceneProgram, so every set already allocated fits it.
-    Pipeline shadowPipeline;
-    Pipeline scenePipeline;
-    Pipeline sceneWirePipeline;
-    Pipeline postPipeline;
-    Pipeline guiPipeline;
+    // Declared before the passes so it outlives them: a pass records through a
+    // pipeline's layout, and every descriptor set was drawn from a program's.
+    Pipelines pipelines;
 
     // --- WHAT the shaders may reach ---------------------------------------
     //

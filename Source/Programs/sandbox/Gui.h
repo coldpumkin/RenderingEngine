@@ -43,15 +43,6 @@ struct Window;
 // is baked into its own pipeline.
 VertexLayout GuiVertexInput() noexcept;
 
-// Output: what the gui pipeline is compiled from
-//
-// The only one of the five that blends: a panel has to be see-through to be over
-// anything. No depth -- it draws last, on top, and nothing hides behind it.
-//
-// Contract: target must outlive CreateGraphicsPipeline. The desc points at it.
-GraphicsPipelineDesc MakeGuiPipeline(const ShaderProgram& program,
-                                     const TextureDesc& target) noexcept;
-
 // Pixels to clip space. No camera and no model matrix -- the panel is already in
 // window pixels, and this is the whole of an orthographic screen-space transform.
 // 16 bytes where a mat4 would be 64.

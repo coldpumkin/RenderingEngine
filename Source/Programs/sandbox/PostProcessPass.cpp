@@ -2,20 +2,6 @@
 
 #include "Vulkan/Barrier.h"
 
-GraphicsPipelineDesc MakePostPipeline(const ShaderProgram& program,
-                                      const TextureDesc& target) noexcept {
-    GraphicsPipelineDesc desc;
-    desc.program = &program;
-    desc.targets[0] = &target;
-    desc.blend[0] = NoBlend();
-
-    // Down, the opposite of the scene pass: fullscreen.vert builds its own uv from
-    // gl_VertexIndex and expects the default orientation. One triangle, wound to face
-    // us, and nothing to hide behind anything -- so everything else is the default.
-    desc.raster.cull = VK_CULL_MODE_BACK_BIT;
-    return desc;
-}
-
 void RefreshPostProcessPass(const Descriptors& descriptors,
                             PostProcessPass* post) noexcept {
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {

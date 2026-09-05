@@ -144,27 +144,6 @@ struct SceneTargets {
     Texture depth;     // multisample. Tested and written, never read outside the frame
 };
 
-// Output: what the scene pipeline is compiled from
-//
-// The multisample colour and the depth, and not the resolve: a pipeline bakes what it
-// draws into, and the resolve is what leaves afterwards. One colour output, which is
-// what scene.frag declares and CheckOutputInterface compares this against.
-//
-// Contract: targets must outlive CreateGraphicsPipeline. The desc points into it.
-GraphicsPipelineDesc MakeScenePipeline(const ShaderProgram& program,
-                                       const VertexLayout& mesh,
-                                       const SceneTargetDescs& targets) noexcept;
-
-// Output: the same pipeline with polygonMode LINE
-//
-// Built from the one above rather than beside it, because one changed field is the
-// whole of what a second variant is -- and because sharing a ShaderProgram is what
-// lets every set drawn from it fit both. LINE needs fillModeNonSolid, requested in
-// Core.h.
-GraphicsPipelineDesc MakeSceneWirePipeline(const ShaderProgram& program,
-                                           const VertexLayout& mesh,
-                                           const SceneTargetDescs& targets) noexcept;
-
 // Effect: makes the three, or remakes them at a new size
 //
 // Remaking releases first, view before image inside each -- see ResetTexture. The

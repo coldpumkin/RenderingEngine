@@ -29,35 +29,6 @@ SceneTargetDescs MakeSceneTargets(VkExtent2D extent, VkFormat colour,
     };
 }
 
-GraphicsPipelineDesc MakeScenePipeline(const ShaderProgram& program,
-                                       const VertexLayout& mesh,
-                                       const SceneTargetDescs& targets) noexcept {
-    GraphicsPipelineDesc desc;
-    desc.program = &program;
-    desc.vertexLayout = mesh;
-    desc.targets[0] = &targets.color;
-    desc.targets[1] = &targets.depth;
-    desc.blend[0] = NoBlend();
-
-    // Up, because world y is up and the projection was built that way; the winding
-    // rides along in the same field. Depth on for both halves -- this is the pass with
-    // something to hide behind something else. cull starts at NONE and the record loop
-    // changes it per draw from the material, so what is here is the value a draw
-    // inherits before its material speaks.
-    desc.raster.viewportY = ViewportY::Up;
-    desc.raster.depthTest = VK_TRUE;
-    desc.raster.depthWrite = VK_TRUE;
-    return desc;
-}
-
-GraphicsPipelineDesc MakeSceneWirePipeline(const ShaderProgram& program,
-                                           const VertexLayout& mesh,
-                                           const SceneTargetDescs& targets) noexcept {
-    GraphicsPipelineDesc desc = MakeScenePipeline(program, mesh, targets);
-    desc.polygonMode = VK_POLYGON_MODE_LINE;
-    return desc;
-}
-
 // One frame's three images, from the descs that say what they are.
 bool CreateSceneTargets(const VulkanDevice& dev, const SceneTargetDescs& descs,
                         SceneTargets* out) noexcept {

@@ -619,51 +619,17 @@ int main() {
     // polygonMode, which is compiled in. Anything that is a register instead is
     // dynamic state and costs no second pipeline.
 
-    // Depth only, and first because the scene pass reads what it draws. What that
-    // means for the pipeline is the pass's to say, not this file's -- the two things
-    // it needs from here are the buffer's layout and the image it draws into.
-    // One stage. The pass writes depth and nothing else, and depth is written by the
-    // fixed-function test from gl_Position -- so there is no fragment stage to name.
-    const char* shadowStages[] = {"Shaders/shadow.vert.spv"};
-    if (!CreateShaderProgram(dev, shadowStages, static_cast<uint32_t>(std::size(shadowStages)),
-                             &renderer.shadowProgram)) { return 1; }
-
-    const GraphicsPipelineDesc shadowDesc =
-        MakeShadowPipeline(renderer.shadowProgram, VertexInput(), shadowTarget);
-    if (!CreateGraphicsPipeline(dev, shadowDesc, &renderer.shadowPipeline)) { return 1; }
-
-    // The same vertex layout as the shadow pass: it describes the buffer, and each
-    // vertex stage reads out of it the locations it declares.
-    const char* sceneStages[] = {"Shaders/scene.vert.spv", "Shaders/scene.frag.spv"};
-    if (!CreateShaderProgram(dev, sceneStages, static_cast<uint32_t>(std::size(sceneStages)),
-                             &renderer.sceneProgram)) { return 1; }
-
-    const GraphicsPipelineDesc opaqueDesc =
-        MakeScenePipeline(renderer.sceneProgram, VertexInput(), sceneTargetDescs);
-    if (!CreateGraphicsPipeline(dev, opaqueDesc, &renderer.scenePipeline)) { return 1; }
-
-    const GraphicsPipelineDesc wireDesc =
-        MakeSceneWirePipeline(renderer.sceneProgram, VertexInput(), sceneTargetDescs);
-    if (!CreateGraphicsPipeline(dev, wireDesc, &renderer.sceneWirePipeline)) { return 1; }
-
-    // fullscreen.vert keeps its name because it is the half that is not post's: a
-    // lighting pass will pair the same module with a different fragment stage.
-    const char* postStages[] = {"Shaders/fullscreen.vert.spv", "Shaders/post.frag.spv"};
-    if (!CreateShaderProgram(dev, postStages, static_cast<uint32_t>(std::size(postStages)),
-                             &renderer.postProgram)) { return 1; }
-
-    const GraphicsPipelineDesc postDesc =
-        MakePostPipeline(renderer.postProgram, swapchainTarget);
-    if (!CreateGraphicsPipeline(dev, postDesc, &renderer.postPipeline)) { return 1; }
-
-    // The panel, on top of what the post pass leaves -- the same image.
-    const char* guiStages[] = {"Shaders/gui.vert.spv", "Shaders/gui.frag.spv"};
-    if (!CreateShaderProgram(dev, guiStages, static_cast<uint32_t>(std::size(guiStages)),
-                             &renderer.guiProgram)) { return 1; }
-
-    const GraphicsPipelineDesc guiDesc =
-        MakeGuiPipeline(renderer.guiProgram, swapchainTarget);
-    if (!CreateGraphicsPipeline(dev, guiDesc, &renderer.guiPipeline)) { return 1; }
+    // How each of those pieces of work runs is Pipelines.h's. What is handed over is
+    // what a pipeline is compiled against -- the layouts of the two buffers anything
+    // draws from, and the descs of the images anything draws into.
+    PipelineSources pipelineSources;
+    pipelineSources.meshLayout = VertexInput();
+    pipelineSources.guiLayout = GuiVertexInput();
+    pipelineSources.shadowDepth = &shadowTarget;
+    pipelineSources.sceneColor = &sceneTargetDescs.color;
+    pipelineSources.sceneDepth = &sceneTargetDescs.depth;
+    pipelineSources.swapchain = &swapchainTarget;
+    if (!CreatePipelines(dev, pipelineSources, &renderer.pipelines)) { return 1; }
 
     // Scene -- the mesh and the draw list, from one file
     // ------------------------------------------------------------------------
@@ -807,12 +773,12 @@ int main() {
     // sets, materials for the material set. How many descriptors each set holds is
     // read off the layout by CreateDescriptors, not written here.
     const SetRequest setRequests[] = {
-        {&renderer.shadowProgram.setLayouts[kFrameSet], kFramesInFlight},
-        {&renderer.sceneProgram.setLayouts[kFrameSet], kFramesInFlight},
-        {&renderer.sceneProgram.setLayouts[kMaterialSet], materialCount},
-        {&renderer.postProgram.setLayouts[kFrameSet], kFramesInFlight},
+        {&renderer.pipelines.shadowProgram.setLayouts[kFrameSet], kFramesInFlight},
+        {&renderer.pipelines.sceneProgram.setLayouts[kFrameSet], kFramesInFlight},
+        {&renderer.pipelines.sceneProgram.setLayouts[kMaterialSet], materialCount},
+        {&renderer.pipelines.postProgram.setLayouts[kFrameSet], kFramesInFlight},
         // One, and counted by neither of the other two reasons: there is one font.
-        {&renderer.guiProgram.setLayouts[0], 1},
+        {&renderer.pipelines.guiProgram.setLayouts[0], 1},
     };
     if (!CreateDescriptors(dev, setRequests,
                            static_cast<uint32_t>(std::size(setRequests)),
@@ -840,12 +806,12 @@ int main() {
                                                                : VK_CULL_MODE_BACK_BIT)};
     }
 
-    if (!CreateGuiSet(renderer.descriptors, renderer.guiPipeline,
+    if (!CreateGuiSet(renderer.descriptors, renderer.pipelines.gui,
                       &renderer.guiPass)) { return 1; }
 
     renderer.materials.resize(materialCount);
     if (!CreateMaterials(dev, renderer.descriptors,
-                         renderer.sceneProgram.setLayouts[kMaterialSet], sources.data(),
+                         renderer.pipelines.sceneProgram.setLayouts[kMaterialSet], sources.data(),
                          materialCount, renderer.materials.data())) { return 1; }
 
     // Join the two halves the loader had to hand back separately. An index rather than
@@ -904,7 +870,7 @@ int main() {
 
     if (!CreateShadowPass(renderer.descriptors, shadowMaps,
                           renderer.mesh,
-                          renderer.shadowPipeline, renderer.shadows,
+                          renderer.pipelines.shadow, renderer.shadows,
                           &renderer.shadowPass)) { return 1; }
     // The scene's three, made here and named here. The pass draws into them, the post
     // pass samples the resolve, and the capture reads the same image -- three readers
@@ -922,13 +888,13 @@ int main() {
     }
 
     if (!CreateScenePass(renderer.descriptors, sceneTargets,
-                         renderer.mesh, renderer.scenePipeline,
-                         renderer.sceneWirePipeline,
+                         renderer.mesh, renderer.pipelines.scene,
+                         renderer.pipelines.sceneWire,
                          shadowMaps, renderer.cameras, renderer.lights,
                          renderer.shadows, renderer.guiPass,
                          &renderer.scenePass)) { return 1; }
     if (!CreatePostProcessPass(renderer.descriptors, sceneColor, swapchainTarget,
-                               renderer.postPipeline,
+                               renderer.pipelines.post,
                                &renderer.postPass)) {
         return 1;
     }
@@ -1153,11 +1119,11 @@ int main() {
         guiInfo.materialBinds = drawStats.materialBinds;
         guiInfo.cullChanges = drawStats.cullChanges;
         guiInfo.descriptors = &renderer.descriptors;
-        guiInfo.sceneProgram = &renderer.sceneProgram;
-        guiInfo.postProgram = &renderer.postProgram;
-        guiInfo.guiProgram = &renderer.guiProgram;
-        guiInfo.scenePipeline = &renderer.scenePipeline;
-        guiInfo.postPipeline = &renderer.postPipeline;
+        guiInfo.sceneProgram = &renderer.pipelines.sceneProgram;
+        guiInfo.postProgram = &renderer.pipelines.postProgram;
+        guiInfo.guiProgram = &renderer.pipelines.guiProgram;
+        guiInfo.scenePipeline = &renderer.pipelines.scene;
+        guiInfo.postPipeline = &renderer.pipelines.post;
         guiInfo.cameraBytes = static_cast<uint32_t>(sizeof(CameraUniform));
         guiInfo.lightBytes = static_cast<uint32_t>(sizeof(LightUniform)
                                                    + sizeof(ShadowUniform));
@@ -1166,7 +1132,7 @@ int main() {
         guiInfo.vertexAttributes = renderer.mesh.desc.vertexLayout.attributeCount;
         guiInfo.framesInFlight = kFramesInFlight;
         guiInfo.mesh = &renderer.mesh;
-        guiInfo.guiPipeline = &renderer.guiPipeline;
+        guiInfo.guiPipeline = &renderer.pipelines.gui;
         guiInfo.slotIndex = slot.index;
         guiInfo.sceneColor = &renderer.sceneTargets[slot.index].color;
         guiInfo.sceneResolve = &renderer.sceneTargets[slot.index].resolve;

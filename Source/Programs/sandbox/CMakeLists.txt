@@ -35,6 +35,7 @@ add_executable(sandbox
     Vulkan/Mesh.h        Vulkan/Mesh.cpp        # the two buffers a draw always binds together
 
     Vertex.h             Vertex.cpp        # our vertex type and the layout for it
+    Pipelines.h          Pipelines.cpp     # how each piece of work runs: shaders and baked state
     Passes.h             Passes.cpp        # what the passes share, and the frame that orders them
     ShadowPass.h         ShadowPass.cpp    # depth only, from where the light is
     ScenePass.h          ScenePass.cpp     # the surfaces, off-screen and multisampled

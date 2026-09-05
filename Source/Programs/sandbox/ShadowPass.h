@@ -27,28 +27,6 @@
 // SAMPLED because the scene pass reads it -- the second of the two edges.
 TextureDesc MakeShadowTarget(VkExtent2D extent, const TargetCapabilities& caps) noexcept;
 
-// Output: what the shadow pipeline is compiled from
-//
-// The two target fields of a pipeline come from different stages, and this pass is
-// where that is clearest:
-//
-//   colour   the fragment stage's outputs. This program has no fragment stage, so no
-//            colour targets -- and CheckOutputInterface compares the two, so leaving
-//            this empty is a restatement that is checked rather than trusted
-//   depth    no stage's output. It arrives from gl_Position through the fixed-function
-//            test, which every vertex stage feeds, so nothing in a .spv says a pass
-//            needs one. This is the pass saying it, and the only field here that is
-//            this pass's own rather than handed in or already declared elsewhere
-//
-// The layout is the mesh's -- it describes the buffer, and each vertex stage reads
-// the locations it declares out of it -- so it is taken rather than named here.
-//
-// Contract: both arguments must outlive CreateGraphicsPipeline. The desc points at
-//           the target instead of copying it.
-GraphicsPipelineDesc MakeShadowPipeline(const ShaderProgram& program,
-                                        const VertexLayout& mesh,
-                                        const TextureDesc& target) noexcept;
-
 // The first pass here with no colour attachment. Its product is a depth image the
 // scene pass samples, which makes it also the first thing depth does outside the
 // frame that produced it.

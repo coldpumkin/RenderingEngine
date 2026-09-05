@@ -12,26 +12,6 @@ TextureDesc MakeShadowTarget(VkExtent2D extent, const TargetCapabilities& caps) 
                            | VK_IMAGE_USAGE_SAMPLED_BIT};
 }
 
-GraphicsPipelineDesc MakeShadowPipeline(const ShaderProgram& program,
-                                        const VertexLayout& mesh,
-                                        const TextureDesc& target) noexcept {
-    GraphicsPipelineDesc desc;
-    desc.program = &program;
-    desc.vertexLayout = mesh;
-    // One target, and its usage says it is the depth one. No colour follows, which is
-    // what a program with no fragment stage means -- so blend[] stays empty and
-    // polygonMode stays FILL.
-    desc.targets[0] = &target;
-
-    // ViewportY::Down settles the direction the map's v axis runs. scene.frag reads it
-    // back as ndc * 0.5 + 0.5, which is this sign; the winding rides along and has no
-    // effect on a pass that culls nothing.
-    desc.raster.viewportY = ViewportY::Down;
-    desc.raster.depthTest = VK_TRUE;
-    desc.raster.depthWrite = VK_TRUE;
-    return desc;
-}
-
 bool CreateShadowPass(const Descriptors& descriptors,
                       const Texture* const maps[kFramesInFlight],
                       const Mesh& mesh,
