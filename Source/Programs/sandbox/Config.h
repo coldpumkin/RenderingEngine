@@ -11,14 +11,27 @@
 
 // 1 and 2 measured identical at 120Hz -- 90% of the frame is the acquire wait.
 //
-// **At 1 this whole axis is one element wide.** Seven things are sized by this number
-// -- the slot, the light, each pass's per-frame share, the gui's buffers -- and they
-// are paired by slot.index and by nothing else, so an index used wrongly cannot be
-// told from an index used rightly while there is only one. That is a measurement gap
-// and not a bug, and it was closed by measuring rather than by reasoning: built at 2,
-// the captured frame is byte-identical, sync validation says nothing, and the resize
-// and minimise cycle survives. Worth repeating whenever something new joins the axis.
-constexpr uint32_t kFramesInFlight = 1;
+// **2 since 09-06, and the reason is that 1 cannot be checked.** Eighty-nine places
+// are sized by this number -- the slot, the camera, the light, the panel's switches,
+// each pass's per-frame share, the g-buffer, the gui's vertices -- and every one of
+// them is paired with its frame by slot.index and by nothing else. At 1 an index used
+// wrongly reads the same memory as an index used rightly, so the whole axis is a
+// claim no run can refute. At 2 it is checked on every frame.
+//
+// That is the same rule that keeps a 1x MSAA fallback out of this program: code that
+// does not run here cannot be verified.
+//
+// Measured at 2 on both paths, 09-06: build warnings 0, validation 0, synchronization
+// validation 0, four resizes plus minimize and restore, and **both capture hashes
+// byte-identical to the values taken at 1**. Slots holding different resources and
+// the picture not moving is what says the pairing is right.
+//
+// The cost is memory and it is the only cost. Per frame in flight, at 1280x720:
+// SceneTargets 31.6 MB (4x colour + resolve + 4x depth), GBufferTargets 14.1 MB, the
+// shadow map 16.0 MB -- 61.7 MB, doubled. Speed is unchanged, see the first line.
+//
+// **Rerun whenever something new joins the axis.** Three things did on 09-06.
+constexpr uint32_t kFramesInFlight = 2;
 
 // A different axis: frames-in-flight is how far the CPU runs ahead, this is how many
 // images rotate. 3 because a busy GPU misses vsync with 2 (Vulkan-Samples).
