@@ -1,37 +1,34 @@
 ﻿#pragma once
 
-// Passes - what we draw, and in what order
+// Passes - what the passes share, and the frame that orders them
 // ============================================================================
 //
 // Outside Vulkan/ because none of this is the API: a pass is our arrangement of it.
 // The dependency runs one way -- this file names Vulkan types, and no header under
 // Vulkan/ names a pass.
 //
-// Two passes. A pass is one render-target configuration with draws in it, inside its
-// own BeginRendering scope; how many pipelines those draws use is not fixed at one.
-// The second reads what the first wrote, and the order is the two calls in
-// RecordFrame -- nothing else enforces it:
+// A pass is one render-target configuration with draws in it, inside its own
+// BeginRendering scope. Each has its own pair of files and is named here, not
+// included; what is left in this one is what more than one of them needs:
 //
-//   [scene pass]   knows nothing about the window
-//     barrier x3 (the pass's color, colorResolve, depth for this slot)
-//     BeginRendering   attachment = color / depth, resolving into colorResolve
-//       BindVertexBuffers, BindIndexBuffer
-//       BindPipeline, BindDescriptorSets
-//       per item: PushConstants, DrawIndexed
-//     EndRendering    <- the multisample average happens here
+//   ShadowPass.h        depth only, from where the light is
+//   ScenePass           still below, until it moves out too
+//   PostProcessPass.h   the scene's resolve onto the frame's target
+//   Gui.h               the panel, drawn on top
 //
-//   [post-process pass] samples the resolve. Nothing is applied to it yet, but this
-//                       is the scope an effect goes in
-//     barrier resolve   -> SHADER_READ_ONLY
-//     barrier target    -> COLOR_ATTACHMENT
-//     BeginRendering   attachment = the frame's target, in its own format
-//       BindPipeline, BindDescriptorSets, Draw 3 vertices
-//     EndRendering     <- leaves it COLOR_ATTACHMENT_OPTIMAL, and says so
+// The order is the calls in RecordFrame and nothing else enforces it. Every edge
+// between two passes is a value main hands to both -- the shadow maps, the resolve --
+// so no pass reaches into another to find what it reads:
 //
-//   [gui pass] (Gui.cpp) draws on top with loadOp LOAD
+//   shadow -> scene    the map, sampled
+//   scene  -> post     the resolve, sampled
+//   post   -> gui      the target, drawn on top with loadOp LOAD
+//   gui    -> scene    the panel's option buffer, asked for by name. The one edge
+//                      that runs backwards, and the only one a pass still owns
 //
-//   barrier target -> PRESENT_SRC, in RecordFrame. After every pass, because which
-//   one is last is the frame's business and not any pass's
+// The barriers for the first two are inside the pass that wrote the image; the one
+// for the third is in RecordFrame beside the present transition. That disagreement is
+// open, not settled.
 //
 // Pipeline sits in the middle of three agreements, and a pass owns both sides of each:
 //   pipeline <-> render target   attachment format (dynamic rendering bakes it in)
@@ -57,6 +54,7 @@ struct Mesh;
 // included, so the arrow points one way -- RecordFrame is handed each of them and
 // orders them, and none of them knows the others.
 struct ShadowPass;
+struct PostProcessPass;
 struct Gui;
 
 
@@ -656,68 +654,6 @@ bool CreateScenePass(const Descriptors& descriptors,
                      const FrameCamera* cameras, const FrameLight* lights,
                      const FrameShadow* shadows,
                      const Gui& gui, ScenePass* out) noexcept;
-
-
-// PostProcessPass - reads what the scene pass produced, writes the frame's target
-// ============================================================================
-//
-// **It takes the images, not the pass that made them.** Everything this pass needs of
-// its input is what a Texture already says -- extent, format, one sample -- and none
-// of those three is the scene's to decide. A multisample image cannot be sampled, so
-// the resolve exists for this reader; the format has to mean what post.frag
-// assumes of it; and the extent it carries is the aspect the projection was built
-// from. The producer answers to the consumer here, which is the other way round from
-// how the two are named.
-//
-// Naming the edge as images is also what lets the caller write it down: main fills the
-// array, so the dependency is a value in one place instead of a path walked from in
-// here. That is as far as this goes -- what it does not yet do is compare the extent
-// it samples with the extent it draws into, which is a contract nothing states.
-//
-// A dependency, not an order. Holding these pointers does not stop anyone from
-// recording this pass first; the order is the two lines in RecordFrame and stays
-// there. Passes ordered by the CPU is the point -- there is no graph to walk.
-//
-// No attachments of its own: the image it draws into arrives with the frame, one of
-// however many the swapchain handed back rather than one per frame in flight. What it
-// can hold is the description of that image, which is the same for all of them.
-struct PostProcessPass {
-    // One per frame in flight. Non-owning: the scene pass owns these images.
-    const Texture* source[kFramesInFlight]{};
-
-    // What it writes, described the way the other passes' targets are. Non-owning, and
-    // **the format is the part that keeps**: the extent belongs to whichever image
-    // arrives, which is why RecordFrame reads it off that image and not off here.
-    const TextureDesc* target = nullptr;
-
-    const ShaderProgram* program = nullptr;   // the interface, shared. non-owning
-    const Pipeline* pipeline = nullptr;       // the one variant. non-owning
-
-    // One per frame in flight, because each names the source above it. Flat rather
-    // than a PerFrame like the scene pass, since a set is all there is.
-    VkDescriptorSet sets[kFramesInFlight]{};
-};
-
-// Effect: rewrites each set to name its source image again
-//
-// The pointers in source[] do not change when a target is remade -- the Texture stays
-// where it is and its contents are replaced -- but the view handle inside does, and a
-// set records a handle rather than a pointer. So a resize needs this and nothing else.
-void RefreshPostProcessPass(const Descriptors& descriptors,
-                            PostProcessPass* post) noexcept;
-
-// Effect: draws this pass's sets and points each at the matching source image
-// Output: false also means what it reads or what it writes disagrees with the
-//         pipeline -- the two checks the other passes make, which this one could not
-//         until it was told what it writes
-//
-// Contract: source[i] is created and outlives this pass. That it is 1-sample is
-//           checked here now: a multisample image cannot be bound to a sampler.
-bool CreatePostProcessPass(const Descriptors& descriptors,
-                           const Texture* const source[kFramesInFlight],
-                           const TextureDesc& target,
-                           const ShaderProgram& program,
-                           const Pipeline& pipeline, PostProcessPass* out) noexcept;
 
 
 // What recording one scene pass cost in state changes.

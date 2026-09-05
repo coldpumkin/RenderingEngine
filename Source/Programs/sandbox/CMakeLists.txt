@@ -37,6 +37,7 @@ add_executable(sandbox
     Vertex.h             Vertex.cpp        # our vertex type and the layout for it
     Passes.h             Passes.cpp        # what the passes share, and the frame that orders them
     ShadowPass.h         ShadowPass.cpp    # depth only, from where the light is
+    PostProcessPass.h    PostProcessPass.cpp # the scene's resolve onto the frame's target
     Gui.h                Gui.cpp           # one ImGui panel, and the pass that draws it
     Renderer.h                             # everything that needs a device, grouped by kind
 
