@@ -29,8 +29,27 @@ layout(location = 1) in vec3 fragNormal;
 layout(location = 2) in vec4 fragTangent;
 layout(location = 3) in vec2 fragUV;
 
-// Set 1 is the material's, and this stage reads all of it. Set 0 is the frame's and
-// this stage needs none of it: nothing here asks where the camera or the light is.
+// The panel, and the only thing this stage reads from set 0 -- nothing here asks
+// where the camera or the light is. **Three of the six are answered here and the
+// other three in the lighting pass**, and which is which is what deferred moves: a
+// switch that changes what a surface *is* belongs to this stage, and one that changes
+// how it is lit belongs to the other. In the forward path all six sit in one file
+// and the line is invisible.
+//
+// Bindings 1..3 of set 0 are a hole in this program's layout, and BuildSetLayout
+// leaves them out. That makes this set 0 a different layout from scene.frag's, so
+// this pass fills a set of its own.
+//
+// Contract: field order matches ViewOptionsUniform in Gui.h, truncated after the
+//           fourth field -- this stage reads no further.
+layout(set = 0, binding = 4) uniform View {
+    float useNormalMap;
+    float useBaseColor;
+    float useSpecular;    // the lighting pass's, named to keep the offsets
+    float useAlphaMask;
+} view;
+
+// Set 1 is the material's, and this stage reads all of it.
 //
 // Contract: three images and a block, in this order, matching the material layout.
 layout(set = 1, binding = 0) uniform sampler2D baseColor;
@@ -59,12 +78,15 @@ layout(location = 2) out vec4 outMaterial;
 
 void main() {
     // Before anything else, for the reason the forward stage discards first: a
-    // thrown-away fragment should cost nothing after this point. Unconditional here --
-    // the panel's switches are the lighting pass's, and a geometry pass that wrote a
-    // masked texel would put a hole in the depth buffer nothing could take back.
+    // thrown-away fragment should cost nothing after this point.
+    //
+    // **This switch is heavier here than in the forward path.** There it decides one
+    // pixel's colour. Here it decides what goes in the depth buffer, and the lighting
+    // pass reads that depth to rebuild a position -- so turning the mask off does not
+    // just fill the leaves in, it moves where the lighting pass thinks the surface is.
     const vec4 sampled = texture(baseColor, fragUV);
     const float coverage = sampled.a * mtl.baseColorFactor.a;
-    if (coverage < mtl.alphaCutoff) { discard; }
+    if (view.useAlphaMask > 0.5 && coverage < mtl.alphaCutoff) { discard; }
 
     // Normalized here because interpolation across the triangle shortens it.
     const vec3 geometric = normalize(fragNormal);
@@ -80,10 +102,15 @@ void main() {
     // Stored 0..1, used -1..1. A flat texel is (0.5, 0.5, 1.0), which comes back as
     // +z -- the geometric normal, unchanged.
     const vec3 tangentNormal = texture(normalMap, fragUV).xyz * 2.0 - 1.0;
-    const vec3 normal = normalize(tbn * tangentNormal);
+    const vec3 normal = view.useNormalMap > 0.5 ? normalize(tbn * tangentNormal)
+                                                : geometric;
 
     // Texture times factor is what glTF means by base colour -- neither alone is it.
-    outAlbedo = vec4(sampled.rgb * mtl.baseColorFactor.rgb, pc.alpha);
+    // A flat grey when it is off, the same value the forward stage uses.
+    const vec3 albedo = view.useBaseColor > 0.5
+                      ? sampled.rgb * mtl.baseColorFactor.rgb
+                      : vec3(0.8);
+    outAlbedo = vec4(albedo, pc.alpha);
 
     // -1..1 folded into 0..1 because the attachment is UNORM. The lighting pass folds
     // it back. A signed format would carry it directly and is what this becomes if the

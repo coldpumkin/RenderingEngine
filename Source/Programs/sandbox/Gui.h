@@ -116,6 +116,29 @@ struct ViewOptions {
     // is the one worth having -- it shows the inside of a closed surface.
     enum class CullChoice { Material, None, Back, Front };
     CullChoice cull = CullChoice::Material;
+
+    // Which passes run, which is neither of the two kinds above: the switches so far
+    // change a value some pass sends, and this one changes what the frame is made of.
+    // One scene pass, or a geometry pass and a lighting pass.
+    //
+    // Off by default, so the path every capture baseline was taken against is the one
+    // that runs unless someone asks.
+    //
+    // **The two are not the same picture and are not meant to be.** The forward path
+    // draws into a 4x multisample target; deferred cannot, because a G-buffer would
+    // have to store four samples and light each one separately -- a normal averaged
+    // over an edge belongs to no surface. What the switch compares is the structure,
+    // not the pixels.
+    bool deferred = false;
+
+    // Which of the geometry pass's images to show instead of the lit result. Lit is
+    // not one of the images and is why the enum starts there.
+    //
+    // Only the deferred path can answer this: in the forward path these images do not
+    // exist. The panel greys it out rather than hiding it -- the absence is the thing
+    // worth seeing.
+    enum class GBufferChannel { Lit, Albedo, Normal, Material, Depth };
+    GBufferChannel channel = GBufferChannel::Lit;
 };
 
 // The same switches as the shader reads them.
@@ -137,7 +160,16 @@ struct ViewOptionsUniform {
     float alphaMask;
     float shadow;
     float metallicRoughness;
-    float pad[2];   // std140 rounds the block up to a second vec4
+
+    // 0 shows the lit result, 1..4 show one of the geometry pass's images instead.
+    // Read by lighting.frag alone -- scene.frag declares the six above and stops,
+    // which is what a stage taking the front of a block is allowed to do.
+    //
+    // Here rather than on the CPU side of the panel because the value has to reach a
+    // shader: nothing about which image to show can be decided by a command.
+    float channel;
+
+    float pad;   // std140 rounds the block up to a second vec4
 };
 
 // ImGui keeps its widget state in a global context, so this holds only what we own
@@ -292,9 +324,13 @@ void BuildGui(Gui* gui, const GuiFrameInfo& info) noexcept;
 const Buffer& GuiOptionsBuffer(const Gui& gui, uint32_t frameIndex) noexcept;
 constexpr VkDeviceSize kGuiOptionsSize = sizeof(ViewOptionsUniform);
 
-// The three CPU-side answers the scene pass needs. Functions for the same reason
-// GuiOptionsBuffer is one: what the pass needs is an answer, and these are the whole
+// The CPU-side answers the recording needs. Functions for the same reason
+// GuiOptionsBuffer is one: what a pass needs is an answer, and these are the whole
 // of what it may know about the panel.
+//
+// GuiDeferred is the odd one and is read a layer above the rest: the five below tell
+// one pass how to draw, and this one tells RecordFrame which passes there are.
+bool GuiDeferred(const Gui& gui) noexcept;
 VkPolygonMode GuiPolygonMode(const Gui& gui) noexcept;
 bool GuiDepthTest(const Gui& gui) noexcept;
 bool GuiDepthWrite(const Gui& gui) noexcept;

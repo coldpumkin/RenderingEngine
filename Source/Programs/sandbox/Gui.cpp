@@ -250,6 +250,10 @@ Gui::~Gui() {
     // the pool, which outlives this because it is declared before it.
 }
 
+bool GuiDeferred(const Gui& gui) noexcept {
+    return gui.options.deferred;
+}
+
 VkPolygonMode GuiPolygonMode(const Gui& gui) noexcept {
     return gui.options.wireframe ? VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL;
 }
@@ -295,7 +299,11 @@ void UploadGuiOptions(const Gui& gui, uint32_t frameIndex) noexcept {
                                    o.specular ? 1.0f : 0.0f,
                                    o.alphaMask ? 1.0f : 0.0f,
                                    o.shadow ? 1.0f : 0.0f,
-                                   o.metallicRoughness ? 1.0f : 0.0f};
+                                   o.metallicRoughness ? 1.0f : 0.0f,
+                                   // The enum's own numbering: Lit is 0 there and the
+                                   // shader tests against 0, so the two agree without
+                                   // a table between them.
+                                   static_cast<float>(o.channel)};
     std::memcpy(gui.frames[frameIndex].options.mapped, &value, sizeof(value));
 }
 
@@ -314,13 +322,51 @@ void BuildGui(Gui* gui, const GuiFrameInfo& info) noexcept {
         //
         // A switch that moved group would be a real change and not a rename:
         // wireframe below is the case, because polygonMode is compiled in.
+        //
+        // This first group is the outer one: it decides which passes exist, and the
+        // three below it decide how whichever passes those are do their work.
+        ImGui::SeparatorText("passes  -  which frame");
+        ImGui::Checkbox("deferred", &options->deferred);
+
+        // Meaningless without a G-buffer, and disabled rather than hidden: the forward
+        // path not having these images is the thing worth noticing.
+        const char* const kChannelNames[] = {"lit", "albedo", "normal",
+                                             "material", "depth"};
+        ImGui::BeginDisabled(!options->deferred);
+        int channel = static_cast<int>(options->channel);
+        if (ImGui::Combo("show", &channel, kChannelNames,
+                         static_cast<int>(std::size(kChannelNames)))) {
+            options->channel = static_cast<ViewOptions::GBufferChannel>(channel);
+        }
+        ImGui::EndDisabled();
+
         ImGui::SeparatorText("lighting  -  uniform, set 0");
+
+        // Output: which stage answers this switch, or nullptr in the forward path
+        //
+        // The tag is the whole comparison in one column. The same six switches split
+        // across two shaders once the passes are two: three describe the surface and
+        // are written into the G-buffer, three describe how it is lit and are read
+        // back out. In the forward path all six are one file and the line does not
+        // exist, which is why the tags disappear.
+        const auto tag = [options](bool surface) {
+            if (!options->deferred) { return; }
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s", surface ? "geo" : "light");
+        };
+
         ImGui::Checkbox("normal map", &options->normalMap);   // gui->options, edited in place
+        tag(true);
         ImGui::Checkbox("base colour", &options->baseColor);
+        tag(true);
         ImGui::Checkbox("specular", &options->specular);
+        tag(false);
         ImGui::Checkbox("alpha mask", &options->alphaMask);
+        tag(true);
         ImGui::Checkbox("shadow", &options->shadow);
+        tag(false);
         ImGui::Checkbox("metal/rough", &options->metallicRoughness);
+        tag(false);
 
         // The six above turn a term of the lighting off and reach the shader as
         // floats; these five change how the same draws are rasterized and never
@@ -355,24 +401,10 @@ void BuildGui(Gui* gui, const GuiFrameInfo& info) noexcept {
         ImGui::SeparatorText("pipeline  -  compiled");
         ImGui::Checkbox("wireframe", &options->wireframe);
 
-        ImGui::SeparatorText("frame");
-        // Both numbers, because they answer different questions: the rate is what a
-        // person reads, the milliseconds are what a change moves. A guard on the
-        // first frame, where the gap is zero.
-        const float fps = info.frameSeconds > 0.0f ? 1.0f / info.frameSeconds : 0.0f;
-        ImGui::Text("fps    %.0f  (%.2f ms)", fps, info.frameSeconds * 1000.0f);
-
-        // Both numbers, because they answer to different things: the second is the
-        // list we hold, the first is how much of it reached the command buffer.
-        ImGui::Text("draws  %u of %u items", info.recordedDraws, info.itemCount);
-
-        // What the item order costs. Their floors are the two numbers on the line
-        // above and below: binds cannot go under the number of distinct materials
-        // drawn, and cull changes cannot go under the number of distinct cull modes.
-        ImGui::Text("binds  %u material   %u cull", info.materialBinds,
-                    info.cullChanges);
-
-        ImGui::Text("mats   %u", info.materialCount);
+        // The draw statistics used to be here and are in Inspect's frame section now.
+        // Nothing about them is a switch, and this window ran past the bottom of a
+        // 720-high screen once the passes group arrived -- so the read-only half went
+        // to the read-only window.
     }
     ImGui::End();
 
@@ -441,6 +473,25 @@ void BuildGui(Gui* gui, const GuiFrameInfo& info) noexcept {
     // is not the window's.
     if (ImGui::CollapsingHeader("frame")) {
         ImGui::Text("slot %u of %u", info.slotIndex, info.framesInFlight);
+
+        ImGui::Separator();
+        // Both numbers, because they answer different questions: the rate is what a
+        // person reads, the milliseconds are what a change moves. A guard on the
+        // first frame, where the gap is zero.
+        const float fps = info.frameSeconds > 0.0f ? 1.0f / info.frameSeconds : 0.0f;
+        ImGui::Text("fps    %.0f  (%.2f ms)", fps, info.frameSeconds * 1000.0f);
+
+        // Both numbers, because they answer to different things: the second is the
+        // list we hold, the first is how much of it reached the command buffer.
+        ImGui::Text("draws  %u of %u items", info.recordedDraws, info.itemCount);
+
+        // What the item order costs. Their floors are the two numbers on the line
+        // above and below: binds cannot go under the number of distinct materials
+        // drawn, and cull changes cannot go under the number of distinct cull modes.
+        ImGui::Text("binds  %u material   %u cull", info.materialBinds,
+                    info.cullChanges);
+        ImGui::Text("mats   %u", info.materialCount);
+
         ImGui::Separator();
         ShowTexture("color", info.sceneColor);
         ShowTexture("resolve", info.sceneResolve);
