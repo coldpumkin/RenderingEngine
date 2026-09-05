@@ -26,8 +26,8 @@ VkViewport MakeViewport(VkRect2D area, ViewportY y) noexcept {
 // Every dynamic state, in one place. The list here and kDynamicStates below have to
 // agree: one missing from this function is a validation error at the first draw, one
 // missing from that array is a value silently taken from the pipeline instead.
-void SetRasterState(const VolkDeviceTable& vk, VkCommandBuffer cmd,
-                    VkRect2D area, const RasterState& raster) noexcept {
+static void SetRasterState(const VolkDeviceTable& vk, VkCommandBuffer cmd,
+                           VkRect2D area, const RasterState& raster) noexcept {
     const VkViewport viewport = MakeViewport(area, raster.viewportY);
     vk.vkCmdSetViewport(cmd, 0, 1, &viewport);
     vk.vkCmdSetFrontFace(cmd, FrontFaceFor(raster.viewportY));
@@ -43,6 +43,21 @@ void SetRasterState(const VolkDeviceTable& vk, VkCommandBuffer cmd,
     vk.vkCmdSetDepthWriteEnable(cmd, raster.depthWrite);
     vk.vkCmdSetDepthCompareOp(cmd, raster.depthCompare);
     vk.vkCmdSetRasterizerDiscardEnable(cmd, raster.rasterizerDiscard);
+}
+
+void BindPipeline(const VolkDeviceTable& vk, VkCommandBuffer cmd,
+                  const Pipeline& pipeline, VkRect2D area) noexcept {
+    BindPipeline(vk, cmd, pipeline, area, pipeline.raster);
+}
+
+void BindPipeline(const VolkDeviceTable& vk, VkCommandBuffer cmd,
+                  const Pipeline& pipeline, VkRect2D area,
+                  const RasterState& instead) noexcept {
+    // State before bind. Vulkan allows either order -- both are read at the draw, not
+    // here -- and this one keeps the two halves of the pipeline adjacent in the file:
+    // what it was compiled with, then what it was left to issue.
+    SetRasterState(vk, cmd, area, instead);
+    vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.handle);
 }
 
 // Effect: checks what the shaders declare against what the resource actually supplies.
@@ -213,6 +228,7 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     pipeline.formats = formats;
     pipeline.polygonMode = desc.polygonMode;
     pipeline.blending = desc.blending;
+    pipeline.raster = desc.raster;
 
     // The two ends of the chain, which are the two stages with a CPU-side partner: a
     // vertex stage answers to a VertexLayout, a fragment stage to an AttachmentFormats.

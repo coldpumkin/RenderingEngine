@@ -92,11 +92,20 @@ struct RasterState {
     VkBool32 rasterizerDiscard = VK_FALSE;
 };
 
-// Effect: issues every dynamic state this program declares, in one call
+struct Pipeline;   // defined below: this call needs only its address
+
+// Effect: binds the pipeline and issues every state it left dynamic, in one call
 //
-// One call and not seven, so a pass cannot set some and inherit the rest. area is
-// separate because it is the frame's rather than the pass's preference -- the same
-// RasterState is right at any size.
+// One call and not seven, so a pass cannot set some and inherit the rest -- and not a
+// free function either, because a dynamic state belongs to the pipeline that declared
+// it dynamic. Vulkan keeps no memory of these across a command buffer, so every one
+// has to be issued; issuing them from the pipeline is what makes the list that
+// declares them and the calls that fill them one thing rather than two.
+//
+// area stays an argument because it is not the pipeline's. Which states are dynamic is
+// settled at creation; what the viewport covers is the frame's, and a resize changes it
+// without rebuilding anything. The post pass hands in a letterboxed rect rather than
+// its whole target, which is the case that keeps this a parameter.
 //
 // The viewport built from area is the one place in this program where a coordinate
 // stops being a fraction and becomes a pixel. Two contracts meet on that line, they
@@ -117,8 +126,16 @@ struct RasterState {
 //
 // area is why this takes a rect at all. Three passes pass {{0, 0}, extent} and always
 // will; the fourth is the reason the offset exists.
-void SetRasterState(const VolkDeviceTable& vk, VkCommandBuffer cmd,
-                    VkRect2D area, const RasterState& raster) noexcept;
+void BindPipeline(const VolkDeviceTable& vk, VkCommandBuffer cmd,
+                  const Pipeline& pipeline, VkRect2D area) noexcept;
+
+// The same, with values from somewhere else instead of the pipeline's own. Separate
+// rather than a defaulted argument, so a pass with nothing to override cannot name one
+// by accident -- the scene pass is the only caller, and what it hands in is the panel's
+// switches, a debug affordance rather than a second home for these values.
+void BindPipeline(const VolkDeviceTable& vk, VkCommandBuffer cmd,
+                  const Pipeline& pipeline, VkRect2D area,
+                  const RasterState& instead) noexcept;
 
 // Blending - whether the fragment is mixed with what is already there
 // ============================================================================
@@ -184,6 +201,16 @@ struct GraphicsPipelineDesc {
     VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL;
 
     Blending blending = Blending::Opaque;
+
+    // The other half of this struct, and the reason the split above is still readable
+    // field by field: everything up to here is compiled in, and this is issued as
+    // commands when the pipeline is bound.
+    //
+    // It is here rather than at the call site because which states are dynamic is
+    // decided at creation -- the pipeline declares the list -- and a value issued from
+    // somewhere else is a second list that has to agree with it by hand. One
+    // declaration, so there is nothing left to agree.
+    RasterState raster;
 };
 
 // Dynamic rendering bakes the attachment formats in. Size is not baked - viewport
@@ -208,6 +235,10 @@ struct Pipeline {
     AttachmentFormats formats;
     VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL;
     Blending blending = Blending::Opaque;
+
+    // What it issues, kept for the same reason as the four above: a copy beside a
+    // pipeline is a second value that can disagree with what it was created with.
+    RasterState raster;
 
     Pipeline() = default;
     ~Pipeline();

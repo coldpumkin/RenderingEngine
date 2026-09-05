@@ -5,6 +5,11 @@
 GraphicsPipelineDesc MakePostPipeline(const TextureDesc& target) noexcept {
     GraphicsPipelineDesc desc;
     desc.targets[0] = &target;
+
+    // Down, the opposite of the scene pass: fullscreen.vert builds its own uv from
+    // gl_VertexIndex and expects the default orientation. One triangle, wound to face
+    // us, and nothing to hide behind anything -- so everything else is the default.
+    desc.raster.cull = VK_CULL_MODE_BACK_BIT;
     return desc;
 }
 
@@ -165,19 +170,12 @@ void RecordPostProcessPass(const FrameSlot& slot, const PostProcessPass& post,
 
     vk.vkCmdBeginRendering(cmd, &rendering);
 
-    // Down, the opposite of the scene pass: fullscreen.vert builds its own uv from
-    // gl_VertexIndex and expects the default orientation. One triangle, wound to face
-    // us, and nothing to hide behind anything -- so everything else is the default.
-    //
     // The area is the whole point. fullscreen.vert's uv runs 0..1 over the source no
     // matter what, so the shape of the picture is decided here and nowhere else: hand
     // in the whole target and it stretches. This is the only call of the four that
-    // passes anything but the target it draws on.
-    RasterState raster;
-    raster.cull = VK_CULL_MODE_BACK_BIT;
-    SetRasterState(vk, cmd, LetterboxInto(source.desc.extent, destExtent), raster);
-
-    vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.handle);
+    // passes anything but the target it draws on, and the reason area is a parameter
+    // rather than the pipeline's like the rest of its raster state.
+    BindPipeline(vk, cmd, pipeline, LetterboxInto(source.desc.extent, destExtent));
 
     vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout,
                                0, 1, &post.sets[slot.index], 0, nullptr);

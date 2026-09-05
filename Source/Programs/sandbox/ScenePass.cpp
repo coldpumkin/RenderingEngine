@@ -35,6 +35,15 @@ GraphicsPipelineDesc MakeScenePipeline(const VertexLayout& mesh,
     desc.vertexLayout = mesh;
     desc.targets[0] = &targets.color;
     desc.targets[1] = &targets.depth;
+
+    // Up, because world y is up and the projection was built that way; the winding
+    // rides along in the same field. Depth on for both halves -- this is the pass with
+    // something to hide behind something else. cull starts at NONE and the record loop
+    // changes it per draw from the material, so what is here is the value a draw
+    // inherits before its material speaks.
+    desc.raster.viewportY = ViewportY::Up;
+    desc.raster.depthTest = VK_TRUE;
+    desc.raster.depthWrite = VK_TRUE;
     return desc;
 }
 
@@ -310,16 +319,16 @@ void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
     //
     // cull is the starting value; the loop below changes it per draw unless the panel
     // overrode it.
-    RasterState state;
-    state.viewportY = ViewportY::Up;
+    // The pipeline's own, with the panel's answers written over the four it owns. The
+    // one pass of the four that overrides anything, and the only reason BindPipeline
+    // has a second form.
+    RasterState state = pipeline.raster;
     state.cull = raster.cull == kCullFromMaterial ? VK_CULL_MODE_NONE : raster.cull;
     state.depthTest = raster.depthTest ? VK_TRUE : VK_FALSE;
     state.depthWrite = raster.depthWrite ? VK_TRUE : VK_FALSE;
     state.depthCompare = raster.depthCompare;
     state.rasterizerDiscard = raster.rasterizerDiscard ? VK_TRUE : VK_FALSE;
-    SetRasterState(vk, cmd, VkRect2D{{0, 0}, extent}, state);
-
-    vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.handle);
+    BindPipeline(vk, cmd, pipeline, VkRect2D{{0, 0}, extent}, state);
 
     // Once, above the loop: it is this frame's, and every draw in the pass reads it.
     vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout,

@@ -21,6 +21,13 @@ GraphicsPipelineDesc MakeShadowPipeline(const VertexLayout& mesh,
     // blending stays Opaque, the second of which is dead here: blend state is per
     // colour attachment and there are none.
     desc.targets[0] = &target;
+
+    // ViewportY::Down settles the direction the map's v axis runs. scene.frag reads it
+    // back as ndc * 0.5 + 0.5, which is this sign; the winding rides along and has no
+    // effect on a pass that culls nothing.
+    desc.raster.viewportY = ViewportY::Down;
+    desc.raster.depthTest = VK_TRUE;
+    desc.raster.depthWrite = VK_TRUE;
     return desc;
 }
 
@@ -121,19 +128,6 @@ void RecordShadowPass(const FrameSlot& slot, const ShadowPass& shadow,
 
     vk.vkCmdBeginRendering(cmd, &rendering);
 
-    // Depth is this pass's whole product, so both halves of it are on. Culling stays
-    // off: it would be a choice about which face writes the depth, and unculled the
-    // value is the nearest surface either way -- which is what the comparison wants.
-    //
-    // ViewportY::Down settles one thing here, the direction the map's v axis runs.
-    // scene.frag reads it back as ndc * 0.5 + 0.5, which is this sign; the winding
-    // rides along and has no effect on a pass that culls nothing.
-    RasterState raster;
-    raster.viewportY = ViewportY::Down;
-    raster.depthTest = VK_TRUE;
-    raster.depthWrite = VK_TRUE;
-    SetRasterState(vk, cmd, VkRect2D{{0, 0}, extent}, raster);
-
     // The layout comes from the pipeline that is about to be bound, not from a program
     // the pass holds. What a draw receives -- which sets, which push range -- is the
     // pipeline's fact; a pass is a group of pipelines that agree about attachments,
@@ -141,7 +135,9 @@ void RecordShadowPass(const FrameSlot& slot, const ShadowPass& shadow,
     const Pipeline& pipeline = *shadow.pipeline;
     const VkPipelineLayout layout = pipeline.program->layout;
 
-    vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.handle);
+    // Its own raster state comes with it. What that state is and why is at
+    // MakeShadowPipeline, where the rest of what this pipeline is made of already is.
+    BindPipeline(vk, cmd, pipeline, VkRect2D{{0, 0}, extent});
     vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                layout, kFrameSet, 1, &frame.set,
                                0, nullptr);
