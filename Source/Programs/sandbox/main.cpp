@@ -38,7 +38,9 @@
 #include "Config.h"
 #include "Gui.h"                 // the panel, and the pass that draws it
 #include "Passes.h"             // what we draw. main assembles it and hands it the frame
+#include "PostProcessPass.h"      // named here: main makes its pipeline and its sets
 #include "Renderer.h"            // everything that needs a device, grouped by kind
+#include "ShadowPass.h"           // named here: its target, its pipeline and its sets
 #include "Vertex.h"
 #include "Vulkan/Attachments.h"   // main picks what we draw into, not the device layer
 #include "Vulkan/Commands.h"
@@ -617,15 +619,13 @@ int main() {
     // polygonMode, which is compiled in. Anything that is a register instead is
     // dynamic state and costs no second pipeline.
 
-    // Depth only, and first because the scene pass reads what it draws. No colour:
-    // shadow.frag declares none, and CreateGraphicsPipeline refuses the pair where
-    // one side says colour and the other does not.
+    // Depth only, and first because the scene pass reads what it draws. What that
+    // means for the pipeline is the pass's to say, not this file's -- the two things
+    // it needs from here are the buffer's layout and the image it draws into.
     if (!CreateShaderProgram(dev, "Shaders/shadow.vert.spv", "Shaders/shadow.frag.spv",
                              &renderer.shadowProgram)) { return 1; }
 
-    GraphicsPipelineDesc shadowDesc;
-    shadowDesc.vertexLayout = VertexInput();
-    shadowDesc.depth = &shadowTarget;
+    const GraphicsPipelineDesc shadowDesc = MakeShadowPipeline(VertexInput(), shadowTarget);
     if (!CreateGraphicsPipeline(dev, renderer.shadowProgram, shadowDesc,
                                 &renderer.shadowPipeline)) { return 1; }
 

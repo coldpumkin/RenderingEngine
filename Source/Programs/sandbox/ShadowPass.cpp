@@ -11,6 +11,16 @@ TextureDesc MakeShadowTarget(VkExtent2D extent, VkFormat depth) noexcept {
                            | VK_IMAGE_USAGE_SAMPLED_BIT};
 }
 
+GraphicsPipelineDesc MakeShadowPipeline(const VertexLayout& mesh,
+                                        const TextureDesc& target) noexcept {
+    GraphicsPipelineDesc desc;
+    desc.vertexLayout = mesh;
+    desc.depth = &target;
+    // color stays empty, polygonMode FILL, blending Opaque. The last is dead here --
+    // blend state is per colour attachment and there are none.
+    return desc;
+}
+
 bool CreateShadowPass(const Descriptors& descriptors,
                       const Texture* const maps[kFramesInFlight],
                       const Mesh& mesh, const ShaderProgram& program,
