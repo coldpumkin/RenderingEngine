@@ -600,6 +600,12 @@ int main() {
 
     SceneTargetDescs sceneTargetDescs =
         MakeSceneTargets(DesiredRenderExtent(window), kRenderColorFormat, caps);
+
+    // The deferred path's four, at the same size and from the same colour choice. One
+    // sample, unlike the scene's -- a g-buffer cannot be resolved before it is lit, so
+    // MakeGBufferTargets does not ask caps for a count.
+    GBufferTargetDescs gbufferDescs =
+        MakeGBufferTargets(DesiredRenderExtent(window), kRenderColorFormat, caps);
     const TextureDesc shadowTarget = MakeShadowTarget(kShadowExtent, caps);
 
     // Device -- and past it, everything that needs one
@@ -631,6 +637,13 @@ int main() {
     pipelineSources.sceneColor = &sceneTargetDescs.color;
     pipelineSources.sceneDepth = &sceneTargetDescs.depth;
     pipelineSources.swapchain = &swapchainTarget;
+    pipelineSources.gAlbedo = &gbufferDescs.albedo;
+    pipelineSources.gNormal = &gbufferDescs.normal;
+    pipelineSources.gMaterial = &gbufferDescs.material;
+    pipelineSources.gDepth = &gbufferDescs.depth;
+    // The lighting pass draws into the image the scene pass resolves into, which is
+    // what keeps everything after the middle the same on both paths.
+    pipelineSources.sceneResolve = &sceneTargetDescs.resolve;
 
     // What a material is, from Passes.h. The scene program is held to it, and a second
     // program that draws surfaces will be held to the same one -- which is what lets
@@ -785,6 +798,14 @@ int main() {
         {&renderer.pipelines.shadowProgram.setLayouts[kFrameSet], kFramesInFlight},
         {&renderer.pipelines.sceneProgram.setLayouts[kFrameSet], kFramesInFlight},
         {&renderer.pipelines.sceneProgram.setLayouts[kMaterialSet], materialCount},
+        // The deferred half. geometry's set 0 is two bindings with holes between them;
+        // lighting's is the same five the scene's is, and its set 1 is the g-buffer
+        // rather than a material -- which is why it is claimed here and the material
+        // sets above are not counted twice. **geometry draws no material sets of its
+        // own**: it speaks MaterialSet(), so the ones the scene pass uses fit it.
+        {&renderer.pipelines.geometryProgram.setLayouts[kFrameSet], kFramesInFlight},
+        {&renderer.pipelines.lightingProgram.setLayouts[kFrameSet], kFramesInFlight},
+        {&renderer.pipelines.lightingProgram.setLayouts[kMaterialSet], kFramesInFlight},
         {&renderer.pipelines.postProgram.setLayouts[kFrameSet], kFramesInFlight},
         // One, and counted by neither of the other two reasons: there is one font.
         {&renderer.pipelines.guiProgram.setLayouts[0], 1},
@@ -908,6 +929,31 @@ int main() {
         return 1;
     }
 
+    // The deferred middle. Both chains exist from here on and neither is rebuilt when
+    // the panel switches -- what the switch changes is which of them RecordFrame
+    // names.
+    const GBufferTargets* gbuffers[kFramesInFlight]{};
+    for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+        if (!CreateGBufferTargets(dev, gbufferDescs, &renderer.gbuffers[i])) {
+            return 1;
+        }
+        gbuffers[i] = &renderer.gbuffers[i];
+    }
+
+    if (!CreateGeometryPass(renderer.descriptors, gbuffers,
+                            renderer.mesh, renderer.pipelines.geometry,
+                            renderer.pipelines.geometryWire,
+                            renderer.cameras, renderer.guiPass,
+                            &renderer.geometryPass)) { return 1; }
+
+    // sceneColor is the scene pass's resolve, and this pass draws into it rather than
+    // reading it. Only one of the two ever writes it in a frame.
+    if (!CreateLightingPass(renderer.descriptors, gbuffers, sceneColor,
+                            renderer.pipelines.lighting,
+                            shadowMaps, renderer.cameras, renderer.lights,
+                            renderer.shadows, renderer.guiPass,
+                            &renderer.lightingPass)) { return 1; }
+
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
         if (!CreateFrameSlot(dev, commands, i, &renderer.slots[i])) { return 1; }
     }
@@ -1003,16 +1049,23 @@ int main() {
             // the first time. Only the extent differs, so the pipelines stand and the
             // scene pass's pointers still name the right objects.
             sceneTargetDescs = MakeSceneTargets(wanted, kRenderColorFormat, caps);
+            gbufferDescs = MakeGBufferTargets(wanted, kRenderColorFormat, caps);
 
             bool remade = true;
             for (uint32_t i = 0; i < kFramesInFlight && remade; ++i) {
                 remade = ResizeSceneTargets(dev, sceneTargetDescs,
-                                            &renderer.sceneTargets[i]);
+                                            &renderer.sceneTargets[i])
+                      && ResizeGBufferTargets(dev, gbufferDescs,
+                                              &renderer.gbuffers[i]);
             }
             if (!remade) { break; }
 
-            // The only sets that name what was just destroyed.
+            // The sets that name what was just destroyed. Two now: the post pass
+            // reads the resolve, and the lighting pass's second set names all four
+            // g-buffer views. The lighting pass's first set survives -- it names
+            // buffers and the shadow map, and a resize touches neither.
             RefreshPostProcessPass(renderer.descriptors, &renderer.postPass);
+            RefreshLightingPass(renderer.descriptors, &renderer.lightingPass);
             LOG("[render] targets now %ux%u\n", wanted.width, wanted.height);
         }
 
@@ -1172,6 +1225,7 @@ int main() {
         // read last frame's values before this line overwrites them.
         drawStats = DrawStats{};
         if (!RecordFrame(slot, renderer.shadowPass, renderer.scenePass,
+                         renderer.geometryPass, renderer.lightingPass,
                          renderer.postPass, renderer.guiPass,
                          *target.texture, drawList, &drawStats)) {
             break;

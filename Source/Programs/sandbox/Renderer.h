@@ -35,6 +35,8 @@
 #include "Gui.h"
 #include "Passes.h"
 #include "Pipelines.h"
+#include "GeometryPass.h"
+#include "LightingPass.h"
 #include "PostProcessPass.h"
 #include "ScenePass.h"
 #include "ShadowPass.h"   // both held by value below, so the definitions have to be here
@@ -115,8 +117,20 @@ struct Renderer {
     // does to itself.
     SceneTargets sceneTargets[kFramesInFlight];
 
+    // The deferred path's four, remade on the same resize and by the same rule. Both
+    // chains exist at once: the panel switches which one a frame records, and a switch
+    // that had to rebuild anything would not be a switch.
+    GBufferTargets gbuffers[kFramesInFlight];
+
     ShadowPass shadowPass;
     ScenePass scenePass;
+
+    // The other middle. Both are created, both hold their sets, and RecordFrame picks
+    // -- the scene pass, or these two. What they share is everything on either side:
+    // the same shadow map before, the same image after.
+    GeometryPass geometryPass;
+    LightingPass lightingPass;
+
     PostProcessPass postPass;
     Gui guiPass;
 

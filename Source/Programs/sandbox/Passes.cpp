@@ -1,6 +1,8 @@
 ﻿#include "Passes.h"
 
 #include "Gui.h"
+#include "GeometryPass.h"
+#include "LightingPass.h"
 #include "ShadowPass.h"
 #include "PostProcessPass.h"
 #include "ScenePass.h"
@@ -181,6 +183,7 @@ void UploadFrameValues(const FrameSlot& slot,
 
 bool RecordFrame(const FrameSlot& slot,
                  const ShadowPass& shadow, const ScenePass& scene,
+                 const GeometryPass& geometry, const LightingPass& lighting,
                  const PostProcessPass& post, Gui& gui, const Texture& target,
                  const DrawList& draws, DrawStats* stats) noexcept {
     const VolkDeviceTable& vk = slot.dev->table;
@@ -203,12 +206,26 @@ bool RecordFrame(const FrameSlot& slot,
     // images the scene resolves into -- and neither says anything about when. A set
     // naming a map cannot say the map was drawn this frame; that is what these lines
     // say, by being in this order.
+    // Read once and handed to whichever middle runs. The six are the panel's answers
+    // about drawing surfaces, and both middles draw the same surfaces -- so a switch
+    // meaning one thing on one path and nothing on the other would be a hole in the
+    // comparison rather than a saving.
+    const RasterOptions raster{GuiPolygonMode(gui), GuiDepthTest(gui),
+                               GuiDepthWrite(gui), GuiRasterizerDiscard(gui),
+                               GuiCullMode(gui), GuiDepthCompare(gui)};
+
     RecordShadowPass(slot, shadow, draws);
-    RecordScenePass(slot, scene, draws,
-                    RasterOptions{GuiPolygonMode(gui), GuiDepthTest(gui),
-                                       GuiDepthWrite(gui), GuiRasterizerDiscard(gui),
-                                       GuiCullMode(gui), GuiDepthCompare(gui)},
-                    stats);
+
+    // The one branch in a frame. Everything either side of it is the same call with
+    // the same arguments, which is the point: what deferred changes is here and
+    // nowhere else in this function.
+    if (GuiDeferred(gui)) {
+        RecordGeometryPass(slot, geometry, draws, raster, stats);
+        RecordLightingPass(slot, lighting);
+    } else {
+        RecordScenePass(slot, scene, draws, raster, stats);
+    }
+
     RecordPostProcessPass(slot, post, target);
 
     // The third edge on this image, and the only one between two passes that both

@@ -39,6 +39,8 @@ add_executable(sandbox
     Passes.h             Passes.cpp        # what the passes share, and the frame that orders them
     ShadowPass.h         ShadowPass.cpp    # depth only, from where the light is
     ScenePass.h          ScenePass.cpp     # the surfaces, off-screen and multisampled
+    GeometryPass.h       GeometryPass.cpp  # the same surfaces, written down instead of lit
+    LightingPass.h       LightingPass.cpp  # one triangle, turning that into a picture
     PostProcessPass.h    PostProcessPass.cpp # the scene's resolve onto the frame's target
     Gui.h                Gui.cpp           # one ImGui panel, and the pass that draws it
     Renderer.h                             # everything that needs a device, grouped by kind

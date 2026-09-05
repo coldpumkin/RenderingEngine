@@ -32,6 +32,16 @@ struct PipelineSources {
     const TextureDesc* sceneDepth = nullptr;
     const TextureDesc* swapchain = nullptr;
 
+    // The deferred half. The three colours and the depth are what the geometry pass
+    // draws into; sceneResolve is what the lighting pass draws into, and it is the
+    // same image the scene pass resolves into -- which is what lets the post pass not
+    // know which of the two ran.
+    const TextureDesc* gAlbedo = nullptr;
+    const TextureDesc* gNormal = nullptr;
+    const TextureDesc* gMaterial = nullptr;
+    const TextureDesc* gDepth = nullptr;
+    const TextureDesc* sceneResolve = nullptr;
+
     // The sets more than one program here has to speak, declared by whoever calls this.
     // Each program is refused if it does not, rather than given a layout of its own that
     // nothing else fits. A program sharing nothing passes none.
@@ -39,21 +49,37 @@ struct PipelineSources {
     uint32_t requiredCount = 0;
 };
 
-// Four programs and five pipelines. The extra one is the scene's wireframe variant:
-// polygonMode is compiled in, so a second value is a second pipeline, and sharing the
-// program is what lets every set drawn from it fit both.
+// Six programs and eight pipelines. Two of the extra pipelines are wireframe variants
+// -- polygonMode is compiled in, so a second value is a second pipeline, and sharing
+// the program is what lets every set drawn from it fit both.
+//
+// **The forward and the deferred path are three programs each and share two of them.**
+// shadow and post are neither path's: one draws the map both read and the other puts
+// whichever result there is on the screen.
+//
+//   forward    shadow  scene   post  gui
+//   deferred   shadow  geometry lighting  post  gui
+//
+// geometry and scene are held to the same MaterialSet(), which is what lets one set of
+// material sets fit both -- and is the whole reason a second surface program was
+// possible without a second copy of every material.
 //
 // Declared programs first so they are destroyed last -- every pipeline points at one,
 // and every descriptor set was drawn from one of their layouts.
 struct Pipelines {
     ShaderProgram shadowProgram;
     ShaderProgram sceneProgram;
+    ShaderProgram geometryProgram;
+    ShaderProgram lightingProgram;
     ShaderProgram postProgram;
     ShaderProgram guiProgram;
 
     Pipeline shadow;
     Pipeline scene;
     Pipeline sceneWire;
+    Pipeline geometry;
+    Pipeline geometryWire;
+    Pipeline lighting;
     Pipeline post;
     Pipeline gui;
 };

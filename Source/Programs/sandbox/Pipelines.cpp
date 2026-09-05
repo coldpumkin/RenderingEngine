@@ -56,6 +56,54 @@ GraphicsPipelineDesc SceneWireDesc(const ShaderProgram& program,
     return desc;
 }
 
+// The same vertex stage and the same targets shape as the scene's, and three colour
+// attachments where that has one. No blend enabled on any of them: a g-buffer records
+// what is nearest, and mixing two surfaces' normals would make a direction that is
+// neither. That is also why the deferred path has no answer for a transparent surface.
+GraphicsPipelineDesc GeometryDesc(const ShaderProgram& program,
+                                  const PipelineSources& sources) noexcept {
+    GraphicsPipelineDesc desc;
+    desc.program = &program;
+    desc.vertexLayout = sources.meshLayout;
+
+    // In geometry.frag's output order, and CheckOutputInterface holds the pipeline to
+    // declaring exactly as many as the shader writes.
+    desc.targets[0] = sources.gAlbedo;
+    desc.targets[1] = sources.gNormal;
+    desc.targets[2] = sources.gMaterial;
+    desc.targets[3] = sources.gDepth;
+    desc.blend[0] = NoBlend();
+    desc.blend[1] = NoBlend();
+    desc.blend[2] = NoBlend();
+
+    // Up, for the reason the scene's is: the same scene.vert, the same y-up world.
+    desc.raster.viewportY = ViewportY::Up;
+    return desc;
+}
+
+GraphicsPipelineDesc GeometryWireDesc(const ShaderProgram& program,
+                                      const PipelineSources& sources) noexcept {
+    GraphicsPipelineDesc desc = GeometryDesc(program, sources);
+    desc.polygonMode = VK_POLYGON_MODE_LINE;
+    return desc;
+}
+
+// One colour and no depth, into the image the scene pass resolves into. The depth it
+// needs is an input here rather than an attachment -- which is what the whole pass is.
+GraphicsPipelineDesc LightingDesc(const ShaderProgram& program,
+                                  const PipelineSources& sources) noexcept {
+    GraphicsPipelineDesc desc;
+    desc.program = &program;
+    desc.targets[0] = sources.sceneResolve;
+    desc.blend[0] = NoBlend();
+
+    // No vertex layout and cull BACK, the same two answers the post pipeline gives for
+    // the same reason: this shares fullscreen.vert, whose one triangle is wound to
+    // face us and whose uv expects the default orientation.
+    desc.raster.cull = VK_CULL_MODE_BACK_BIT;
+    return desc;
+}
+
 GraphicsPipelineDesc PostDesc(const ShaderProgram& program,
                               const PipelineSources& sources) noexcept {
     GraphicsPipelineDesc desc;
@@ -91,14 +139,28 @@ bool CreatePipelines(const VulkanDevice& dev, const PipelineSources& sources,
     // the fixed-function test out of gl_Position -- so there is no fragment stage.
     const char* const shadowStages[] = {"Shaders/shadow.vert.spv"};
     const char* const sceneStages[] = {"Shaders/scene.vert.spv", "Shaders/scene.frag.spv"};
-    // fullscreen.vert keeps its name because it is the half that is not post's: a
-    // lighting pipeline would pair the same module with a different fragment stage.
+
+    // **scene.vert again, unchanged.** Where a surface sits does not depend on when it
+    // is shaded, so the deferred path needed no vertex stage of its own -- which is
+    // most of why it is two shaders and not four.
+    const char* const geometryStages[] = {"Shaders/scene.vert.spv",
+                                          "Shaders/geometry.frag.spv"};
+    // fullscreen.vert keeps its name because it is the half that is not post's: this
+    // is the second pipeline pairing the same module with a different fragment stage,
+    // which is what that name was written for.
+    const char* const lightingStages[] = {"Shaders/fullscreen.vert.spv",
+                                          "Shaders/lighting.frag.spv"};
     const char* const postStages[] = {"Shaders/fullscreen.vert.spv", "Shaders/post.frag.spv"};
     const char* const guiStages[] = {"Shaders/gui.vert.spv", "Shaders/gui.frag.spv"};
 
-    // Only the programs that draw a surface are held to the shared sets. shadow writes
-    // depth, post copies an image and gui draws a panel -- none of them reads a
-    // material, and requiring one of them to would be requiring a set they do not use.
+    // Only the programs that draw a surface are held to the shared sets, and there are
+    // two of them now: scene and geometry. That is what MaterialSet() was for -- one
+    // set of material sets fits both, and a mismatch is refused here rather than
+    // showing up as four samplers in the wrong order.
+    //
+    // shadow writes depth, lighting reads images, post copies one and gui draws a
+    // panel. None of them reads a material, and requiring one of them to would be
+    // requiring a set they do not use -- lighting's set 1 is its g-buffer.
     if (!CreateShaderProgram(dev, shadowStages,
                              static_cast<uint32_t>(std::size(shadowStages)),
                              nullptr, 0, &out->shadowProgram)
@@ -106,6 +168,13 @@ bool CreatePipelines(const VulkanDevice& dev, const PipelineSources& sources,
                                     static_cast<uint32_t>(std::size(sceneStages)),
                                     sources.required, sources.requiredCount,
                                     &out->sceneProgram)
+            || !CreateShaderProgram(dev, geometryStages,
+                                    static_cast<uint32_t>(std::size(geometryStages)),
+                                    sources.required, sources.requiredCount,
+                                    &out->geometryProgram)
+            || !CreateShaderProgram(dev, lightingStages,
+                                    static_cast<uint32_t>(std::size(lightingStages)),
+                                    nullptr, 0, &out->lightingProgram)
             || !CreateShaderProgram(dev, postStages,
                                     static_cast<uint32_t>(std::size(postStages)),
                                     nullptr, 0, &out->postProgram)
@@ -121,6 +190,12 @@ bool CreatePipelines(const VulkanDevice& dev, const PipelineSources& sources,
                                   &out->scene)
         && CreateGraphicsPipeline(dev, SceneWireDesc(out->sceneProgram, sources),
                                   &out->sceneWire)
+        && CreateGraphicsPipeline(dev, GeometryDesc(out->geometryProgram, sources),
+                                  &out->geometry)
+        && CreateGraphicsPipeline(dev, GeometryWireDesc(out->geometryProgram, sources),
+                                  &out->geometryWire)
+        && CreateGraphicsPipeline(dev, LightingDesc(out->lightingProgram, sources),
+                                  &out->lighting)
         && CreateGraphicsPipeline(dev, PostDesc(out->postProgram, sources),
                                   &out->post)
         && CreateGraphicsPipeline(dev, GuiDesc(out->guiProgram, sources),

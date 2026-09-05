@@ -55,6 +55,8 @@ struct Mesh;
 // orders them, and none of them knows the others.
 struct ShadowPass;
 struct ScenePass;
+struct GeometryPass;
+struct LightingPass;
 struct PostProcessPass;
 struct Gui;
 
@@ -574,10 +576,23 @@ void UploadFrameValues(const FrameSlot& slot,
                        const FrameCamera* cameras, const FrameLight* lights,
                        const FrameShadow* shadows, Gui& gui) noexcept;
 
-// Effect: resets the slot's command buffer and records the four passes into it
+// Effect: resets the slot's command buffer and records this frame's passes into it
 // Output: false means the buffer is invalid and must not be submitted
-//         stats, if given, is what the scene pass cost. Every frame records the same
-//         list, so one frame's numbers are the answer.
+//         stats, if given, is what the pass that walked the draw list cost. Every
+//         frame records the same list, so one frame's numbers are the answer.
+//
+// **Which passes there are is the panel's answer, read here and nowhere else.** Every
+// pass below is created either way and holds its own sets; what the switch changes is
+// which of them this function names. That is what makes it a switch rather than a
+// rebuild -- and it is also the whole of what forward and deferred differ by, once the
+// shaders are written: four lines in one function.
+//
+// The shadow pass and everything after the middle run in both. A frame is
+//
+//   forward    shadow  scene                post  gui
+//   deferred   shadow  geometry  lighting   post  gui
+//
+// and the middle writes the same image either way.
 //
 // Takes the slot but never touches its fence or semaphore -- a rule, not a type.
 // A Texture, not the whole FrameTarget: nothing here reads the index or the semaphore,
@@ -587,5 +602,6 @@ void UploadFrameValues(const FrameSlot& slot,
 //           those buffers, and nothing in the command stream would say they are stale.
 bool RecordFrame(const FrameSlot& slot,
                  const ShadowPass& shadow, const ScenePass& scene,
+                 const GeometryPass& geometry, const LightingPass& lighting,
                  const PostProcessPass& post, Gui& gui, const Texture& target,
                  const DrawList& draws, DrawStats* stats = nullptr) noexcept;
