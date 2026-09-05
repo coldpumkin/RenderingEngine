@@ -101,8 +101,9 @@ bool CreateScenePass(const Descriptors& descriptors,
     // The bytes were written as one thing and are read as another unless these agree.
     // Nobody else looks: the pipeline checked its layout against the shader, the mesh
     // wrote its own, and the two only meet here.
-    if (!SameVertexLayout(mesh.desc.vertexLayout, pipeline.vertexLayout)) {
-        LOG("[vk] the mesh and this pass's pipeline disagree about the vertex layout\n");
+    if (!SameVertexLayout(mesh.desc.vertexLayout, pipeline.vertexLayout)
+        || !SameVertexLayout(mesh.desc.vertexLayout, wirePipeline.vertexLayout)) {
+        LOG("[vk] the mesh and a scene pipeline disagree about the vertex layout\n");
         return false;
     }
 

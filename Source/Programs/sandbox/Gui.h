@@ -84,12 +84,6 @@ struct ViewOptions {
     // VkCullModeFlags: a bool can name two variants and polygonMode has three.
     bool wireframe = false;
 
-    // Whether the scene's render targets follow the window or stay at the size in
-    // Config.h. **Both policies are real and Unreal keeps three of them behind a
-    // console variable** (r.SceneRenderTargetResizeMethod: follow, fixed, grow), so
-    // the switch is here for the reason the lighting switches are -- a thing is easier
-    // to understand next to its own absence.
-
     // Off, the depth test stops hiding anything and the draw order becomes visible:
     // what is on screen is whatever was recorded last. That is the order main sorted
     // into, made looking at it possible.
