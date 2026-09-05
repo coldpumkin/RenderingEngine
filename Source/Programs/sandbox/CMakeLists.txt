@@ -1,4 +1,4 @@
-# **One pair per concept.** The same axis Unreal's VulkanRHI uses: a new resource adds
+﻿# **One pair per concept.** The same axis Unreal's VulkanRHI uses: a new resource adds
 # a new pair rather than growing an existing file. No abstraction layer -- structs and
 # free functions.
 #
@@ -35,7 +35,8 @@ add_executable(sandbox
     Vulkan/Mesh.h        Vulkan/Mesh.cpp        # the two buffers a draw always binds together
 
     Vertex.h             Vertex.cpp        # our vertex type and the layout for it
-    Passes.h             Passes.cpp        # the passes, Material, DrawItem, recording
+    Passes.h             Passes.cpp        # what the passes share, and the frame that orders them
+    ShadowPass.h         ShadowPass.cpp    # depth only, from where the light is
     Gui.h                Gui.cpp           # one ImGui panel, and the pass that draws it
     Renderer.h                             # everything that needs a device, grouped by kind
 

@@ -53,9 +53,10 @@
 
 struct Mesh;
 
-// The panel is a pass too, and RecordFrame orders the three. Forward declared rather
-// than included: this file names it, Gui.h does not name a pass, and the arrow stays
-// pointing one way.
+// A pass names this file; this file names no pass. Forward declared rather than
+// included, so the arrow points one way -- RecordFrame is handed each of them and
+// orders them, and none of them knows the others.
+struct ShadowPass;
 struct Gui;
 
 
@@ -496,13 +497,6 @@ struct SceneTargetDescs {
 SceneTargetDescs MakeSceneTargets(VkExtent2D extent, VkFormat colour, VkFormat depth,
                                   VkSampleCountFlagBits samples) noexcept;
 
-// Output: the one image the shadow pass makes
-//
-// One sample, always: averaging depths across an edge produces a value no surface was
-// ever at, and every fragment comparing against it is wrong. SAMPLED because the scene
-// pass reads it -- the second of the two edges.
-TextureDesc MakeShadowTarget(VkExtent2D extent, VkFormat depth) noexcept;
-
 // The three images those descs describe, made together and remade together
 //
 // Field for field with SceneTargetDescs, because that is what it is the product of.
@@ -533,54 +527,6 @@ bool ResizeSceneTargets(const VulkanDevice& dev, const SceneTargetDescs& descs,
 // written again here: the scene's depth is drawn into, the shadow map is also
 // sampled, and moving a bit in either place moves this.
 VkImageUsageFlags DepthTargetUsage() noexcept;
-
-
-// ShadowPass - the same surfaces, depth only, from where the light is
-// ============================================================================
-//
-// The first pass here with no colour attachment. Its product is a depth image the
-// scene pass samples, which makes it also the first thing depth does outside the
-// frame that produced it.
-//
-// Its own set and its own program, but not its own light: the matrix it draws with is
-// FrameLight's, handed in. What stays the pass's is the map.
-struct ShadowPass {
-    const Mesh* mesh = nullptr;
-    const ShaderProgram* program = nullptr;
-    const Pipeline* pipeline = nullptr;
-
-    // Per frame in flight for the reason the scene's attachments are: the GPU still
-    // reads the previous frame's map while the next is drawn.
-    struct PerFrame {
-        // **Borrowed.** main makes it and hands the same array to this pass and to the
-        // scene pass, so the one image has one name that both can say.
-        //
-        // Its desc asks for DEPTH_STENCIL_ATTACHMENT to draw into and SAMPLED to be
-        // read afterwards, at one sample -- multisampling a visibility test would
-        // average depths no surface was ever at. Checked below against the pipeline.
-        const Texture* depth = nullptr;
-
-        // Names the FrameShadow of the same index.
-        VkDescriptorSet set = VK_NULL_HANDLE;
-    };
-    PerFrame frames[kFramesInFlight];
-};
-
-// Effect: takes the maps it draws into and makes the set naming its matrix
-//
-// It made those maps until 09-05, from a TextureDesc handed in. main owns them now,
-// which is what lets the scene pass be handed the same array instead of walking into
-// frames[i] to find them -- and is why there is no VulkanDevice argument left: this
-// creates nothing but descriptor sets, and the pool knows its device.
-//
-// Contract: maps and shadows each hold kFramesInFlight entries and outlive this pass.
-//           Each set names the buffer of the same index; each map is drawn into by
-//           the frame of the same index.
-bool CreateShadowPass(const Descriptors& descriptors,
-                      const Texture* const maps[kFramesInFlight],
-                      const Mesh& mesh, const ShaderProgram& program,
-                      const Pipeline& pipeline, const FrameShadow* shadows,
-                      ShadowPass* out) noexcept;
 
 
 // ScenePass - the off-screen pass, and what it draws into
