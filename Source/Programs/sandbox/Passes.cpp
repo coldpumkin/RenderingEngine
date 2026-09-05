@@ -16,6 +16,58 @@
 #include <glm/ext/matrix_transform.hpp>     // lookAt
 #include <glm/trigonometric.hpp>            // radians
 
+bool CreateMaterials(const VulkanDevice& dev,
+                     const Descriptors& descriptors, const DescriptorLayout& layout,
+                     const MaterialDesc* sources, uint32_t count,
+                     Material* out) noexcept {
+    if (count == 0) { return true; }
+
+    // One call, because the pool hands sets out in batches and a per-material call
+    // would ask it 25 times for the same layout.
+    std::vector<VkDescriptorSet> sets(count);
+    if (!AllocateSets(descriptors, layout, count, sets.data())) {
+        return false;
+    }
+
+    for (uint32_t i = 0; i < count; ++i) {
+        out[i].set = sets[i];
+        out[i].cullMode = sources[i].cullMode;   // copied, not bound: it is not a binding
+
+        // 32 bytes, written once and never again -- but HOST_VISIBLE like the scene's
+        // uniform rather than a staging copy, because a device-local upload for 32
+        // bytes costs a command buffer and a queue wait each.
+        if (!CreateBuffer(dev, sizeof(MaterialParams),
+                          VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                          VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+                          VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+                              | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                          &out[i].params)) {
+            return false;
+        }
+        if (out[i].params.mapped == nullptr) {
+            LOG("[vk] material uniform buffer is not mapped\n");
+            return false;
+        }
+        std::memcpy(out[i].params.mapped, &sources[i].params, sizeof(MaterialParams));
+
+        // Binding order, and the order is MaterialSet()'s -- the same declaration every
+        // program that reads a material is checked against. The static_assert is what
+        // keeps the two from drifting: a binding added there without a value here is a
+        // set with a hole in it, which UpdateSet would fill from the wrong slot.
+        const BindingValue values[] = {
+            {&sources[i].baseColor->view},           // 0 baseColor
+            {&sources[i].normal->view},              // 1 normalMap
+            {nullptr, &out[i].params},               // 2 mtl
+            {&sources[i].metallicRoughness->view},   // 3 metallicRoughnessMap
+        };
+        static_assert(std::size(values) == 4,
+                      "one value per binding MaterialSet() declares");
+        UpdateSet(descriptors, layout, out[i].set,
+                  values, static_cast<uint32_t>(std::size(values)));
+    }
+    return true;
+}
+
 Camera MakeCamera(const CameraDesc& desc) noexcept {
     Camera out;
     out.desc = desc;
@@ -153,7 +205,7 @@ bool RecordFrame(const FrameSlot& slot,
     // say, by being in this order.
     RecordShadowPass(slot, shadow, draws);
     RecordScenePass(slot, scene, draws,
-                    SceneRasterOptions{GuiPolygonMode(gui), GuiDepthTest(gui),
+                    RasterOptions{GuiPolygonMode(gui), GuiDepthTest(gui),
                                        GuiDepthWrite(gui), GuiRasterizerDiscard(gui),
                                        GuiCullMode(gui), GuiDepthCompare(gui)},
                     stats);

@@ -16,90 +16,8 @@
 // Owns nothing it draws with or into. What it owns is the material sets, which are
 // what a surface looks like rather than where a frame goes.
 
-#include "Gui.h"     // kCullFromMaterial, and the switches this pass reads
 #include "Passes.h"
 
-// The material's numbers, as the shader reads them. One per material, in set 1
-// beside its images.
-//
-// Here rather than in PushConstants because it is counted by materials and that block
-// is counted by draws -- one block, one rate, and the faster of the two wins.
-//
-// Contract: field order and types match the shader's MaterialBlock. std140 rounds a
-//           block up to 16 bytes, so the leftover is named rather than hidden.
-struct MaterialParams {
-    glm::vec4 baseColorFactor{1.0f};   // rgb multiplies the texture, a its alpha
-
-    float alphaCutoff = 0.0f;          // 0 keeps every texel
-
-    // Both multiply the texture the way baseColorFactor does, and glTF defaults both
-    // to 1: fully metallic and fully rough, which is what a material naming neither a
-    // texture nor a factor asks for.
-    float metallic = 1.0f;
-    float roughness = 1.0f;
-
-    float pad{};   // std140 rounds the block to 32
-};
-
-
-// Material - what a surface looks like, apart from where it is
-// ============================================================================
-//
-// One set, drawn from the pool and filled once. The texture is not owned here: how
-// many textures a scene has is the scene's business, and two materials naming the
-// same image is normal.
-//
-// Four bindings, in the one set. The prediction written here has held three times now:
-// each new thing a material owns is another binding, not another set, because they are
-// all counted the same way -- one per material.
-//
-// The set is not all of it. What a surface looks like also decides one thing no shader
-// can be handed, and that is the line the last field is on.
-struct Material {
-    VkDescriptorSet set = VK_NULL_HANDLE;
-
-    // Binding 2 of that set. Owned rather than borrowed, unlike the textures: an image
-    // can be shared between materials, these numbers are one per material by
-    // definition.
-    Buffer params;
-
-    // glTF doubleSided, as the value the API wants. Here rather than on the draw
-    // because it is counted the way the set is -- one per material, never per draw --
-    // and a draw storing it again lets the two disagree.
-    //
-    // Not a binding: the rasterizer is not a shader input, so this is the one material
-    // value that cannot ride in the set. It goes out as vkCmdSetCullMode instead.
-    //
-    // A function of the material only because the loader keys materials on it. Two
-    // glTF materials sharing textures but differing here stay two.
-    VkCullModeFlags cullMode = VK_CULL_MODE_BACK_BIT;
-};
-
-// What one material is made of, before it becomes a Material. Pointers: the scene owns
-// the textures, and two materials naming one image share it.
-//
-// Neither texture may be null. A material the asset left without a normal map takes a
-// flat one, which is the caller's to supply -- this layer has no way to make a texture.
-struct MaterialDesc {
-    const Texture* baseColor = nullptr;
-    const Texture* normal = nullptr;
-
-    // glTF packs two values into one image: green is roughness, blue is metallic.
-    // Red is free and some tools put occlusion there, which we do not read.
-    const Texture* metallicRoughness = nullptr;
-
-    MaterialParams params;
-    VkCullModeFlags cullMode = VK_CULL_MODE_BACK_BIT;
-};
-
-// Effect: draws one set per material and points each at its textures
-//
-// Contract: pipeline must be the one these will be bound with -- the set is drawn
-//           from its material layout.
-bool CreateMaterials(const VulkanDevice& dev,
-                     const Descriptors& descriptors, const DescriptorLayout& layout,
-                     const MaterialDesc* sources, uint32_t count,
-                     Material* out) noexcept;
 
 // What a pass draws into, described the way every other texture here is
 // ============================================================================
@@ -282,45 +200,6 @@ bool CreateScenePass(const Descriptors& descriptors,
                      const FrameShadow* shadows,
                      const Gui& gui, ScenePass* out) noexcept;
 
-// What recording one scene pass cost in state changes.
-//
-// Counted where it happens rather than worked out from the item list, so the number is
-// what the command buffer actually got. These are what a sort order changes: the draws
-// are fixed, the other two are not.
-//
-// They do not fall together. materialBinds reaches its floor -- the number of distinct
-// materials -- as soon as equal materials are adjacent. cullChanges reaches its floor
-// only if the order groups by cull first, which sorting on the material alone does not
-// do even though cull is a function of it.
-struct DrawStats {
-    uint32_t draws = 0;
-    uint32_t materialBinds = 0;
-    uint32_t cullChanges = 0;
-};
-
-// What the panel decided about rasterization, as the six values this pass uses.
-// Gathered into one struct so the signature does not grow a parameter per checkbox.
-//
-// Two kinds in one struct, and the first field is the odd one:
-//
-//   polygonMode   picks which pipeline is bound. It is compiled in, so a second
-//                 value is a second pipeline
-//   the five      go out as vkCmdSet* after that pipeline is bound. This pass is
-//                 where their values are decided, and the panel is where they live
-//
-// The five are the whole of this pass's dynamic state apart from viewportY, which no
-// checkbox reaches -- so the pipeline desc names viewportY and nothing else.
-struct SceneRasterOptions {
-    // A polygonMode and not a bool, unlike the five below it. Those are VkBool32 or a
-    // flag on the other side; this one is a three-valued enum, and calling it
-    // "wireframe" meant only two of the three could be asked for.
-    VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL;
-    bool depthTest = true;
-    bool depthWrite = true;
-    bool rasterizerDiscard = false;
-    VkCullModeFlags cull = kCullFromMaterial;
-    VkCompareOp depthCompare = VK_COMPARE_OP_LESS;
-};
 
 // Input:  the pass, the slot, this frame's list, what the panel decided, and where to
 //         count what the recording cost
@@ -330,6 +209,6 @@ struct SceneRasterOptions {
 // when the one a draw needs is not the one already bound, which is what sorting the
 // list by material buys.
 void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
-                     const DrawList& draws, SceneRasterOptions raster,
+                     const DrawList& draws, RasterOptions raster,
                      DrawStats* stats) noexcept;
 

@@ -23,6 +23,7 @@
 // because the CPU rewrites them while the GPU may still read the previous frame's.
 
 #include "Config.h"   // kFramesInFlight sizes the per-frame buffers
+#include "Passes.h"   // kCullFromMaterial, which two passes read and this produces
 #include "Vulkan/Buffer.h"
 #include "Vulkan/Commands.h"
 #include "Vulkan/Descriptors.h"
@@ -337,10 +338,8 @@ bool GuiDepthWrite(const Gui& gui) noexcept;
 bool GuiRasterizerDiscard(const Gui& gui) noexcept;
 VkCompareOp GuiDepthCompare(const Gui& gui) noexcept;
 
-// Output: the cull mode to use for every draw, or UINT32_MAX to leave it to each
-//         material. The sentinel is outside VkCullModeFlagBits, so no real value
-//         collides with it.
-constexpr VkCullModeFlags kCullFromMaterial = UINT32_MAX;
+// Output: the cull mode to use for every draw, or kCullFromMaterial (Passes.h) to
+//         leave it to each material.
 VkCullModeFlags GuiCullMode(const Gui& gui) noexcept;
 
 // Effect: copies this frame's switches into the buffer the scene pass will read
