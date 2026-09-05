@@ -95,18 +95,22 @@ bool CreatePipelines(const VulkanDevice& dev, const PipelineSources& sources,
     const char* const postStages[] = {"Shaders/fullscreen.vert.spv", "Shaders/post.frag.spv"};
     const char* const guiStages[] = {"Shaders/gui.vert.spv", "Shaders/gui.frag.spv"};
 
+    // Only the programs that draw a surface are held to the shared sets. shadow writes
+    // depth, post copies an image and gui draws a panel -- none of them reads a
+    // material, and requiring one of them to would be requiring a set they do not use.
     if (!CreateShaderProgram(dev, shadowStages,
                              static_cast<uint32_t>(std::size(shadowStages)),
-                             &out->shadowProgram)
+                             nullptr, 0, &out->shadowProgram)
             || !CreateShaderProgram(dev, sceneStages,
                                     static_cast<uint32_t>(std::size(sceneStages)),
+                                    sources.required, sources.requiredCount,
                                     &out->sceneProgram)
             || !CreateShaderProgram(dev, postStages,
                                     static_cast<uint32_t>(std::size(postStages)),
-                                    &out->postProgram)
+                                    nullptr, 0, &out->postProgram)
             || !CreateShaderProgram(dev, guiStages,
                                     static_cast<uint32_t>(std::size(guiStages)),
-                                    &out->guiProgram)) {
+                                    nullptr, 0, &out->guiProgram)) {
         return false;
     }
 

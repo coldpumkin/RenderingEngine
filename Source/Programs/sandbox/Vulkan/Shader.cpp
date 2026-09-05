@@ -3,6 +3,7 @@
 #include <spirv_reflect.h>
 
 #include <cstdio>
+#include <cstring>
 #include <vector>
 
 namespace {
@@ -168,6 +169,13 @@ bool Reflect(const std::vector<uint32_t>& code, const char* path,
         SetInterface& set = out->sets[b->set];
         set.bindingTypes[b->binding] = static_cast<VkDescriptorType>(b->descriptor_type);
         if (b->binding + 1 > set.bindingCount) { set.bindingCount = b->binding + 1; }
+
+        // Copied, because the module this points into is freed below. Truncated rather
+        // than refused: a name is for telling two bindings apart, and a prefix does
+        // that. An empty one means the compiler stripped it, and a comparison skips it.
+        if (b->name != nullptr) {
+            std::strncpy(set.bindingNames[b->binding], b->name, kMaxBindingNameLength - 1);
+        }
     }
 
     // Gaps, both ends, before anyone else sees this. A gap is a fact about this one
@@ -373,8 +381,66 @@ static bool CheckStageInterface(const ProgramStage& producer,
     return true;
 }
 
+// Effect: compares what the stages declared for one shared set against what the caller
+//         requires of it
+//
+// The direction is the point. For a set only one program uses, reflection is the whole
+// answer and there is nothing to compare it to. For one several programs must speak,
+// the shape is the caller's and each program makes a claim -- so this refuses the claim
+// rather than building the layout out of it.
+//
+// Names are compared because types cannot tell four samplers apart, and swapping two of
+// them is a picture that is wrong and legal. An empty name on either side skips that
+// half: the compiler may strip one, and a caller may not care which slot is which.
+static bool CheckRequiredSet(const ShaderProgram& program, const RequiredSet& want) noexcept {
+    if (want.set >= kMaxSets) {
+        LOG("[vk] a required set %u, over the %u we allow\n", want.set, kMaxSets);
+        return false;
+    }
+
+    // The union across stages, the same one BuildSetLayout folds -- a set is what the
+    // program declares between them, not what any one stage does.
+    SetInterface declared;
+    for (uint32_t i = 0; i < program.stageCount; ++i) {
+        const SetInterface& stage = program.stages[i].interface.sets[want.set];
+        if (stage.bindingCount > declared.bindingCount) {
+            declared.bindingCount = stage.bindingCount;
+        }
+        for (uint32_t b = 0; b < kMaxBindingsPerSet; ++b) {
+            if (stage.bindingTypes[b] == 0) { continue; }
+            declared.bindingTypes[b] = stage.bindingTypes[b];
+            std::strncpy(declared.bindingNames[b], stage.bindingNames[b],
+                         kMaxBindingNameLength - 1);
+        }
+    }
+
+    if (declared.bindingCount != want.bindingCount) {
+        LOG("[vk] %s declares %u bindings in set %u, and %u are required\n",
+            program.stages[0].path, declared.bindingCount, want.set, want.bindingCount);
+        return false;
+    }
+    for (uint32_t b = 0; b < want.bindingCount; ++b) {
+        if (declared.bindingTypes[b] != want.types[b]) {
+            LOG("[vk] %s: set %u binding %u is type %d, and %d is required\n",
+                program.stages[0].path, want.set, b,
+                static_cast<int>(declared.bindingTypes[b]),
+                static_cast<int>(want.types[b]));
+            return false;
+        }
+        if (want.names[b] == nullptr || declared.bindingNames[b][0] == '\0') { continue; }
+        if (std::strcmp(declared.bindingNames[b], want.names[b]) != 0) {
+            LOG("[vk] %s: set %u binding %u is \"%s\", and \"%s\" is required\n",
+                program.stages[0].path, want.set, b,
+                declared.bindingNames[b], want.names[b]);
+            return false;
+        }
+    }
+    return true;
+}
+
 bool CreateShaderProgram(const VulkanDevice& dev,
                          const char* const paths[], uint32_t count,
+                         const RequiredSet* required, uint32_t requiredCount,
                          ShaderProgram* out) noexcept {
     out->dev = &dev;   // set first: the destructor runs even if this fails halfway
 
@@ -441,6 +507,12 @@ bool CreateShaderProgram(const VulkanDevice& dev,
         if (!CheckStageInterface(out->stages[i - 1], out->stages[i], crossesRasterizer)) {
             return false;
         }
+    }
+
+    // Before the layouts, so a program that does not speak a shared set is refused
+    // rather than given a layout nothing else fits.
+    for (uint32_t i = 0; i < requiredCount; ++i) {
+        if (!CheckRequiredSet(*out, required[i])) { return false; }
     }
 
     for (uint32_t set = 0; set < kMaxSets; ++set) {

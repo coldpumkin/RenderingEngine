@@ -74,6 +74,33 @@ struct DrawStats;
 constexpr uint32_t kFrameSet = 0;      // camera and light. One per frame in flight
 constexpr uint32_t kMaterialSet = 1;   // what a surface looks like. One per material
 
+// What a material is, declared here rather than read out of whichever shader happens to
+// use one. Set 0 is each program's own -- shadow, scene and post fill it with different
+// things -- but set 1 is spoken by every program that draws a surface, and a second one
+// of those is what deferred adds.
+//
+// Declared, a shader's own bindings become a claim this refuses. Left to reflection,
+// two shaders would each be right about their own layout and a set filled for one would
+// land in the wrong slots of the other -- four samplers in a row are the same shape
+// whatever order they are in, so nothing would say a word.
+//
+// The order is the binding order, and CreateMaterials fills in this order for the same
+// reason: one declaration or two.
+inline RequiredSet MaterialSet() noexcept {
+    RequiredSet set;
+    set.set = kMaterialSet;
+    set.bindingCount = 4;
+    set.types[0] = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    set.names[0] = "baseColor";
+    set.types[1] = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    set.names[1] = "normalMap";
+    set.types[2] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    set.names[2] = "mtl";
+    set.types[3] = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    set.names[3] = "metallicRoughnessMap";
+    return set;
+}
+
 
 // What the shaders read
 // ============================================================================

@@ -199,13 +199,18 @@ bool CreateMaterials(const VulkanDevice& dev,
         }
         std::memcpy(out[i].params.mapped, &sources[i].params, sizeof(MaterialParams));
 
-        // Order is binding order, which the shader declares and reflection reports.
+        // Binding order, and the order is MaterialSet()'s -- the same declaration every
+        // program that reads a material is checked against. The static_assert is what
+        // keeps the two from drifting: a binding added there without a value here is a
+        // set with a hole in it, which UpdateSet would fill from the wrong slot.
         const BindingValue values[] = {
-            {&sources[i].baseColor->view},           // 0
-            {&sources[i].normal->view},              // 1
-            {nullptr, &out[i].params},               // 2
-            {&sources[i].metallicRoughness->view},   // 3
+            {&sources[i].baseColor->view},           // 0 baseColor
+            {&sources[i].normal->view},              // 1 normalMap
+            {nullptr, &out[i].params},               // 2 mtl
+            {&sources[i].metallicRoughness->view},   // 3 metallicRoughnessMap
         };
+        static_assert(std::size(values) == 4,
+                      "one value per binding MaterialSet() declares");
         UpdateSet(descriptors, layout, out[i].set,
                   values, static_cast<uint32_t>(std::size(values)));
     }

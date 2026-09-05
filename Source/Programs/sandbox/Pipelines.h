@@ -31,6 +31,12 @@ struct PipelineSources {
     const TextureDesc* sceneColor = nullptr;   // the multisample one, not the resolve
     const TextureDesc* sceneDepth = nullptr;
     const TextureDesc* swapchain = nullptr;
+
+    // The sets more than one program here has to speak, declared by whoever calls this.
+    // Each program is refused if it does not, rather than given a layout of its own that
+    // nothing else fits. A program sharing nothing passes none.
+    const RequiredSet* required = nullptr;
+    uint32_t requiredCount = 0;
 };
 
 // Four programs and five pipelines. The extra one is the scene's wireframe variant:

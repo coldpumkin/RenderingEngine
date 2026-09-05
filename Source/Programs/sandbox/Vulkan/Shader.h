@@ -2,6 +2,8 @@
 
 #include "Vulkan/Device.h"
 
+#include <cstring>   // the binding names are copied, not pointed at
+
 // Shader - what a .spv declares, read out of the SPIR-V itself
 // ============================================================================
 //
@@ -102,10 +104,32 @@ struct FormatChannels {
 //         than a guess -- add the format there when one is used.
 FormatChannels ChannelsOfFormat(VkFormat format) noexcept;
 
-// What one set declares. types is indexed by binding number, so a gap stays a gap.
+// What one set declares. Indexed by binding number, so a gap stays a gap.
+//
+// The name is kept because the type does not tell two bindings apart: four samplers in
+// a row are one shape however they are ordered, and swapping two of them is a picture
+// that is wrong and legal. The name is the only thing in a .spv that says which is
+// which.
+// Copied and not pointed at: reflection frees its module before this is read.
+constexpr uint32_t kMaxBindingNameLength = 48;
+
 struct SetInterface {
     uint32_t bindingCount = 0;
     VkDescriptorType bindingTypes[kMaxBindingsPerSet]{};
+    char bindingNames[kMaxBindingsPerSet][kMaxBindingNameLength]{};
+};
+
+// What a caller requires of one set, when more than one program has to speak it.
+//
+// A set a single program uses is that program's own, and reflection is the whole of it.
+// A set several programs must agree on is not: it is the renderer's, and each program
+// makes a claim about it that this can refuse. Which sets are which is the caller's --
+// this layer only compares.
+struct RequiredSet {
+    uint32_t set = 0;
+    uint32_t bindingCount = 0;
+    VkDescriptorType types[kMaxBindingsPerSet]{};
+    const char* names[kMaxBindingsPerSet]{};   // nullptr in a slot skips the name check
 };
 
 struct ShaderInterface {
@@ -267,7 +291,12 @@ struct ShaderProgram {
 //         present. Gaps are not an error -- vertex straight to fragment is the chain
 //         four of ours are.
 //
+// required names the sets this program shares with others, and each one is compared
+// against what the shaders declared rather than built from it. A program that shares
+// nothing passes none.
+//
 // Contract: the paths must outlive this -- they are kept for logging.
 bool CreateShaderProgram(const VulkanDevice& dev,
                          const char* const paths[], uint32_t count,
+                         const RequiredSet* required, uint32_t requiredCount,
                          ShaderProgram* out) noexcept;

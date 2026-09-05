@@ -631,6 +631,13 @@ int main() {
     pipelineSources.sceneColor = &sceneTargetDescs.color;
     pipelineSources.sceneDepth = &sceneTargetDescs.depth;
     pipelineSources.swapchain = &swapchainTarget;
+
+    // What a material is, from Passes.h. The scene program is held to it, and a second
+    // program that draws surfaces will be held to the same one -- which is what lets
+    // one set of material sets fit both.
+    const RequiredSet sharedSets[] = {MaterialSet()};
+    pipelineSources.required = sharedSets;
+    pipelineSources.requiredCount = static_cast<uint32_t>(std::size(sharedSets));
     if (!CreatePipelines(dev, pipelineSources, &renderer.pipelines)) { return 1; }
 
     // Scene -- the mesh and the draw list, from one file
