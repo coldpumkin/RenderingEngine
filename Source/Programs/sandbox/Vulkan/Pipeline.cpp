@@ -1,5 +1,6 @@
 ﻿#include "Vulkan/Pipeline.h"
 
+#include "Vulkan/Core.h"     // RequiredFeatures10, to say which feature is missing
 #include "Vulkan/Shader.h"
 
 
@@ -22,9 +23,7 @@ VkViewport MakeViewport(VkRect2D area, ViewportY y) noexcept {
     return viewport;
 }
 
-// Output: whether a restart index means anything to this topology. Only strips and
-//         fans have one; a list would need primitiveTopologyListRestart, which we do
-//         not ask the device for.
+// Output: whether a restart index means anything to this topology
 static bool IsStripOrFan(VkPrimitiveTopology topology) noexcept {
     switch (topology) {
         case VK_PRIMITIVE_TOPOLOGY_LINE_STRIP:
@@ -50,6 +49,50 @@ static bool HasStencilAspect(VkFormat format) noexcept {
         default:
             return false;
     }
+}
+
+// Effect: refuses a desc asking for something the device was never asked to enable.
+//
+// The desc is free to say any of it -- what it wants is its own business. Whether it is
+// possible is this device's, and the message names the feature so the answer is "add it
+// to RequiredFeatures" rather than "this layer does not support that".
+static bool CheckFeatures(const GraphicsPipelineDesc& desc) noexcept {
+    const VkPhysicalDeviceFeatures asked = RequiredFeatures10();
+
+    struct Need { VkBool32 wanted; VkBool32 enabled; const char* feature; };
+    const Need needs[] = {
+        {desc.depthClamp,      asked.depthClamp,        "depthClamp"},
+        {desc.sampleShading,   asked.sampleRateShading, "sampleRateShading"},
+        {desc.alphaToOne,      asked.alphaToOne,        "alphaToOne"},
+        {desc.depthBoundsTest, asked.depthBounds,       "depthBounds"},
+        {desc.logicOpEnable,   asked.logicOp,           "logicOp"},
+        {desc.polygonMode != VK_POLYGON_MODE_FILL ? VK_TRUE : VK_FALSE,
+                               asked.fillModeNonSolid,  "fillModeNonSolid"},
+        {desc.lineWidth != 1.0f ? VK_TRUE : VK_FALSE,
+                               asked.wideLines,         "wideLines"},
+    };
+    for (const Need& need : needs) {
+        if (need.wanted != VK_FALSE && need.enabled == VK_FALSE) {
+            LOG("[vk] this desc needs the %s feature, which RequiredFeatures does not "
+                "ask for\n", need.feature);
+            return false;
+        }
+    }
+
+    // Not in VkPhysicalDeviceFeatures: multiview is a Vulkan 1.1 promotion and list
+    // restart a 1.3 one, and RequiredFeatures13 asks for neither.
+    if (desc.viewMask != 0) {
+        LOG("[vk] this desc writes view mask %#x, and multiview is not asked for\n",
+            desc.viewMask);
+        return false;
+    }
+    if (desc.primitiveRestart != VK_FALSE && !IsStripOrFan(desc.topology)) {
+        LOG("[vk] a restart index on a list topology needs primitiveTopologyListRestart, "
+            "which is not asked for\n");
+        return false;
+    }
+
+    return true;
 }
 
 // Walked from the pipeline's own list, so what was declared at creation and what is
@@ -364,10 +407,7 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     VkPipelineInputAssemblyStateCreateInfo inputAssembly{
         VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
     inputAssembly.topology = desc.topology;
-    // Derived, not a field. A restart index only means anything to a strip or a fan;
-    // a list topology needs the primitiveTopologyListRestart feature, which we do not
-    // ask for, so the topology settles this.
-    inputAssembly.primitiveRestartEnable = IsStripOrFan(desc.topology);
+    inputAssembly.primitiveRestartEnable = desc.primitiveRestart;
 
     // --- Raster: where the primitive lands and which side faces us ----------
     // Counts are fixed, the two values are set at record time, the rest is desc.
@@ -378,6 +418,8 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
         VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
     viewportState.viewportCount = 1;
     viewportState.scissorCount = 1;
+
+    if (!CheckFeatures(desc)) { return false; }
 
     if (desc.dynamicCount > kMaxDynamicStates) {
         LOG("[vk] a desc declaring %u dynamic states, and we hold %u\n",
@@ -402,21 +444,21 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     rasterization.depthBiasConstantFactor = desc.depthBiasConstant;
     rasterization.depthBiasSlopeFactor = desc.depthBiasSlope;
     rasterization.depthBiasClamp = desc.depthBiasClamp;
-    // depthClampEnable stays off and lineWidth stays 1: depthClamp and wideLines are
-    // features we do not ask the device for.
-    rasterization.lineWidth = 1.0f;
+    rasterization.depthClampEnable = desc.depthClamp;
+    rasterization.lineWidth = desc.lineWidth;
 
     // --- Fragment output: samples, blend, depth -----------------------------
 
-    // One word of mask, which covers 32 samples -- past anything AttachmentFormats can
-    // hold. sampleShadingEnable and alphaToOneEnable stay off: sampleRateShading and
-    // alphaToOne are features we do not ask the device for.
+    // One word of mask, which covers 32 samples -- past anything AttachmentFormats holds.
     const VkSampleMask sampleMask = desc.sampleMask;
     VkPipelineMultisampleStateCreateInfo multisample{
         VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
     multisample.rasterizationSamples = formats.samples;
     multisample.pSampleMask = &sampleMask;
+    multisample.sampleShadingEnable = desc.sampleShading;
+    multisample.minSampleShading = desc.minSampleShading;
     multisample.alphaToCoverageEnable = desc.alphaToCoverage;
+    multisample.alphaToOneEnable = desc.alphaToOne;
 
     // The desc's own, one per colour attachment, and Vulkan reads exactly that many.
     // A zeroed colorWriteMask is a target nobody said anything about: legal Vulkan, and
@@ -432,9 +474,11 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
         VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
     colorBlend.attachmentCount = formats.colorCount;   // 0 leaves pAttachments unread
     colorBlend.pAttachments = desc.blend;
-    // blendConstants are read only by a CONSTANT_* factor, so they are derived rather
-    // than a field: nothing here names one. logicOpEnable stays off -- logicOp is a
-    // feature we do not ask the device for.
+    colorBlend.logicOpEnable = desc.logicOpEnable;
+    colorBlend.logicOp = desc.logicOp;
+    for (uint32_t i = 0; i < 4; ++i) {
+        colorBlend.blendConstants[i] = desc.blendConstants[i];
+    }
 
     // depthFormat decides whether this state exists at all, further down.
     const bool useDepth = formats.depth != VK_FORMAT_UNDEFINED;
@@ -447,7 +491,9 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     depthStencil.stencilTestEnable = desc.stencilTest;
     depthStencil.front = desc.stencilFront;
     depthStencil.back = desc.stencilBack;
-    // depthBoundsTestEnable stays off: depthBounds is a feature we do not ask for.
+    depthStencil.depthBoundsTestEnable = desc.depthBoundsTest;
+    depthStencil.minDepthBounds = desc.minDepthBounds;
+    depthStencil.maxDepthBounds = desc.maxDepthBounds;
 
     // --- What it draws into: attachment formats -----------------------------
     // Dynamic rendering writes the formats here instead of into a VkRenderPass.
@@ -462,9 +508,10 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
         formats.colorCount != 0 ? formats.color : nullptr;
     pipelineRendering.depthAttachmentFormat = formats.depth;   // UNDEFINED = no depth
     // The same format when it carries a stencil aspect, which is what a stencil test
-    // reads. viewMask stays 0: multiview is a feature we do not ask for.
+    // reads.
     pipelineRendering.stencilAttachmentFormat =
         HasStencilAspect(formats.depth) ? formats.depth : VK_FORMAT_UNDEFINED;
+    pipelineRendering.viewMask = desc.viewMask;
 
     // --- Assemble and compile -----------------------------------------------
 

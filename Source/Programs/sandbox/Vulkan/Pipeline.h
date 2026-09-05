@@ -94,22 +94,19 @@ constexpr VkPipelineColorBlendAttachmentState AlphaBlend() noexcept {
     return state;
 }
 
-// Everything one pipeline is created from, which is every field of
-// VkGraphicsPipelineCreateInfo that is ours to choose. The three answers a field can
-// have, and every one of them has exactly one:
+// Everything one pipeline is created from: every field of VkGraphicsPipelineCreateInfo
+// that is ours to choose, and there are two answers rather than three.
 //
-//   here            it can differ between pipelines and is not derived from anything
-//   derived         it comes from another field, so a second copy could disagree:
-//                   the sample count and the attachment formats from targets, the
-//                   winding from viewportY, blendConstants and primitiveRestart from
-//                   the values that would use them
-//   one value       a feature we do not ask the device for. depthClamp, wideLines,
-//                   sampleRateShading, depthBounds, logicOp, alphaToOne, multiViewport
-//                   and multiview are all absent from Core.h's RequiredFeatures, and
-//                   asking for one is what would move it up here
+//   here        it can differ between pipelines
+//   derived     it comes from another field here, so a second copy could disagree --
+//               the sample count and attachment formats from targets, the winding from
+//               viewportY, the stencil format from whether the depth one has the aspect
 //
-// "we only use one" is not among them, and was how topology and blend came to be
-// written as literals.
+// A field is not left out because a feature is missing or because nothing sets it yet.
+// Saying what you want belongs here; saying whether it is possible belongs to
+// CreateGraphicsPipeline, which refuses a value the device was never asked for and
+// names the feature. Left out instead, the answer would be "edit Pipeline.cpp", and
+// this layer would be deciding what its callers may ask.
 struct GraphicsPipelineDesc {
 
     // Borrowed. Two pipelines differing only in baked state share one.
@@ -121,6 +118,10 @@ struct GraphicsPipelineDesc {
     // Compiled in. VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY moves only inside a class without
     // extendedDynamicState3 -- list to strip, not triangles to lines.
     VkPrimitiveTopology topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    // The index that starts a new strip or fan instead of adding to one.
+    // Needs primitiveTopologyListRestart on a list topology.
+    VkBool32 primitiveRestart = VK_FALSE;
 
     // What it draws into, the first null ending the list. Each desc's usage says whether
     // it is colour or depth, so one list: colour order is the list's order, depth has no
@@ -150,6 +151,40 @@ struct GraphicsPipelineDesc {
     // Which samples may be written at all, ANDed with coverage. One word covers up to
     // 32 samples, and kMaxSamples is far below that.
     VkSampleMask sampleMask = ~0u;
+
+    // Shades every sample rather than every pixel, at minSampleShading of them at
+    // least. Needs sampleRateShading.
+    VkBool32 sampleShading = VK_FALSE;
+    float minSampleShading = 0.0f;
+
+    // Forces the written alpha to 1 after the shader. Needs alphaToOne.
+    VkBool32 alphaToOne = VK_FALSE;
+
+    // Keeps a fragment outside the near/far range instead of discarding it, which is
+    // what a shadow caster behind the light's near plane needs. Needs depthClamp.
+    VkBool32 depthClamp = VK_FALSE;
+
+    // Wider than one pixel needs wideLines, and only LINE reads it.
+    float lineWidth = 1.0f;
+
+    // A second depth test against a fixed range, independent of depthCompare.
+    // Needs depthBounds.
+    VkBool32 depthBoundsTest = VK_FALSE;
+    float minDepthBounds = 0.0f;
+    float maxDepthBounds = 1.0f;
+
+    // A bitwise operation between the fragment and the attachment, instead of blending
+    // -- the two are exclusive. Needs logicOp.
+    VkBool32 logicOpEnable = VK_FALSE;
+    VkLogicOp logicOp = VK_LOGIC_OP_COPY;
+
+    // Read only by a CONSTANT_* blend factor, and by every attachment that names one:
+    // there is one set of these per pipeline, not per attachment.
+    float blendConstants[4]{};
+
+    // Which layers of a layered target this pipeline writes, as a bitmask.
+    // Needs multiview.
+    uint32_t viewMask = 0;
 
     // Off unless the depth format carries a stencil aspect, which is the resource's
     // fact -- ChooseDepthFormat may land on D32_SFLOAT_S8_UINT.
