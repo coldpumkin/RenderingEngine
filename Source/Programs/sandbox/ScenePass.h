@@ -9,8 +9,8 @@
 //   the shadow map    main makes it            the shadow pass drew it
 //   camera, light,    main writes them         the shadow pass reads the same
 //     shadow matrix     every frame              FrameShadow
-//   the panel's       the gui pass owns it     asked for by name -- the one edge
-//     switches                                   that runs backwards
+//   the panel's       main makes it            the other two surface passes read
+//     switches          the gui writes it        the same FrameViewOptions
 //   its two sets      this pass makes them     nobody
 //
 // Owns nothing it draws with or into. What it owns is the material sets, which are
@@ -99,13 +99,15 @@ bool ResizeSceneTargets(const VulkanDevice& dev, const SceneTargetDescs& descs,
 //              the shadow maps            an argument, one image per frame
 //              the raster switches        an argument to RecordScenePass
 //              the camera                 main assigns into frames[i] from outside
-//              the panel's buffer         asked for: GuiOptionsBuffer(gui, i)
+//              the panel's switches       an argument, one buffer per frame
 //
-// Three of the five now say what they are in the signature. The camera does not --
-// main reaches in and writes it -- and the panel is deliberately different: it is a
-// tool for making features comparable while they are understood, not a dependency of
-// the same kind, and asking a Gui for its buffer is not the same as reaching into a
-// pass for an image.
+// Four of the five now say what they are in the signature. The camera is the one
+// that does not -- main reaches in and writes it.
+//
+// The panel's used to be the exception, asked for through an accessor on the ground
+// that a panel is a tool rather than a dependency of the same kind. **That stopped
+// holding on 09-06**: two more passes came to read it, and each had to include Gui.h
+// for one call. It is a FrameViewOptions now, handed over like the light.
 //
 // This is written as a list and not as a type on purpose. Naming what a pass owns is
 // what has to happen before anything derives from it, and a struct now would fix the
@@ -173,18 +175,17 @@ struct ScenePass {
 // function reach anything a shadow pass has. A signature is meant to state the
 // requirement, not a place the requirement can be found in.
 //
-// gui stays a whole Gui on purpose. It is not a dependency of the same kind -- the
-// panel exists to make features comparable while they are being understood, and it
-// is deliberately a black box to whoever reads main. Its buffer already arrives
-// through an accessor, which is asking rather than reaching in.
+// views is a FrameViewOptions array and not a Gui, which is the same change made for
+// shadowMaps just above: what this needs is one buffer per frame, and naming the
+// thing that owns them let this function reach anything a panel has.
 //
 // Contract: shadowMaps holds kFramesInFlight entries, each an image the shadow pass
 //           has created, frame for frame. Read at set-fill time and not stored: the
 //           barrier that makes one readable belongs to the pass that writes it.
-// Contract: gui must already be created -- binding 3 of each set names the buffer its
-//           checkboxes write into.
+// Contract: views holds kFramesInFlight entries and outlives this pass. Binding 4 of
+//           each set names its buffer.
 // A resize touches no pass. This one's sets name nothing that changes -- the camera,
-// the light, a shadow map and the panel's buffer -- and it holds pointers to targets
+// the light, a shadow map and the panel's switches -- and it holds pointers to targets
 // whose contents are replaced under them. **The post pass's sets do not survive**:
 // they name the resolve image, so RefreshPostProcessPass runs after every resize.
 
@@ -198,7 +199,7 @@ bool CreateScenePass(const Descriptors& descriptors,
                      const Texture* const shadowMaps[kFramesInFlight],
                      const FrameCamera* cameras, const FrameLight* lights,
                      const FrameShadow* shadows,
-                     const Gui& gui, ScenePass* out) noexcept;
+                     const FrameViewOptions* views, ScenePass* out) noexcept;
 
 
 // Input:  the pass, the slot, this frame's list, what the panel decided, and where to

@@ -87,10 +87,14 @@ struct Renderer {
     // images it reads, hands both light-reading passes the same lights[], and hands
     // scenePass the shadow maps rather than the pass that owns them.
     //
-    // What is left is gui's option buffer, which scenePass asks for through an
-    // accessor -- and which runs the other way, from a pass that draws later to one
-    // that draws first. Deliberately left as it is: the panel is a tool for comparing
-    // features while they are understood, not a dependency of the same kind.
+    // gui's option buffer used to be the exception here, asked for through an
+    // accessor because the panel was a tool rather than a dependency of the same
+    // kind. **Three things stopped being true on 09-06**: the readers went from one
+    // to three, each of them had to include Gui.h for that one call, and the panel
+    // stopped being only a tool when it started choosing which passes run. It is a
+    // FrameViewOptions above now. The edge still runs backwards through the frame,
+    // and that is why UploadFrameValues asks for the value instead of being handed
+    // it.
     //
     // Declared before the passes so they outlive them: their sets name these buffers,
     // and members are destroyed in reverse.
@@ -104,6 +108,16 @@ struct Renderer {
     // surface, and where the map that shadows it was drawn from. Read by two passes,
     // which is why it is out here beside them rather than inside either.
     FrameShadow shadows[kFramesInFlight];
+
+    // The panel's switches, and **the reason this one is here is the reason the
+    // shadow map is.** It lived inside Gui until 09-06, when three passes read it and
+    // each had to say GuiOptionsBuffer(gui, i) -- a name only the panel could give.
+    // The buffer sits with the other three now and the panel answers with a value.
+    //
+    // Written by UploadFrameValues out of GuiViewUniform, not assigned from outside
+    // like the three above: this edge runs backwards through the frame, from the pass
+    // that draws last to the ones that draw first.
+    FrameViewOptions viewOptions[kFramesInFlight];
 
     // The shadow map, and the first resource here that no pass owns. One pass draws
     // it and another samples it, so making it inside either would put a name only

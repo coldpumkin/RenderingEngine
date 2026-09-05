@@ -105,6 +105,24 @@ bool CreateFrameCameras(const VulkanDevice& dev, FrameCamera* out) noexcept {
     return true;
 }
 
+bool CreateFrameViewOptions(const VulkanDevice& dev, FrameViewOptions* out) noexcept {
+    for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+        if (!CreateBuffer(dev, sizeof(ViewOptionsUniform),
+                          VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                          VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+                          VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+                              | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                          &out[i].buffer)) {
+            return false;
+        }
+        if (out[i].buffer.mapped == nullptr) {
+            LOG("[vk] view options uniform buffer is not mapped\n");
+            return false;
+        }
+    }
+    return true;
+}
+
 bool CreateFrameLights(const VulkanDevice& dev, FrameLight* out) noexcept {
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
         if (!CreateBuffer(dev, sizeof(LightUniform),
@@ -165,11 +183,19 @@ void SetDrawModel(DrawItem* item, const glm::mat4& model) noexcept {
 
 void UploadFrameValues(const FrameSlot& slot,
                        const FrameCamera* cameras, const FrameLight* lights,
-                       const FrameShadow* shadows, Gui& gui) noexcept {
-    // Every uniform a frame writes, in the order the passes read them. The panel's
-    // switches are among them even though the gui pass runs last: what reads them is
-    // the scene pass, two passes earlier in the same submission.
-    UploadGuiOptions(gui, slot.index);
+                       const FrameShadow* shadows, FrameViewOptions* views,
+                       const Gui& gui) noexcept {
+    // Every uniform a frame writes, in the order the passes read them. Four memcpys
+    // and one shape -- the panel's switches used to be a call into Gui here, which is
+    // what having the buffer on the other side of that boundary cost.
+    //
+    // The panel's are among them even though the gui pass runs last: what reads them
+    // is the scene pass, two passes earlier in the same submission. That edge runs
+    // backwards through the frame and is the reason this value is asked for rather
+    // than assigned from outside like the other three.
+    FrameViewOptions& view = views[slot.index];
+    view.value = GuiViewUniform(gui);
+    std::memcpy(view.buffer.mapped, &view.value, sizeof(view.value));
 
     const FrameCamera& camera = cameras[slot.index];
     std::memcpy(camera.buffer.mapped, &camera.value, sizeof(camera.value));

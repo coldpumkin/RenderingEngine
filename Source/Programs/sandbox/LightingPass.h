@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 // LightingPass - one triangle that turns the g-buffer into a picture
 // ============================================================================
@@ -32,7 +32,6 @@
 // question we have not answered. An allocation is cheaper than the doubt.
 
 #include "GeometryPass.h"   // GBufferTargets, which its second set names
-#include "Gui.h"            // GuiOptionsBuffer
 #include "Passes.h"
 
 struct LightingPass {
@@ -70,8 +69,8 @@ void RefreshLightingPass(const Descriptors& descriptors, LightingPass* lighting)
 // Contract: cameras, lights and shadows hold kFramesInFlight entries. shadows is the
 //           same array the shadow pass was given, which is what makes the matrix in
 //           binding 2 the one that drew the map in binding 3.
-// Contract: gui must already be created -- binding 4 names the buffer its checkboxes
-//           write into, including which g-buffer image to show.
+// Contract: views holds kFramesInFlight entries and outlives this pass. Binding 4
+//           names its buffer, which carries which g-buffer image to show.
 bool CreateLightingPass(const Descriptors& descriptors,
                         const GBufferTargets* const source[kFramesInFlight],
                         const Texture* const target[kFramesInFlight],
@@ -79,7 +78,7 @@ bool CreateLightingPass(const Descriptors& descriptors,
                         const Texture* const shadowMaps[kFramesInFlight],
                         const FrameCamera* cameras, const FrameLight* lights,
                         const FrameShadow* shadows,
-                        const Gui& gui, LightingPass* out) noexcept;
+                        const FrameViewOptions* views, LightingPass* out) noexcept;
 
 // Input:  the pass and the slot
 // Effect: makes this slot's four g-buffer images readable, then draws one triangle

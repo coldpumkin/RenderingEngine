@@ -1,4 +1,4 @@
-#include "GeometryPass.h"
+﻿#include "GeometryPass.h"
 
 #include "Vulkan/Barrier.h"
 #include "Vulkan/Mesh.h"
@@ -63,7 +63,7 @@ bool CreateGeometryPass(const Descriptors& descriptors,
                         const Mesh& mesh,
                         const Pipeline& pipeline, const Pipeline& wirePipeline,
                         const FrameCamera* cameras,
-                        const Gui& gui, GeometryPass* out) noexcept {
+                        const FrameViewOptions* views, GeometryPass* out) noexcept {
     if (pipeline.program == nullptr) {
         LOG("[vk] a pass was given a pipeline that names no program\n");
         return false;
@@ -134,7 +134,7 @@ bool CreateGeometryPass(const Descriptors& descriptors,
             {},                                // 1  light, not read here
             {},                                // 2  shadow matrix, not read here
             {},                                // 3  shadow map, not read here
-            {nullptr, &GuiOptionsBuffer(gui, i)},   // 4  the panel
+            {nullptr, &views[i].buffer},       // 4  the panel
         };
         UpdateSet(descriptors, program.setLayouts[kFrameSet], frame.set,
                   values, static_cast<uint32_t>(std::size(values)));

@@ -382,9 +382,53 @@ struct FrameShadow {
 };
 
 // Effect: creates one mapped uniform buffer per frame in flight
+// The same switches as the shader reads them.
+//
+// Here rather than in SceneUniform, which is where they used to sit. What they answer
+// to is the panel, not the scene: nothing about a camera or a light decides them, and
+// the pass whose uniform carried them had no say in any of it. Moving them out left
+// SceneUniform with only values the frame actually computes.
+//
+// Floats rather than a bitfield: std140 packs them into whole vec4s either way, and
+// this way each has a name on both sides of the boundary instead of a bit position.
+// 0 or 1, and the shader compares against 0.5 so a half value is not a third state.
+//
+// Contract: field order matches the View block in scene.frag.
+struct ViewOptionsUniform {
+    float normalMap;
+    float baseColor;
+    float specular;
+    float alphaMask;
+    float shadow;
+    float metallicRoughness;
+
+    // 0 shows the lit result, 1..4 show one of the geometry pass's images instead.
+    // Read by lighting.frag alone -- scene.frag declares the six above and stops,
+    // which is what a stage taking the front of a block is allowed to do.
+    //
+    // Here rather than on the CPU side of the panel because the value has to reach a
+    // shader: nothing about which image to show can be decided by a command.
+    float channel;
+
+    float pad;   // std140 rounds the block up to a second vec4
+};
+
+// The panel's answers as one per frame in flight, the way the camera and the light
+// are. The fourth of exactly the same kind, and the last to get here: it lived inside
+// Gui until 09-06, which meant three passes had to know what a Gui was to name it.
+//
+// Who decides and who sends are different questions. The panel still decides -- the
+// checkboxes are its, GuiViewUniform builds this out of them -- and UploadFrameValues
+// sends it, which is what happens to the other three as well.
+struct FrameViewOptions {
+    ViewOptionsUniform value{};
+    Buffer buffer;
+};
+
 bool CreateFrameCameras(const VulkanDevice& dev, FrameCamera* out) noexcept;
 bool CreateFrameLights(const VulkanDevice& dev, FrameLight* out) noexcept;
 bool CreateFrameShadows(const VulkanDevice& dev, FrameShadow* out) noexcept;
+bool CreateFrameViewOptions(const VulkanDevice& dev, FrameViewOptions* out) noexcept;
 
 // Rides inside the command buffer: no pool, no set, no lifetime. The spec guarantees
 // only 128 bytes, so what goes here is what changes per draw and nothing else.
@@ -574,7 +618,8 @@ VkImageUsageFlags DepthTargetUsage() noexcept;
 //           to get this wrong, and nothing here would notice.
 void UploadFrameValues(const FrameSlot& slot,
                        const FrameCamera* cameras, const FrameLight* lights,
-                       const FrameShadow* shadows, Gui& gui) noexcept;
+                       const FrameShadow* shadows, FrameViewOptions* views,
+                       const Gui& gui) noexcept;
 
 // Effect: resets the slot's command buffer and records this frame's passes into it
 // Output: false means the buffer is invalid and must not be submitted

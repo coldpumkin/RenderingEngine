@@ -142,37 +142,6 @@ struct ViewOptions {
     GBufferChannel channel = GBufferChannel::Lit;
 };
 
-// The same switches as the shader reads them.
-//
-// Here rather than in SceneUniform, which is where they used to sit. What they answer
-// to is the panel, not the scene: nothing about a camera or a light decides them, and
-// the pass whose uniform carried them had no say in any of it. Moving them out left
-// SceneUniform with only values the frame actually computes.
-//
-// Floats rather than a bitfield: std140 packs them into whole vec4s either way, and
-// this way each has a name on both sides of the boundary instead of a bit position.
-// 0 or 1, and the shader compares against 0.5 so a half value is not a third state.
-//
-// Contract: field order matches the View block in scene.frag.
-struct ViewOptionsUniform {
-    float normalMap;
-    float baseColor;
-    float specular;
-    float alphaMask;
-    float shadow;
-    float metallicRoughness;
-
-    // 0 shows the lit result, 1..4 show one of the geometry pass's images instead.
-    // Read by lighting.frag alone -- scene.frag declares the six above and stops,
-    // which is what a stage taking the front of a block is allowed to do.
-    //
-    // Here rather than on the CPU side of the panel because the value has to reach a
-    // shader: nothing about which image to show can be decided by a command.
-    float channel;
-
-    float pad;   // std140 rounds the block up to a second vec4
-};
-
 // ImGui keeps its widget state in a global context, so this holds only what we own
 // and must destroy. One instance; a second would fight over that context.
 struct Gui {
@@ -197,22 +166,17 @@ struct Gui {
     // Written at record time, so one pair per frame in flight. Fixed size: growing
     // them would be a heap allocation in the frame loop, which this program does not
     // do. A frame that does not fit is skipped, and says so once.
+    // The vertices this panel draws, and nothing else. **The options buffer left on
+    // 09-06**: what the panel decides is a value now, and the buffer it goes into sits
+    // with the camera's and the light's -- so the passes that read it name a
+    // FrameViewOptions instead of naming us.
     struct PerFrame {
         Buffer vertices;
         Buffer indices;
-
-        // What the panel decided, in the form the scene's shaders read. Per frame in
-        // flight like everything else here: the CPU writes this one while the GPU may
-        // still be reading the previous frame's.
-        //
-        // Owned by the panel and read by another pass, which is the one direction
-        // nothing else here runs in -- so the scene pass names it through a function
-        // below rather than reaching into this struct.
-        Buffer options;
     };
     PerFrame frames[kFramesInFlight];
 
-    // Edited by the checkboxes, copied into frames[i].options once a frame. Not the
+    // Edited by the checkboxes, read out through GuiViewUniform once a frame. Not the
     // caller's any more: main used to declare it, hand it to BuildGui and then copy
     // every field into the scene's uniform by hand.
     ViewOptions options;
@@ -315,18 +279,19 @@ struct GuiFrameInfo {
 // state is decided, not where commands are written. Nothing here touches the GPU.
 void BuildGui(Gui* gui, const GuiFrameInfo& info) noexcept;
 
-// Output: the buffer the scene pass's set should name for this frame, and its size
+// Output: this frame's switches, in the shape a shader reads
 //
-// A function rather than a reachable field: what the scene pass needs is one handle
-// per frame, and this is the whole of what it may know about the panel.
+// The panel decides and something else sends. **It owned the buffer until 09-06** and
+// three passes had to know what a Gui was to name it; now it answers with a value and
+// UploadFrameValues copies that into a FrameViewOptions beside the camera and the
+// light, which is how every other per-frame value already worked.
 //
-// Contract: gui must already be created -- CreateScenePass fills its sets once, and
-//           a null handle there is a validation error at bind time.
-const Buffer& GuiOptionsBuffer(const Gui& gui, uint32_t frameIndex) noexcept;
-constexpr VkDeviceSize kGuiOptionsSize = sizeof(ViewOptionsUniform);
+// A value and not a reference: it is built from the bools each time, and there is
+// nothing here to keep a copy of.
+ViewOptionsUniform GuiViewUniform(const Gui& gui) noexcept;
 
 // The CPU-side answers the recording needs. Functions for the same reason
-// GuiOptionsBuffer is one: what a pass needs is an answer, and these are the whole
+// GuiViewUniform is one: what a pass needs is an answer, and these are the whole
 // of what it may know about the panel.
 //
 // GuiDeferred is the odd one and is read a layer above the rest: the five below tell
@@ -341,12 +306,6 @@ VkCompareOp GuiDepthCompare(const Gui& gui) noexcept;
 // Output: the cull mode to use for every draw, or kCullFromMaterial (Passes.h) to
 //         leave it to each material.
 VkCullModeFlags GuiCullMode(const Gui& gui) noexcept;
-
-// Effect: copies this frame's switches into the buffer the scene pass will read
-//
-// Called where the other passes' uniforms are copied, and before any of them record:
-// the scene pass samples this in the same submission.
-void UploadGuiOptions(const Gui& gui, uint32_t frameIndex) noexcept;
 
 // Effect: copies this frame's vertices into its buffers and appends the panel's draws
 //

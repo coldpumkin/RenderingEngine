@@ -888,6 +888,7 @@ int main() {
     if (!CreateFrameCameras(dev, renderer.cameras)) { return 1; }
     if (!CreateFrameLights(dev, renderer.lights)) { return 1; }
     if (!CreateFrameShadows(dev, renderer.shadows)) { return 1; }
+    if (!CreateFrameViewOptions(dev, renderer.viewOptions)) { return 1; }
 
     // The shadow map, made here from the desc written at the top and handed to both
     // passes that touch it -- the one that draws it and the one that samples it. The
@@ -921,7 +922,7 @@ int main() {
                          renderer.mesh, renderer.pipelines.scene,
                          renderer.pipelines.sceneWire,
                          shadowMaps, renderer.cameras, renderer.lights,
-                         renderer.shadows, renderer.guiPass,
+                         renderer.shadows, renderer.viewOptions,
                          &renderer.scenePass)) { return 1; }
     if (!CreatePostProcessPass(renderer.descriptors, sceneColor, swapchainTarget,
                                renderer.pipelines.post,
@@ -943,7 +944,7 @@ int main() {
     if (!CreateGeometryPass(renderer.descriptors, gbuffers,
                             renderer.mesh, renderer.pipelines.geometry,
                             renderer.pipelines.geometryWire,
-                            renderer.cameras, renderer.guiPass,
+                            renderer.cameras, renderer.viewOptions,
                             &renderer.geometryPass)) { return 1; }
 
     // sceneColor is the scene pass's resolve, and this pass draws into it rather than
@@ -951,7 +952,7 @@ int main() {
     if (!CreateLightingPass(renderer.descriptors, gbuffers, sceneColor,
                             renderer.pipelines.lighting,
                             shadowMaps, renderer.cameras, renderer.lights,
-                            renderer.shadows, renderer.guiPass,
+                            renderer.shadows, renderer.viewOptions,
                             &renderer.lightingPass)) { return 1; }
 
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
@@ -1217,7 +1218,7 @@ int main() {
         // The values written above, into the buffers the sets already name. Here and
         // not inside RecordFrame: it is a memcpy per value, not a command.
         UploadFrameValues(slot, renderer.cameras, renderer.lights, renderer.shadows,
-                          renderer.guiPass);
+                          renderer.viewOptions, renderer.guiPass);
 
         // Only the texture: recording has no use for the rest of the target.
         //

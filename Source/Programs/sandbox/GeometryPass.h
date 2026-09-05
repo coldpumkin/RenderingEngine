@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 // GeometryPass - the same draws as the scene pass, writing facts instead of colour
 // ============================================================================
@@ -6,8 +6,8 @@
 //   what              where it comes from      who else uses it
 //   its four images   main makes them          the lighting pass samples all four
 //   camera            main writes it           every other pass reads the same one
-//   the panel's       the gui pass owns it     the scene pass reads the same buffer
-//     switches                                   and answers three more of them
+//   the panel's       main makes it            the scene pass reads the same buffer
+//     switches          the gui writes it        and answers three more of them
 //   its one set       this pass makes it       nobody
 //
 // The scene pass answers "what colour is this pixel". This one answers "what is here"
@@ -24,7 +24,6 @@
 // nothing between them, so BuildSetLayout leaves 1..3 out and the result is a
 // different layout with the same numbering.
 
-#include "Gui.h"      // GuiOptionsBuffer, which binding 4 of its set names
 #include "Passes.h"
 
 // What the geometry pass draws into. Four images, and the depth is one of them rather
@@ -100,14 +99,14 @@ struct GeometryPass {
 // Effect: points the pass at what it draws into, and makes the set each frame binds
 //
 // Contract: cameras holds kFramesInFlight entries and outlives this pass.
-// Contract: gui must already be created -- binding 4 of each set names the buffer its
-//           checkboxes write into.
+// Contract: views holds kFramesInFlight entries and outlives this pass. Binding 4 of
+//           each set names its buffer.
 bool CreateGeometryPass(const Descriptors& descriptors,
                         const GBufferTargets* const targets[kFramesInFlight],
                         const Mesh& mesh,
                         const Pipeline& pipeline, const Pipeline& wirePipeline,
                         const FrameCamera* cameras,
-                        const Gui& gui, GeometryPass* out) noexcept;
+                        const FrameViewOptions* views, GeometryPass* out) noexcept;
 
 // Input:  the pass, the slot, this frame's list, what the panel decided, and where to
 //         count what the recording cost

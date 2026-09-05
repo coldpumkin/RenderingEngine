@@ -1,4 +1,4 @@
-#include "LightingPass.h"
+﻿#include "LightingPass.h"
 
 #include "Vulkan/Barrier.h"
 
@@ -33,7 +33,7 @@ bool CreateLightingPass(const Descriptors& descriptors,
                         const Texture* const shadowMaps[kFramesInFlight],
                         const FrameCamera* cameras, const FrameLight* lights,
                         const FrameShadow* shadows,
-                        const Gui& gui, LightingPass* out) noexcept {
+                        const FrameViewOptions* views, LightingPass* out) noexcept {
     if (pipeline.program == nullptr) {
         LOG("[vk] a pass was given a pipeline that names no program\n");
         return false;
@@ -94,7 +94,7 @@ bool CreateLightingPass(const Descriptors& descriptors,
             {nullptr, &lights[i].buffer},
             {nullptr, &shadows[i].buffer},
             {&shadowMaps[i]->view},
-            {nullptr, &GuiOptionsBuffer(gui, i)},
+            {nullptr, &views[i].buffer},
         };
         UpdateSet(descriptors, program.setLayouts[kFrameSet], out->frameSets[i],
                   frame, static_cast<uint32_t>(std::size(frame)));

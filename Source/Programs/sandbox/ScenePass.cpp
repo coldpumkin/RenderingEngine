@@ -1,7 +1,5 @@
 ﻿#include "ScenePass.h"
 
-#include "Gui.h"        // GuiOptionsBuffer, which binding 4 of the frame set names
-
 #include "Vulkan/Barrier.h"
 #include "Vulkan/Mesh.h"
 
@@ -65,7 +63,7 @@ bool CreateScenePass(const Descriptors& descriptors,
                      const Texture* const shadowMaps[kFramesInFlight],
                      const FrameCamera* cameras, const FrameLight* lights,
                      const FrameShadow* shadows,
-                     const Gui& gui, ScenePass* out) noexcept {
+                     const FrameViewOptions* views, ScenePass* out) noexcept {
     // The program is the pipeline's, not a second argument beside it. A pipeline
     // records what it was built from, and taking both let a caller hand over a pair
     // that never met -- which is what the check below used to be for.
@@ -159,7 +157,7 @@ bool CreateScenePass(const Descriptors& descriptors,
             {nullptr, &lights[i].buffer},
             {nullptr, &shadows[i].buffer},
             {&shadowMaps[i]->view},
-            {nullptr, &GuiOptionsBuffer(gui, i)},
+            {nullptr, &views[i].buffer},
         };
         UpdateSet(descriptors, program.setLayouts[kFrameSet], frame.set,
                   values, static_cast<uint32_t>(std::size(values)));
