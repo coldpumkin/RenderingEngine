@@ -638,8 +638,8 @@ int main() {
     // and the resolve is what leaves afterwards.
     GraphicsPipelineDesc opaqueDesc;
     opaqueDesc.vertexLayout = VertexInput();
-    opaqueDesc.color[0] = &sceneTargetDescs.color;
-    opaqueDesc.depth = &sceneTargetDescs.depth;
+    opaqueDesc.targets[0] = &sceneTargetDescs.color;
+    opaqueDesc.targets[1] = &sceneTargetDescs.depth;
     if (!CreateGraphicsPipeline(dev, renderer.sceneProgram, opaqueDesc,
                                 &renderer.scenePipeline)) { return 1; }
 
@@ -659,7 +659,7 @@ int main() {
                              &renderer.postProgram)) { return 1; }
 
     GraphicsPipelineDesc postDesc;
-    postDesc.color[0] = &swapchainTarget;
+    postDesc.targets[0] = &swapchainTarget;
     if (!CreateGraphicsPipeline(dev, renderer.postProgram, postDesc,
                                 &renderer.postPipeline)) { return 1; }
 
@@ -671,7 +671,7 @@ int main() {
 
     GraphicsPipelineDesc guiDesc;
     guiDesc.vertexLayout = GuiVertexInput();
-    guiDesc.color[0] = &swapchainTarget;
+    guiDesc.targets[0] = &swapchainTarget;
     guiDesc.blending = Blending::Translucent;
     if (!CreateGraphicsPipeline(dev, renderer.guiProgram, guiDesc,
                                 &renderer.guiPipeline)) { return 1; }

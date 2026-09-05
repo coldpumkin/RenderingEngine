@@ -178,9 +178,12 @@ bool CreateScenePass(const Descriptors& descriptors,
         ScenePass::PerFrame& frame = out->frames[i];
         frame.targets = targets[i];
 
-        const TextureDesc* const colour[kMaxColorTargets] = {&targets[i]->color.desc};
-        const AttachmentFormats formats =
-            AttachmentFormatsOf(colour, &targets[i]->depth.desc);
+        // The multisample colour and the depth. The resolve is not here: it is not
+        // an attachment, it is where EndRendering averages into, and no pipeline
+        // bakes it.
+        const TextureDesc* const drawnInto[] = {&targets[i]->color.desc,
+                                                &targets[i]->depth.desc};
+        const AttachmentFormats formats = AttachmentFormatsOf(drawnInto, 2);
         if (!SameAttachmentFormats(formats, pipeline.formats)
             || !SameAttachmentFormats(formats, wirePipeline.formats)) {
             LOG("[vk] scene targets %u and a scene pipeline disagree about the formats\n",

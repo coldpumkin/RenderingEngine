@@ -24,7 +24,7 @@ bool CreatePostProcessPass(const Descriptors& descriptors,
     // two passes make. It could not be made here until this pass was told what it
     // writes; the pipeline was the only one holding an answer.
     const TextureDesc* const targets[kMaxColorTargets] = {&target};
-    if (!SameAttachmentFormats(AttachmentFormatsOf(targets, nullptr),
+    if (!SameAttachmentFormats(AttachmentFormatsOf(targets, 1),
                                pipeline.formats)) {
         LOG("[vk] the post pass's target and its pipeline disagree about the formats\n");
         return false;

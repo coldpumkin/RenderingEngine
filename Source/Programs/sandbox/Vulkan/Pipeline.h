@@ -162,15 +162,20 @@ struct GraphicsPipelineDesc {
     // What it draws into, as the descriptions the images are made from -- one type
     // says what a target is, and this points at it rather than restating any of it.
     //
-    // Pointers, and read during creation only: Pipeline keeps the projection instead.
-    // A resize remakes these descs at a new extent (ResizeScenePass) and rebuilds no
-    // pipeline, so what is kept has to be the part that does not move.
+    // One list, because each desc's usage already says whether it is a colour or a
+    // depth target. Sorting them into two fields here would be this file saying a
+    // second time what every entry says once. Colour order is the list's order;
+    // depth is found by its usage and has no position.
     //
-    // The first null ends the colour list, so how many there are is the list itself.
-    // An empty one is a depth-only pass; depth null is a pass with no depth. The
-    // fragment stage has the final say on the count and is checked against it.
-    const TextureDesc* color[kMaxColorTargets]{};
-    const TextureDesc* depth = nullptr;
+    // Pointers, and read during creation only: Pipeline keeps the projection instead.
+    // A resize remakes these descs at a new extent (ResizeSceneTargets) and rebuilds
+    // no pipeline, so what is kept has to be the part that does not move.
+    //
+    // The first null ends the list. An empty one is a pipeline that draws nowhere,
+    // which CheckOutputInterface refuses unless the fragment stage writes nothing.
+    //
+    // One longer than the colour ceiling: every colour target plus the depth one.
+    const TextureDesc* targets[kMaxColorTargets + 1]{};
 
 
     // FILL is the only value anything passes right now. LINE needs the device's

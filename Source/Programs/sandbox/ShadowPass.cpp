@@ -15,9 +15,11 @@ GraphicsPipelineDesc MakeShadowPipeline(const VertexLayout& mesh,
                                         const TextureDesc& target) noexcept {
     GraphicsPipelineDesc desc;
     desc.vertexLayout = mesh;
-    desc.depth = &target;
-    // color stays empty, polygonMode FILL, blending Opaque. The last is dead here --
-    // blend state is per colour attachment and there are none.
+    // One target, and its usage says it is the depth one. No colour follows, which
+    // is what shadow.frag declaring no outputs means -- polygonMode stays FILL and
+    // blending stays Opaque, the second of which is dead here: blend state is per
+    // colour attachment and there are none.
+    desc.targets[0] = &target;
     return desc;
 }
 
@@ -46,8 +48,8 @@ bool CreateShadowPass(const Descriptors& descriptors,
         ShadowPass::PerFrame& frame = out->frames[i];
         frame.depth = maps[i];
 
-            const TextureDesc* const noColour[kMaxColorTargets]{};
-        if (!SameAttachmentFormats(AttachmentFormatsOf(noColour, &maps[i]->desc),
+        const TextureDesc* const drawnInto[] = {&maps[i]->desc};
+        if (!SameAttachmentFormats(AttachmentFormatsOf(drawnInto, 1),
                                    pipeline.formats)) {
             LOG("[vk] shadow map %u and its pipeline disagree about the formats\n", i);
             return false;

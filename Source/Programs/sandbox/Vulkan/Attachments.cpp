@@ -23,33 +23,47 @@
 // The caller fills it now and this function answers only what the GPU can: whether
 // that format works, which depth format exists, and how many samples.
 
-AttachmentFormats AttachmentFormatsOf(const TextureDesc* const color[kMaxColorTargets],
-                                      const TextureDesc* depth) noexcept {
+AttachmentFormats AttachmentFormatsOf(const TextureDesc* const targets[],
+                                      uint32_t count) noexcept {
     AttachmentFormats formats{};
 
     // The first desc given decides samples, and every other one is compared to it.
     // A pass with no targets at all never reaches a pipeline, so the default stands.
     const TextureDesc* first = nullptr;
 
-    // The list ends where it ends. Nobody says how long it is.
-    for (uint32_t i = 0; i < kMaxColorTargets && color[i] != nullptr; ++i) {
-        formats.color[i] = color[i]->format;
-        formats.colorCount = i + 1;
+    for (uint32_t i = 0; i < count && targets[i] != nullptr; ++i) {
+        const TextureDesc& target = *targets[i];
 
-        if (first == nullptr) { first = color[i]; }
-        else if (color[i]->samples != first->samples) {
-            LOG("[vk] colour target %u is %d-sample where the first is %d-sample\n",
-                i, static_cast<int>(color[i]->samples),
-                static_cast<int>(first->samples));
+        // The usage bits decide which slot this is. A desc carrying both is not a
+        // thing Vulkan has, and one carrying neither is not a render target.
+        const bool isColour = (target.usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) != 0;
+        const bool isDepth =
+            (target.usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0;
+
+        if (isColour == isDepth) {
+            LOG("[vk] target %u has usage 0x%x, which is neither a colour nor a depth"
+                " attachment\n", i, target.usage);
+            continue;
         }
-    }
+        if (isColour) {
+            if (formats.colorCount >= kMaxColorTargets) {
+                LOG("[vk] more than %u colour targets\n", kMaxColorTargets);
+                continue;
+            }
+            formats.color[formats.colorCount] = target.format;
+            formats.colorCount += 1;
+        } else {
+            if (formats.depth != VK_FORMAT_UNDEFINED) {
+                LOG("[vk] target %u is a second depth attachment\n", i);
+                continue;
+            }
+            formats.depth = target.format;
+        }
 
-    if (depth != nullptr) {
-        formats.depth = depth->format;
-        if (first == nullptr) { first = depth; }
-        else if (depth->samples != first->samples) {
-            LOG("[vk] the depth target is %d-sample where the colour is %d-sample\n",
-                static_cast<int>(depth->samples), static_cast<int>(first->samples));
+        if (first == nullptr) { first = &target; }
+        else if (target.samples != first->samples) {
+            LOG("[vk] target %u is %d-sample where the first is %d-sample\n",
+                i, static_cast<int>(target.samples), static_cast<int>(first->samples));
         }
     }
 

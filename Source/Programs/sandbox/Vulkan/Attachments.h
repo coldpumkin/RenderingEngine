@@ -54,20 +54,26 @@ struct AttachmentFormats {
 //
 // **The one projection**, and the only way an AttachmentFormats is ever made.
 //
-// color is always kMaxColorTargets long and **the first null ends it**, so how many
-// there are is the list rather than a number written beside it. A caller used to
-// write both and they could disagree. Either side may be empty -- a depth-only pass
-// gives no colour, a swapchain image no depth.
+// One list, not a colour array beside a depth pointer. What a target is for is in its
+// usage -- COLOR_ATTACHMENT_BIT or DEPTH_STENCIL_ATTACHMENT_BIT -- so a caller
+// separating them was restating by argument position what every desc already says.
+// The projection drops usage, and which slot each format lands in was the one thing
+// it dropped that the caller then had to hand back.
 //
-// A gap is not expressible, on purpose. A fragment stage's output locations have no
-// gaps either -- CheckOutputInterface refuses those -- so a hole here could only be a
-// mistake, and it reads back as a shorter list that the same check catches.
+// Colour order is the list's order, because location 0, 1, 2 is a real order that the
+// fragment stage relies on. Depth is found rather than placed: there is only one, so
+// it has no position to be in.
 //
-// Contract: every desc given must agree about samples. One rasterizationSamples
-//           covers a whole pass, so there is no pipeline that could honour two; a
-//           disagreement is logged and the first one wins.
-AttachmentFormats AttachmentFormatsOf(const TextureDesc* const color[kMaxColorTargets],
-                                      const TextureDesc* depth) noexcept;
+// **The first null ends the list**, so how many targets there are is the list rather
+// than a number written beside it. A gap is not expressible, on purpose -- a fragment
+// stage's output locations have none either, and CheckOutputInterface refuses those.
+//
+// Contract: every desc must agree about samples. One rasterizationSamples covers a
+//           whole pass, so no pipeline could honour two; a disagreement is logged and
+//           the first one wins. At most one target may be a depth target, and a desc
+//           that is neither is a mistake -- both are logged and skipped.
+AttachmentFormats AttachmentFormatsOf(const TextureDesc* const targets[],
+                                      uint32_t count) noexcept;
 
 // The comparison the pass creations make: the descs they were handed, projected, and
 // what their pipeline actually baked. Nobody else can see both ends.
