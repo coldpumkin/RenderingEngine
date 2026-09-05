@@ -2,6 +2,12 @@
 
 #include "Vulkan/Barrier.h"
 
+GraphicsPipelineDesc MakePostPipeline(const TextureDesc& target) noexcept {
+    GraphicsPipelineDesc desc;
+    desc.targets[0] = &target;
+    return desc;
+}
+
 void RefreshPostProcessPass(const Descriptors& descriptors,
                             PostProcessPass* post) noexcept {
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {

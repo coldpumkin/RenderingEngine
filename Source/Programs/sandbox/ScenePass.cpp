@@ -29,6 +29,22 @@ SceneTargetDescs MakeSceneTargets(VkExtent2D extent, VkFormat colour, VkFormat d
 }
 
 // One frame's three images, from the descs that say what they are.
+GraphicsPipelineDesc MakeScenePipeline(const VertexLayout& mesh,
+                                       const SceneTargetDescs& targets) noexcept {
+    GraphicsPipelineDesc desc;
+    desc.vertexLayout = mesh;
+    desc.targets[0] = &targets.color;
+    desc.targets[1] = &targets.depth;
+    return desc;
+}
+
+GraphicsPipelineDesc MakeSceneWirePipeline(const VertexLayout& mesh,
+                                           const SceneTargetDescs& targets) noexcept {
+    GraphicsPipelineDesc desc = MakeScenePipeline(mesh, targets);
+    desc.polygonMode = VK_POLYGON_MODE_LINE;
+    return desc;
+}
+
 bool CreateSceneTargets(const VulkanDevice& dev, const SceneTargetDescs& descs,
                         SceneTargets* out) noexcept {
     return CreateTexture(dev, descs.color, &out->color)

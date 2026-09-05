@@ -71,6 +71,16 @@ bool CreatePostProcessPass(const Descriptors& descriptors,
                            const ShaderProgram& program,
                            const Pipeline& pipeline, PostProcessPass* out) noexcept;
 
+// Output: what the post pipeline is compiled from
+//
+// No vertex layout: fullscreen.vert builds its three points from gl_VertexIndex, and
+// a shader that makes its own vertices needs no buffer described. No depth either --
+// nothing here is hidden behind anything.
+//
+// Contract: target must outlive CreateGraphicsPipeline. The desc points at it.
+GraphicsPipelineDesc MakePostPipeline(const TextureDesc& target) noexcept;
+
+
 // Input:  the pass (its source and pipeline), the slot (cmd, which frame), and the
 //         texture to draw into
 // Effect: appends commands that sample the scene pass's resolve into that texture

@@ -635,45 +635,31 @@ int main() {
     if (!CreateShaderProgram(dev, "Shaders/scene.vert.spv", "Shaders/scene.frag.spv",
                              &renderer.sceneProgram)) { return 1; }
 
-    // The multisample colour and not the resolve: a pipeline bakes what it draws into,
-    // and the resolve is what leaves afterwards.
-    GraphicsPipelineDesc opaqueDesc;
-    opaqueDesc.vertexLayout = VertexInput();
-    opaqueDesc.targets[0] = &sceneTargetDescs.color;
-    opaqueDesc.targets[1] = &sceneTargetDescs.depth;
+    const GraphicsPipelineDesc opaqueDesc =
+        MakeScenePipeline(VertexInput(), sceneTargetDescs);
     if (!CreateGraphicsPipeline(dev, renderer.sceneProgram, opaqueDesc,
                                 &renderer.scenePipeline)) { return 1; }
 
-    // The same desc with one field changed, which is the whole of what a second
-    // variant is. Two pipelines from one program share every set drawn from it.
-    // LINE needs fillModeNonSolid, requested in Core.h.
-    GraphicsPipelineDesc wireDesc = opaqueDesc;
-    wireDesc.polygonMode = VK_POLYGON_MODE_LINE;
+    const GraphicsPipelineDesc wireDesc =
+        MakeSceneWirePipeline(VertexInput(), sceneTargetDescs);
     if (!CreateGraphicsPipeline(dev, renderer.sceneProgram, wireDesc,
                                 &renderer.sceneWirePipeline)) { return 1; }
 
-    // No vertex input, no depth, one sample -- MSAA ends at the resolve this reads.
     // fullscreen.vert keeps its name because it is the half that is not post's: a
     // lighting pass will pair the same module with a different fragment stage.
     if (!CreateShaderProgram(dev, "Shaders/fullscreen.vert.spv",
                              "Shaders/post.frag.spv",
                              &renderer.postProgram)) { return 1; }
 
-    GraphicsPipelineDesc postDesc;
-    postDesc.targets[0] = &swapchainTarget;
+    const GraphicsPipelineDesc postDesc = MakePostPipeline(swapchainTarget);
     if (!CreateGraphicsPipeline(dev, renderer.postProgram, postDesc,
                                 &renderer.postPipeline)) { return 1; }
 
-    // The panel, on top of what the post pass leaves -- the same image, so the same
-    // desc. The only one of the five that blends: a window has to be see-through to
-    // be over anything. y-down because ImGui works in window pixels from the top left.
+    // The panel, on top of what the post pass leaves -- the same image.
     if (!CreateShaderProgram(dev, "Shaders/gui.vert.spv", "Shaders/gui.frag.spv",
                              &renderer.guiProgram)) { return 1; }
 
-    GraphicsPipelineDesc guiDesc;
-    guiDesc.vertexLayout = GuiVertexInput();
-    guiDesc.targets[0] = &swapchainTarget;
-    guiDesc.blending = Blending::Translucent;
+    const GraphicsPipelineDesc guiDesc = MakeGuiPipeline(swapchainTarget);
     if (!CreateGraphicsPipeline(dev, renderer.guiProgram, guiDesc,
                                 &renderer.guiPipeline)) { return 1; }
 

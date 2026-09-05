@@ -108,6 +108,14 @@ void ShowPipeline(const char* name, const Pipeline* pipeline) noexcept {
 
 }   // namespace
 
+GraphicsPipelineDesc MakeGuiPipeline(const TextureDesc& target) noexcept {
+    GraphicsPipelineDesc desc;
+    desc.vertexLayout = GuiVertexInput();
+    desc.targets[0] = &target;
+    desc.blending = Blending::Translucent;
+    return desc;
+}
+
 VertexLayout GuiVertexInput() noexcept {
     // ImDrawVert is {ImVec2 pos, ImVec2 uv, ImU32 col} -- 20 bytes. Its offsets come
     // from offsetof for the same reason the scene's do: a field moving must not need
