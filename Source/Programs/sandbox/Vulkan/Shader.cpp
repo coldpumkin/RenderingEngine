@@ -54,7 +54,14 @@ InterfaceSlot SlotOf(const SpvReflectInterfaceVariable& v) noexcept {
     }
     const uint32_t components = v.numeric.vector.component_count != 0
                               ? v.numeric.vector.component_count : 1;
-    return {v.location, kind, components};
+
+    Interpolation how = Interpolation::Smooth;
+    if ((v.decoration_flags & SPV_REFLECT_DECORATION_FLAT) != 0) {
+        how = Interpolation::Flat;
+    } else if ((v.decoration_flags & SPV_REFLECT_DECORATION_NOPERSPECTIVE) != 0) {
+        how = Interpolation::NoPerspective;
+    }
+    return {v.location, kind, components, how};
 }
 
 // Output: whether this variable sits at a location, which is what makes it part of an
@@ -288,11 +295,24 @@ bool BuildSetLayout(const VulkanDevice& dev,
 // Locations must match one for one. A varying written and never read is legal Vulkan
 // and wasted interpolation; refusing it costs nothing here, since a stage that stops
 // reading something is a stage whose partner should stop writing it.
-// Neighbours in the chain, not vertex-and-fragment: the rule is one, and it is that
-// the producer's outputs are the consumer's inputs. Which two stages those are is the
-// chain's business.
+// Neighbours in the chain, not vertex-and-fragment: three things every pair agrees on,
+// and they are that the producer's outputs are the consumer's inputs. Which two stages
+// those are is the chain's business.
+//
+// On top of those three sits whatever the pair crosses, and the pairs do not all cross
+// the same thing:
+//
+//   VS -> GS/TES    primitive assembly    the consumer's side becomes an array
+//   ... -> FS       the rasterizer        interpolation, and both sides must say the same
+//
+// crossesRasterizer is the second one. The first has no case here yet -- every chain we
+// build is one or two stages long -- and the array traits reflection reports are
+// therefore not read. Measured: a geometry stage reads vColor as OpTypeArray %v3float
+// %uint_3 where the vertex stage wrote a plain %v3float, at the same location, kind and
+// component count. So the day a third stage exists, this function needs that arm too.
 static bool CheckStageInterface(const ProgramStage& producer,
-                                const ProgramStage& consumer) noexcept {
+                                const ProgramStage& consumer,
+                                bool crossesRasterizer) noexcept {
     const ShaderInterface& vs = producer.interface;
     const ShaderInterface& fs = consumer.interface;
     const char* vertPath = producer.path;
@@ -332,6 +352,21 @@ static bool CheckStageInterface(const ProgramStage& producer,
             LOG("[vk] location %u: %s writes %u components, %s reads %u\n",
                 read.location, vertPath, written->componentCount,
                 fragPath, read.componentCount);
+            return false;
+        }
+
+        // Only across the rasterizer, because only there is anything interpolated.
+        // Between two pre-raster stages the value is handed over per vertex and the
+        // decoration means nothing, so comparing it there would refuse a legal chain.
+        //
+        // glslc already refuses an integer fragment input that is not flat -- measured,
+        // "'int' : must be qualified as flat in". What it cannot see is this: it
+        // compiles one file at a time, so a producer that says flat and a consumer that
+        // does not both compile clean and disagree only once they are put together.
+        if (crossesRasterizer && written->interpolation != read.interpolation) {
+            LOG("[vk] location %u: %s writes it %s, %s reads it %s\n",
+                read.location, vertPath, InterpolationName(written->interpolation),
+                fragPath, InterpolationName(read.interpolation));
             return false;
         }
     }
@@ -392,10 +427,18 @@ bool CreateShaderProgram(const VulkanDevice& dev,
         }
     }
 
-    // Neighbours agree, and that is the only rule. Applied to a chain of one it says
-    // nothing, which is right: a lone stage has no partner to disagree with.
+    // Neighbours agree, and what they agree on depends on what the pair crosses.
+    // Applied to a chain of one it says nothing, which is right: a lone stage has no
+    // partner to disagree with.
+    //
+    // The pair whose consumer is the fragment stage is the one crossing the rasterizer,
+    // and a chain has at most one -- there is one fragment stage or none. That makes
+    // this the seam where interpolation is a question, and shadow's single stage the
+    // case where it is not.
     for (uint32_t i = 1; i < count; ++i) {
-        if (!CheckStageInterface(out->stages[i - 1], out->stages[i])) {
+        const bool crossesRasterizer =
+            out->stages[i].interface.stage == VK_SHADER_STAGE_FRAGMENT_BIT;
+        if (!CheckStageInterface(out->stages[i - 1], out->stages[i], crossesRasterizer)) {
             return false;
         }
     }

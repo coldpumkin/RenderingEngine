@@ -41,6 +41,19 @@ enum class NumericKind {
     Uint,
 };
 
+// How a value is carried across the rasterizer. It is a property of one seam and not
+// of a slot in general -- a vertex input is read from a buffer and a fragment output
+// is written to an image, and neither is interpolated. Read on every slot anyway,
+// because reflection reports it per variable and the seam is what decides to compare.
+//
+// spirv-reflect reports these two. Centroid and Sample are SPIR-V decorations it does
+// not surface, so a disagreement in those is past what this can see.
+enum class Interpolation {
+    Smooth,          // the default: perspective-correct
+    NoPerspective,
+    Flat,            // not interpolated at all -- one provoking vertex feeds every fragment
+};
+
 // One end of one location, as the .spv declares it. Not a VkFormat -- a shader has no
 // format, it has a kind and a width in components.
 //
@@ -52,6 +65,7 @@ struct InterfaceSlot {
     uint32_t location = 0;
     NumericKind kind = NumericKind::Unknown;
     uint32_t componentCount = 0;
+    Interpolation interpolation = Interpolation::Smooth;
 };
 
 // For messages. Here and not beside one of its callers, because both interface checks
@@ -116,6 +130,15 @@ struct ShaderInterface {
 
 // For messages. A stage is one bit, so this is a lookup, not a decomposition.
 const char* StageName(VkShaderStageFlags stage) noexcept;
+
+// For messages, and the words are GLSL's.
+inline const char* InterpolationName(Interpolation how) noexcept {
+    switch (how) {
+        case Interpolation::NoPerspective: return "noperspective";
+        case Interpolation::Flat:          return "flat";
+        default:                           return "smooth";
+    }
+}
 
 // A set layout and what the shaders asked for. The handle is opaque, so none of
 // this can be asked back for. types is indexed by binding number; a gap is left at 0.
