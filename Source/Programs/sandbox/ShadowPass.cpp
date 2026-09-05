@@ -29,7 +29,7 @@ bool CreateShadowPass(const Descriptors& descriptors,
     out->mesh = &mesh;
     out->pipeline = &pipeline;
 
-    out->pass.useCount = 1;
+    out->pass.targets[0] = &maps[0]->desc;
     out->pass.uses[0].load = VK_ATTACHMENT_LOAD_OP_CLEAR;
     out->pass.uses[0].store = VK_ATTACHMENT_STORE_OP_STORE;
     out->pass.uses[0].clear.depthStencil.depth = 1.0f;   // nothing seen yet is farthest
@@ -50,9 +50,7 @@ bool CreateShadowPass(const Descriptors& descriptors,
         ShadowPass::PerFrame& frame = out->frames[i];
         frame.depth = maps[i];
 
-        const TextureDesc* const drawnInto[] = {&maps[i]->desc};
-        if (!SameAttachmentFormats(AttachmentFormatsOf(drawnInto, 1),
-                                   pipeline.formats)) {
+        if (!SameAttachmentFormats(PassFormats(out->pass), pipeline.formats)) {
             LOG("[vk] shadow map %u and its pipeline disagree about the formats\n", i);
             return false;
         }
@@ -95,7 +93,7 @@ void RecordShadowPass(const FrameSlot& slot, const ShadowPass& shadow,
     // fragment stage that declares no outputs. TOP_OF_PIPE because nothing outside this
     // command buffer holds the map.
     const Texture* const views[] = {frame.depth};
-    if (!BeginPass(vk, cmd, shadow.pass, views, nullptr, 1,
+    if (!BeginPass(vk, cmd, shadow.pass, views, nullptr,
                    VkRect2D{{0, 0}, extent}, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT)) {
         return;
     }

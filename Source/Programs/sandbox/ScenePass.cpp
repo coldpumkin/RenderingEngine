@@ -76,7 +76,8 @@ bool CreateScenePass(const Descriptors& descriptors,
     out->mesh = &mesh;
     out->pipeline = &pipeline;
 
-    out->pass.useCount = 2;
+    out->pass.targets[0] = &targets[0]->color.desc;
+    out->pass.targets[1] = &targets[0]->depth.desc;
     out->pass.uses[0].load = VK_ATTACHMENT_LOAD_OP_CLEAR;
     out->pass.uses[0].store = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     out->pass.uses[0].clear.color = VkClearColorValue{{0.0f, 0.0f, 0.0f, 1.0f}};
@@ -114,9 +115,7 @@ bool CreateScenePass(const Descriptors& descriptors,
         // The multisample colour and the depth. The resolve is not here: it is not
         // an attachment, it is where EndRendering averages into, and no pipeline
         // bakes it.
-        const TextureDesc* const drawnInto[] = {&targets[i]->color.desc,
-                                                &targets[i]->depth.desc};
-        const AttachmentFormats formats = AttachmentFormatsOf(drawnInto, 2);
+        const AttachmentFormats formats = PassFormats(out->pass);
         if (!SameAttachmentFormats(formats, pipeline.formats)
             || !SameAttachmentFormats(formats, wirePipeline.formats)) {
             LOG("[vk] scene targets %u and a scene pipeline disagree about the formats\n",
@@ -262,7 +261,7 @@ void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
     // outside this command buffer holds any of these images.
     const Texture* const views[] = {&targets.color, &targets.depth};
     const Texture* const resolves[] = {&targets.resolve, nullptr};
-    if (!BeginPass(vk, cmd, scene.pass, views, resolves, 2,
+    if (!BeginPass(vk, cmd, scene.pass, views, resolves,
                    VkRect2D{{0, 0}, extent}, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT)) {
         return;
     }

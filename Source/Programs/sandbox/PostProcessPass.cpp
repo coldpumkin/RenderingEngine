@@ -27,7 +27,7 @@ bool CreatePostProcessPass(const Descriptors& descriptors,
 
     out->pipeline = &pipeline;
 
-    out->pass.useCount = 1;
+    out->pass.targets[0] = &target;
     out->pass.uses[0].load = VK_ATTACHMENT_LOAD_OP_CLEAR;
     out->pass.uses[0].store = VK_ATTACHMENT_STORE_OP_STORE;
     out->pass.uses[0].clear.color = VkClearColorValue{{0.0f, 0.0f, 0.0f, 1.0f}};
@@ -36,9 +36,7 @@ bool CreatePostProcessPass(const Descriptors& descriptors,
     // What it writes, against what the pipeline baked -- the same comparison the other
     // two passes make. It could not be made here until this pass was told what it
     // writes; the pipeline was the only one holding an answer.
-    const TextureDesc* const targets[kMaxColorTargets] = {&target};
-    if (!SameAttachmentFormats(AttachmentFormatsOf(targets, 1),
-                               pipeline.formats)) {
+    if (!SameAttachmentFormats(PassFormats(out->pass), pipeline.formats)) {
         LOG("[vk] the post pass's target and its pipeline disagree about the formats\n");
         return false;
     }
@@ -134,7 +132,7 @@ void RecordPostProcessPass(const FrameSlot& slot, const PostProcessPass& post,
     // before the acquire. Every other attachment in this program is TOP_OF_PIPE because
     // nothing outside the command buffer holds it.
     const Texture* const views[] = {&dest};
-    if (!BeginPass(vk, cmd, post.pass, views, nullptr, 1,
+    if (!BeginPass(vk, cmd, post.pass, views, nullptr,
                    VkRect2D{{0, 0}, destExtent},
                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT)) {
         return;

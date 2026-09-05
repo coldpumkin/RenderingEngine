@@ -216,6 +216,7 @@ bool CreateGui(const VulkanDevice& dev, const Commands& commands,
 // cannot be sized before every pass has said what it wants.
 bool CreateGuiSet(const Descriptors& descriptors,
                   const Pipeline& pipeline,
+                  const TextureDesc& target,
                   Gui* out) noexcept;
 
 // What the panel reads. One struct rather than a growing argument list, and every

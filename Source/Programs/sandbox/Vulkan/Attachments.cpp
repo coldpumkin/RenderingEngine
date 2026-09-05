@@ -138,15 +138,11 @@ bool QueryTargetCapabilities(const VulkanInstance& inst, VkPhysicalDevice gpu,
 bool BeginPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
                const RenderPassDesc& desc,
                const Texture* const views[], const Texture* const resolves[],
-               uint32_t count, VkRect2D area,
-               VkPipelineStageFlags2 waitedStage) noexcept {
-    if (count != desc.useCount) {
-        LOG("[vk] a pass declaring %u attachments was handed %u views\n",
-            desc.useCount, count);
-        return false;
-    }
-    if (count > kMaxColorTargets + 1) {
-        LOG("[vk] a pass of %u attachments, and we hold %u\n", count, kMaxColorTargets + 1);
+               VkRect2D area, VkPipelineStageFlags2 waitedStage) noexcept {
+    uint32_t count = 0;
+    while (count <= kMaxColorTargets && desc.targets[count] != nullptr) { count += 1; }
+    if (count == 0) {
+        LOG("[vk] a pass with no attachments\n");
         return false;
     }
 
@@ -160,15 +156,30 @@ bool BeginPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
             LOG("[vk] attachment %u has no view\n", i);
             return false;
         }
+
+        // The image against the desc it stands in for. Handing these over in another
+        // order is what this catches -- and it catches it wherever the two descs differ,
+        // which is not everywhere: two targets of the same format and sample count are
+        // still tellable apart only by where they sit.
+        const TextureDesc& want = *desc.targets[i];
+        const TextureDesc& got = views[i]->desc;
+        if (got.format != want.format || got.samples != want.samples
+                || got.usage != want.usage) {
+            LOG("[vk] attachment %u was handed an image the pass did not declare "
+                "(format %d/%d, samples %d/%d)\n", i,
+                static_cast<int>(got.format), static_cast<int>(want.format),
+                static_cast<int>(got.samples), static_cast<int>(want.samples));
+            return false;
+        }
+
         const AttachmentUse& use = desc.uses[i];
 
         // The role is the image's, out of the usage it was made with -- the same rule
         // AttachmentFormatsOf reads, so a pass and its pipeline cannot disagree about
         // which slot is which. The layout follows from the role and is not a choice.
-        const bool isColour =
-            (views[i]->desc.usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) != 0;
+        const bool isColour = (want.usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) != 0;
         const bool isDepth =
-            (views[i]->desc.usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0;
+            (want.usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0;
         if (isColour == isDepth) {
             LOG("[vk] attachment %u is neither a colour nor a depth target\n", i);
             return false;

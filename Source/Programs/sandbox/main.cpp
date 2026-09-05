@@ -815,7 +815,7 @@ int main() {
                                                                : VK_CULL_MODE_BACK_BIT)};
     }
 
-    if (!CreateGuiSet(renderer.descriptors, renderer.pipelines.gui,
+    if (!CreateGuiSet(renderer.descriptors, renderer.pipelines.gui, swapchainTarget,
                       &renderer.guiPass)) { return 1; }
 
     renderer.materials.resize(materialCount);

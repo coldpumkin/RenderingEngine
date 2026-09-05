@@ -210,8 +210,8 @@ bool CreateGui(const VulkanDevice& dev, const Commands& commands,
     return true;
 }
 
-bool CreateGuiSet(const Descriptors& descriptors,
-                  const Pipeline& pipeline, Gui* out) noexcept {
+bool CreateGuiSet(const Descriptors& descriptors, const Pipeline& pipeline,
+                  const TextureDesc& target, Gui* out) noexcept {
     // The program is the pipeline's, not a second argument beside it. A pipeline
     // records what it was built from, and taking both let a caller hand over a pair
     // that never met -- which is what the check below used to be for.
@@ -223,9 +223,16 @@ bool CreateGuiSet(const Descriptors& descriptors,
 
     out->pipeline = &pipeline;
 
-    out->pass.useCount = 1;
+    out->pass.targets[0] = &target;
     out->pass.uses[0].load = VK_ATTACHMENT_LOAD_OP_LOAD;
     out->pass.uses[0].store = VK_ATTACHMENT_STORE_OP_STORE;
+
+    // The comparison the other three passes make, and the one this pass could not make
+    // until it said what it draws into.
+    if (!SameAttachmentFormats(PassFormats(out->pass), pipeline.formats)) {
+        LOG("[vk] the gui pass's target and its pipeline disagree about the formats\n");
+        return false;
+    }
     if (!AllocateSets(descriptors, program.setLayouts[0], 1, &out->set)) {
         return false;
     }
@@ -504,7 +511,7 @@ void RecordGuiPass(const FrameSlot& slot, Gui& gui, const Texture& target) noexc
     // Contract: whatever drew here must already be ordered before this. RecordFrame
     // issues that barrier -- what came first is not this pass's to know.
     const Texture* const views[] = {&target};
-    if (!BeginPass(vk, cmd, gui.pass, views, nullptr, 1,
+    if (!BeginPass(vk, cmd, gui.pass, views, nullptr,
                    VkRect2D{{0, 0}, target.desc.extent},
                    VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT)) {
         return;
