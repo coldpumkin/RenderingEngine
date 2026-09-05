@@ -869,6 +869,29 @@ bool RecordFrame(const FrameSlot& slot,
                                        GuiCullMode(gui), GuiDepthCompare(gui)},
                     stats);
     RecordPostProcessPass(slot, post, target);
+
+    // The third edge on this image, and the only one between two passes that both
+    // write it. Here for the same reason the present transition below is: it is about
+    // what runs either side of it, and neither side is allowed to know the other.
+    //
+    // Nothing moves -- both sides want COLOR_ATTACHMENT_OPTIMAL. What is missing
+    // without it is the other two halves of a barrier, ordering and visibility: the
+    // gui pass's loadOp LOAD reads what the post pass's storeOp wrote.
+    //
+    // dstAccess is both ways round because loadOp LOAD reads the image and the panel
+    // then blends over it.
+    //
+    // Issued whether or not the panel draws. A pass that returns early leaves a
+    // barrier that moves nothing between two writes that no longer collide.
+    RecordLayoutTransition(vk, cmd, target.image.handle, VK_IMAGE_ASPECT_COLOR_BIT,
+                           VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                           VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                           VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                           VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT
+                               | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                           VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                           VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+
     RecordGuiPass(slot, gui, target);
 
     // The frame leaves for the presentation engine here, after everything that draws

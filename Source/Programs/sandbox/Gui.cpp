@@ -482,8 +482,10 @@ void RecordGuiPass(const FrameSlot& slot, Gui& gui, const Texture& target) noexc
     VkCommandBuffer cmd = slot.cmd;
 
     // LOAD, unlike the two passes before it: this one draws on top of a finished
-    // picture rather than replacing it. No barrier either -- the post-process pass
-    // left the image COLOR_ATTACHMENT_OPTIMAL, which is what this needs.
+    // picture rather than replacing it.
+    //
+    // Contract: whatever drew here must already be ordered before this. RecordFrame
+    // issues that barrier -- what came first is not this pass's to know.
     VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
     color.imageView = target.view.handle;
     color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
