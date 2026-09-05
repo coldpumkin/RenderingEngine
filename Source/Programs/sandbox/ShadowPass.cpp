@@ -82,17 +82,10 @@ void RecordShadowPass(const FrameSlot& slot, const ShadowPass& shadow,
     const ShadowPass::PerFrame& frame = shadow.frames[slot.index];
     const VkExtent2D extent = frame.depth->desc.extent;
 
-    // oldLayout UNDEFINED: loadOp CLEAR overwrites, and the last frame's map is spent.
-    // The image was left SHADER_READ_ONLY by the frame before, and discarding that is
-    // exactly what UNDEFINED means.
-    RecordLayoutTransition(vk, cmd, frame.depth->image.handle, VK_IMAGE_ASPECT_DEPTH_BIT,
-                           VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
-                           VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT
-                               | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-                           VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                           VK_IMAGE_LAYOUT_UNDEFINED,
-                           VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
-
+    // The one image this pass draws into, and everything that happens to it.
+    //
+    // loadOp CLEAR: the last frame's map is spent, and the image was left
+    // SHADER_READ_ONLY by the frame before -- discarding that is what CLEAR means here.
     // storeOp STORE, unlike the scene pass's depth: this one is the product.
     VkRenderingAttachmentInfo depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
     depth.imageView = frame.depth->view.handle;
@@ -100,6 +93,13 @@ void RecordShadowPass(const FrameSlot& slot, const ShadowPass& shadow,
     depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     depth.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     depth.clearValue.depthStencil.depth = 1.0f;   // nothing seen yet is farthest
+
+    // Read out of the attachment above rather than written again: CLEAR is what makes
+    // the old contents dead, and DEPTH_ATTACHMENT_OPTIMAL is what says which stage
+    // writes it. TOP_OF_PIPE because nothing outside this command buffer holds the map.
+    RecordAttachmentTransition(vk, cmd, frame.depth->image.handle,
+                               VK_IMAGE_ASPECT_DEPTH_BIT, depth,
+                               VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT);
 
     // colorAttachmentCount 0 and no pColorAttachments. The pipeline was compiled the
     // same way, from a fragment stage that declares no outputs.
@@ -150,11 +150,11 @@ void RecordShadowPass(const FrameSlot& slot, const ShadowPass& shadow,
     // Handed over here rather than at the top of the scene pass. The pass that wrote
     // an image is what knows when it stopped writing, and this keeps the scene pass
     // from having to name a pass it only reads through a descriptor.
-    RecordLayoutTransition(vk, cmd, frame.depth->image.handle, VK_IMAGE_ASPECT_DEPTH_BIT,
-                           VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-                           VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                           VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                           VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                           VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    //
+    // The three values passed are this pass's own -- where it stopped writing, and the
+    // layout it wrote in. Nothing about the reader is named here.
+    RecordSampledTransition(vk, cmd, frame.depth->image.handle, VK_IMAGE_ASPECT_DEPTH_BIT,
+                            VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                            VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
 }

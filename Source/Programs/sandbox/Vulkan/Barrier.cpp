@@ -26,3 +26,50 @@ void RecordLayoutTransition(const VolkDeviceTable& vk, VkCommandBuffer cmd, VkIm
     dep.pImageMemoryBarriers = &barrier;
     vk.vkCmdPipelineBarrier2(cmd, &dep);
 }
+
+void RecordAttachmentTransition(const VolkDeviceTable& vk, VkCommandBuffer cmd,
+                                VkImage image, VkImageAspectFlags aspect,
+                                const VkRenderingAttachmentInfo& attachment,
+                                VkPipelineStageFlags2 waitedStage) noexcept {
+    if (attachment.loadOp == VK_ATTACHMENT_LOAD_OP_LOAD) {
+        LOG("[vk] an attachment that loads needs the barrier its writer's frame issues\n");
+        return;
+    }
+
+    VkPipelineStageFlags2 dstStage = 0;
+    VkAccessFlags2 dstAccess = 0;
+    switch (attachment.imageLayout) {
+        case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
+            dstStage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+            dstAccess = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+            break;
+        case VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL:
+            // Both halves of the test, because the driver picks which one runs.
+            dstStage = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT
+                     | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+            dstAccess = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+            break;
+        default:
+            LOG("[vk] layout %d is not one an attachment is drawn into here\n",
+                static_cast<int>(attachment.imageLayout));
+            return;
+    }
+
+    // srcAccess 0 with any waitedStage: nothing written before this is read after it.
+    // UNDEFINED discards the contents, which is what makes that true.
+    RecordLayoutTransition(vk, cmd, image, aspect,
+                           waitedStage, 0,
+                           dstStage, dstAccess,
+                           VK_IMAGE_LAYOUT_UNDEFINED, attachment.imageLayout);
+}
+
+void RecordSampledTransition(const VolkDeviceTable& vk, VkCommandBuffer cmd,
+                             VkImage image, VkImageAspectFlags aspect,
+                             VkPipelineStageFlags2 srcStage, VkAccessFlags2 srcAccess,
+                             VkImageLayout oldLayout) noexcept {
+    RecordLayoutTransition(vk, cmd, image, aspect,
+                           srcStage, srcAccess,
+                           VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                           VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                           oldLayout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+}

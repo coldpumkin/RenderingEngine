@@ -100,29 +100,19 @@ void RecordPostProcessPass(const FrameSlot& slot, const PostProcessPass& post,
     const Texture& dest = target;
     const VkExtent2D destExtent = dest.desc.extent;
 
-    // Written as an attachment, read as a texture -- that is this whole pass. The
-    // layout must equal the one recorded into the descriptor set.
-    RecordLayoutTransition(vk, cmd, source.image.handle, VK_IMAGE_ASPECT_COLOR_BIT,
-                           VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                           VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                           VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                           VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                           VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-
-    // oldLayout UNDEFINED for the same reason as the scene pass's colour: loadOp is
-    // DONT_CARE below, so whatever the presentation engine left here is dead.
+    // The image this pass reads. Written as an attachment by the pass before, read as
+    // a texture here -- and the layout must equal the one recorded into the set.
     //
-    // srcStage must overlap SubmitFrame's wait stage, or this transition can run ahead
-    // of the acquire.
-    RecordLayoutTransition(vk, cmd, dest.image.handle, VK_IMAGE_ASPECT_COLOR_BIT,
-                           VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, 0,
-                           VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                           VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                           VK_IMAGE_LAYOUT_UNDEFINED,
-                           VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    // The three values passed are the scene pass's, not this one's: a reader cannot
+    // work out where its input stopped being written. That they are spelled out here
+    // is what a reader transitioning someone else's product costs.
+    RecordSampledTransition(vk, cmd, source.image.handle, VK_IMAGE_ASPECT_COLOR_BIT,
+                            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
-    // Window sized, unlike the scene pass. The sampler's LINEAR filter scales.
+    // The image this pass draws into. Window sized, unlike the scene pass -- the
+    // sampler's LINEAR filter scales.
     VkRenderingAttachmentInfo swapColor{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
     swapColor.imageView = dest.view.handle;
     swapColor.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
@@ -138,6 +128,18 @@ void RecordPostProcessPass(const FrameSlot& slot, const PostProcessPass& post,
     swapColor.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     swapColor.clearValue.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
     swapColor.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+    // Read out of the attachment above: CLEAR is what makes whatever the presentation
+    // engine left here dead, so oldLayout comes out UNDEFINED.
+    //
+    // The waited stage is the one argument this pass has to know rather than derive.
+    // The presentation engine owns this image until the acquire, and SubmitFrame's
+    // semaphore waits at COLOR_ATTACHMENT_OUTPUT for it -- a transition scheduled
+    // ahead of that would run before the acquire. Every other attachment here is
+    // TOP_OF_PIPE because nothing outside the command buffer holds it.
+    RecordAttachmentTransition(vk, cmd, dest.image.handle, VK_IMAGE_ASPECT_COLOR_BIT,
+                               swapColor,
+                               VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT);
 
     VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
     rendering.renderArea.extent = destExtent;

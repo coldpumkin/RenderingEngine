@@ -26,3 +26,50 @@ void RecordLayoutTransition(const VolkDeviceTable& vk, VkCommandBuffer cmd, VkIm
                             VkPipelineStageFlags2 srcStage, VkAccessFlags2 srcAccess,
                             VkPipelineStageFlags2 dstStage, VkAccessFlags2 dstAccess,
                             VkImageLayout oldLayout, VkImageLayout newLayout) noexcept;
+
+
+// The two ways a pass uses an image, as the two barriers they need
+// ----------------------------------------------------------------------------
+//
+// A pass draws into some images and reads others, and those are not the same
+// question. What has to be true before it runs differs, and so does which half of the
+// barrier the pass can answer for itself:
+//
+//   draws into   the attachment already says it. loadOp is whether anything before
+//                this matters, imageLayout is what it is about to become
+//   reads        the destination is the reader's own; the source is whoever wrote it,
+//                which a reader cannot know and a writer can
+//
+// Both still take the aspect. An Image does not carry the format it was made from, so
+// nothing here can work it out -- that is the same gap AspectOf sits behind in
+// Image.cpp, private to the file that has a format to ask.
+
+// Effect: appends the barrier that puts an image where this attachment expects it
+//
+// loadOp CLEAR and DONT_CARE overwrite, so oldLayout is UNDEFINED and no earlier write
+// has to be made visible. The destination comes from imageLayout: an attachment is
+// either drawn into as colour or tested and written as depth, and the layout says
+// which. Any other layout is refused rather than guessed at.
+//
+// waitedStage is what already waits on this image from outside this command buffer,
+// and is TOP_OF_PIPE when nothing does. The swapchain image is the one that is not:
+// SubmitFrame's semaphore waits at COLOR_ATTACHMENT_OUTPUT for it, and a transition
+// scheduled ahead of that would run before the acquire.
+//
+// Contract: loadOp must not be LOAD. Loading reads what came before, and what wrote it
+//           is not in the attachment -- that barrier is the frame's to issue.
+void RecordAttachmentTransition(const VolkDeviceTable& vk, VkCommandBuffer cmd,
+                                VkImage image, VkImageAspectFlags aspect,
+                                const VkRenderingAttachmentInfo& attachment,
+                                VkPipelineStageFlags2 waitedStage) noexcept;
+
+// Effect: appends the barrier that makes an image readable by a fragment stage
+//
+// The destination half is not taken, because every reader here is the same one: a
+// sampler in a fragment stage. The source half is, and which pass passes it says
+// something -- a pass publishing what it just wrote passes its own stage and layout,
+// while a pass transitioning someone else's product passes facts it had to be told.
+void RecordSampledTransition(const VolkDeviceTable& vk, VkCommandBuffer cmd,
+                             VkImage image, VkImageAspectFlags aspect,
+                             VkPipelineStageFlags2 srcStage, VkAccessFlags2 srcAccess,
+                             VkImageLayout oldLayout) noexcept;
