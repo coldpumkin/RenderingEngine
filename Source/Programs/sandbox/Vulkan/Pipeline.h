@@ -123,13 +123,16 @@ struct GraphicsPipelineDesc {
     // Needs primitiveTopologyListRestart on a list topology.
     VkBool32 primitiveRestart = VK_FALSE;
 
-    // What it draws into, the first null ending the list. Each desc's usage says whether
-    // it is colour or depth, so one list: colour order is the list's order, depth has no
-    // position. One longer than the colour ceiling.
+    // The contract it is compiled against, and not the images that will satisfy it.
     //
-    // Pointers, read during creation only -- a resize remakes these at a new extent and
-    // rebuilds no pipeline, so Pipeline keeps the projection.
-    const TextureDesc* targets[kMaxColorTargets + 1]{};
+    // VkPipelineRenderingCreateInfo takes colour formats, a depth format and a stencil
+    // one; the sample count comes from the multisample state. A resource is named
+    // nowhere in either, so naming one here claimed a dependency that does not exist --
+    // and it was that claim which made a target list the only way to say what a
+    // pipeline draws into, before any image the swapchain will hand over exists.
+    //
+    // AttachmentFormatsFor builds one out of descs with the roles said by position.
+    AttachmentFormats formats;
 
     // LINE needs the fillModeNonSolid feature, which Core.h asks for and Device.cpp
     // refuses a GPU without.

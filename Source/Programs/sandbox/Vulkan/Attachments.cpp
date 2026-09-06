@@ -83,52 +83,26 @@ AttachmentFormats AttachmentFormatsOf(const TextureDesc* const targets[],
     return formats;
 }
 
-AttachmentFormats AttachmentFormatsOf(const TextureDesc* const targets[],
-                                      uint32_t count) noexcept {
-    AttachmentFormats formats{};
+AttachmentFormats AttachmentFormatsFor(const TextureDesc* const colour[],
+                                       uint32_t colourCount,
+                                       const TextureDesc* depth) noexcept {
+    // Built into the one shape the projection reads, so there is one place that turns
+    // descs and roles into a contract rather than two that could come to differ.
+    const TextureDesc* targets[kMaxColorTargets + 1]{};
+    AttachmentUse uses[kMaxColorTargets + 1]{};
 
-    // The first desc given decides samples, and every other one is compared to it.
-    // A pass with no targets at all never reaches a pipeline, so the default stands.
-    const TextureDesc* first = nullptr;
-
-    for (uint32_t i = 0; i < count && targets[i] != nullptr; ++i) {
-        const TextureDesc& target = *targets[i];
-
-        // The usage bits decide which slot this is. A desc carrying both is not a
-        // thing Vulkan has, and one carrying neither is not a render target.
-        const bool isColour = (target.usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) != 0;
-        const bool isDepth =
-            (target.usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0;
-
-        if (isColour == isDepth) {
-            LOG("[vk] target %u has usage 0x%x, which is neither a colour nor a depth"
-                " attachment\n", i, target.usage);
-            continue;
-        }
-        if (isColour) {
-            if (formats.colorCount >= kMaxColorTargets) {
-                LOG("[vk] more than %u colour targets\n", kMaxColorTargets);
-                continue;
-            }
-            formats.color[formats.colorCount] = target.format;
-            formats.colorCount += 1;
-        } else {
-            if (formats.depth != VK_FORMAT_UNDEFINED) {
-                LOG("[vk] target %u is a second depth attachment\n", i);
-                continue;
-            }
-            formats.depth = target.format;
-        }
-
-        if (first == nullptr) { first = &target; }
-        else if (target.samples != first->samples) {
-            LOG("[vk] target %u is %d-sample where the first is %d-sample\n",
-                i, static_cast<int>(target.samples), static_cast<int>(first->samples));
-        }
+    uint32_t count = 0;
+    for (uint32_t i = 0; i < colourCount && i < kMaxColorTargets; ++i) {
+        targets[count] = colour[i];
+        uses[count].role = AttachmentRole::Color;
+        ++count;
     }
-
-    if (first != nullptr) { formats.samples = first->samples; }
-    return formats;
+    if (depth != nullptr) {
+        targets[count] = depth;
+        uses[count].role = AttachmentRole::Depth;
+        ++count;
+    }
+    return AttachmentFormatsOf(targets, uses, count);
 }
 
 bool QueryTargetCapabilities(const VulkanInstance& inst, VkPhysicalDevice gpu,

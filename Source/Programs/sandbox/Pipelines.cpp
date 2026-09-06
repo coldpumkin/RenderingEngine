@@ -12,9 +12,9 @@ GraphicsPipelineDesc ShadowDesc(const ShaderProgram& program,
     GraphicsPipelineDesc desc;
     desc.program = &program;
     desc.vertexLayout = sources.meshLayout;
-    // One target, and its usage says it is the depth one. No colour follows, which is
-    // what a program with no fragment stage means -- so blend[] stays empty.
-    desc.targets[0] = sources.shadowDepth;
+    // Depth and no colour, which is what a program with no fragment stage means -- so
+    // blend[] stays empty. The null says it: there is no colour attachment to name.
+    desc.formats = AttachmentFormatsFor(nullptr, 0, sources.shadowDepth);
 
     // ViewportY::Down settles the direction the map's v axis runs; a reader turning ndc
     // back into a uv has to use this sign. The winding rides along and has no effect
@@ -30,10 +30,10 @@ GraphicsPipelineDesc SceneDesc(const ShaderProgram& program,
     GraphicsPipelineDesc desc;
     desc.program = &program;
     desc.vertexLayout = sources.meshLayout;
-    // The multisample colour and the depth, not the resolve: a pipeline bakes what it
-    // draws into, and the resolve is what leaves afterwards.
-    desc.targets[0] = sources.sceneColor;
-    desc.targets[1] = sources.sceneDepth;
+    // The multisample colour and the depth, not the resolve: what a pipeline is
+    // compiled against is what it draws into, and the resolve is what leaves afterwards.
+    const TextureDesc* const colour[] = {sources.sceneColor};
+    desc.formats = AttachmentFormatsFor(colour, 1, sources.sceneDepth);
     desc.blend[0] = NoBlend();
 
     // Up, because a y-up world's projection was built that way; the winding rides along
@@ -68,10 +68,9 @@ GraphicsPipelineDesc GeometryDesc(const ShaderProgram& program,
 
     // In geometry.frag's output order, and CheckOutputInterface holds the pipeline to
     // declaring exactly as many as the shader writes.
-    desc.targets[0] = sources.gAlbedo;
-    desc.targets[1] = sources.gNormal;
-    desc.targets[2] = sources.gMaterial;
-    desc.targets[3] = sources.gDepth;
+    const TextureDesc* const colour[] = {sources.gAlbedo, sources.gNormal,
+                                        sources.gMaterial};
+    desc.formats = AttachmentFormatsFor(colour, 3, sources.gDepth);
     desc.blend[0] = NoBlend();
     desc.blend[1] = NoBlend();
     desc.blend[2] = NoBlend();
@@ -94,7 +93,8 @@ GraphicsPipelineDesc LightingDesc(const ShaderProgram& program,
                                   const PipelineSources& sources) noexcept {
     GraphicsPipelineDesc desc;
     desc.program = &program;
-    desc.targets[0] = sources.sceneResolve;
+    const TextureDesc* const colour[] = {sources.sceneResolve};
+    desc.formats = AttachmentFormatsFor(colour, 1, nullptr);
     desc.blend[0] = NoBlend();
 
     // No vertex layout and cull BACK, the same two answers the post pipeline gives for
@@ -108,7 +108,8 @@ GraphicsPipelineDesc PostDesc(const ShaderProgram& program,
                               const PipelineSources& sources) noexcept {
     GraphicsPipelineDesc desc;
     desc.program = &program;
-    desc.targets[0] = sources.swapchain;
+    const TextureDesc* const colour[] = {sources.swapchain};
+    desc.formats = AttachmentFormatsFor(colour, 1, nullptr);
     desc.blend[0] = NoBlend();
 
     // No vertex layout: fullscreen.vert builds its three points from gl_VertexIndex,
@@ -124,7 +125,8 @@ GraphicsPipelineDesc GuiDesc(const ShaderProgram& program,
     GraphicsPipelineDesc desc;
     desc.program = &program;
     desc.vertexLayout = sources.guiLayout;
-    desc.targets[0] = sources.swapchain;
+    const TextureDesc* const colour[] = {sources.swapchain};
+    desc.formats = AttachmentFormatsFor(colour, 1, nullptr);
     // The only one of the five that blends: a panel has to be see-through to be over
     // anything. No depth -- it draws last, on top.
     desc.blend[0] = AlphaBlend();

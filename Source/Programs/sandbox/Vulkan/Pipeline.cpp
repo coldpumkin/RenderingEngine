@@ -313,12 +313,11 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     //
     // A rebuild reaches here with all of that already made, which is why the rebuild
     // does not strand the sets allocated from those layouts.
-    // The descs handed in, reduced to what compiling actually needs. Everything below
-    // reads this, and it is what the Pipeline keeps.
-    const AttachmentFormats formats =
-        AttachmentFormatsOf(desc.targets, kMaxColorTargets + 1);
+    // Handed in already reduced. Everything below reads this, and it is what the
+    // Pipeline keeps.
+    const AttachmentFormats& formats = desc.formats;
 
-    // What it was built from, kept. The target pointers are not: their projection is.
+    // What it was built from, kept.
     pipeline.vertexLayout = desc.vertexLayout;
     pipeline.formats = formats;
     pipeline.polygonMode = desc.polygonMode;

@@ -101,11 +101,14 @@ AttachmentFormats AttachmentFormatsOf(const TextureDesc* const targets[],
                                       const AttachmentUse uses[],
                                       uint32_t count) noexcept;
 
-// The same for a caller with no roles to give. A graphics pipeline holds a bare list of
-// targets, so this is the one place left that works a role out of a usage bit instead
-// of being told it -- and the reason to move a pipeline off a target list.
-AttachmentFormats AttachmentFormatsOf(const TextureDesc* const targets[],
-                                      uint32_t count) noexcept;
+// Output: the same contract, with the roles said by which argument a desc arrives as
+//
+// For a caller that has no uses[] to point at -- a pipeline is compiled against a
+// contract and has no pass to take one from. Position is the declaration here: colour
+// order is the array's order, and depth is null for a pass that has none.
+AttachmentFormats AttachmentFormatsFor(const TextureDesc* const colour[],
+                                       uint32_t colourCount,
+                                       const TextureDesc* depth) noexcept;
 
 // One render pass instance, as far as it is settled before there is a frame.
 //
