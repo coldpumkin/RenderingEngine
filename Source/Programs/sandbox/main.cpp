@@ -1191,13 +1191,24 @@ int main() {
         // one camera, one place its position is written down.
         const Camera camera = MakeCamera(CameraState{{eye, orientation}, kFovDegrees},
                                          sceneTargetDescs.color);
-        renderer.cameras[slot.index].value =
-            {camera.view, camera.proj, glm::vec4{camera.state.transform.position, 0.0f}};
+
+        // Named and not positional, in all three. Every one of these blocks has two
+        // adjacent fields of the same type -- two mat4 here, two mat4 in the shadow,
+        // two vec4 in the light -- so writing them in the wrong order compiles, draws
+        // a wrong picture, and passes every check we have: reflection compares the
+        // layout, not which matrix went in which slot. C++20 requires designators to
+        // follow declaration order, so a transposition is a compile error instead.
+        renderer.cameras[slot.index].value = {.view = camera.view,
+                                              .proj = camera.proj,
+                                              .viewPos = glm::vec4{
+                                                  camera.state.transform.position, 0.0f}};
 
         // What reaches a surface, and where its shadow map was drawn from.
         renderer.lights[slot.index].value =
-            {glm::vec4{lightDir, 0.0f}, glm::vec4{1.0f, 0.95f, 0.9f, 0.15f}};
-        renderer.shadows[slot.index].value = {lightView, lightProj};
+            {.direction = glm::vec4{lightDir, 0.0f},
+             .color = glm::vec4{1.0f, 0.95f, 0.9f, 0.15f}};
+        renderer.shadows[slot.index].value = {.lightView = lightView,
+                                              .lightProj = lightProj};
 
         // Draw it
         // --------------------------------------------------------------------
