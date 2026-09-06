@@ -71,12 +71,24 @@ bool CreateMaterials(const VulkanDevice& dev,
     return true;
 }
 
-glm::mat4 ViewFromTransform(const Transform& transform) noexcept {
-    // The inverse of T(p) * R(q), which is R(q^-1) * T(-p).
-    const glm::quat back = glm::conjugate(transform.orientation);
+glm::mat4 ViewFromPose(const Pose& pose) noexcept {
+    // The inverse of T(p) * R(q), which is R(q^-1) * T(-p). True because the pose is
+    // rigid; a scale in here and this line would be wrong rather than incomplete.
+    const glm::quat back = glm::conjugate(pose.orientation);
 
     glm::mat4 out = glm::mat4_cast(back);
-    out[3] = glm::vec4{back * -transform.position, 1.0f};
+    out[3] = glm::vec4{back * -pose.position, 1.0f};
+    return out;
+}
+
+glm::mat4 ModelFromTransform(const Transform& transform) noexcept {
+    // T * R * S expanded: R's columns carry the scale, and the translation is written
+    // into the fourth. Three matrix multiplies would land on the same numbers.
+    glm::mat4 out = glm::mat4_cast(transform.orientation);
+    out[0] *= transform.scale.x;
+    out[1] *= transform.scale.y;
+    out[2] *= transform.scale.z;
+    out[3] = glm::vec4{transform.position, 1.0f};
     return out;
 }
 
@@ -203,14 +215,14 @@ VkImageUsageFlags DepthTargetUsage() noexcept {
          | MakeShadowTarget(VkExtent2D{}, TargetCapabilities{}).usage;
 }
 
-void SetDrawModel(DrawItem* item, const glm::mat4& model) noexcept {
-    item->model = model;
+void SetDrawTransform(DrawItem* item, const Transform& transform) noexcept {
+    item->model = ModelFromTransform(transform);
 
     // The inverse-transpose of the upper 3x3. For a rotation it is the same matrix,
     // and for a uniform scale it differs only in length -- which the fragment stage
     // normalizes away. It earns its place the moment a scale is not uniform, and
     // nothing here would have said so.
-    const glm::mat3 normal = glm::transpose(glm::inverse(glm::mat3(model)));
+    const glm::mat3 normal = glm::transpose(glm::inverse(glm::mat3(item->model)));
     item->normal[0] = glm::vec4{normal[0], 0.0f};
     item->normal[1] = glm::vec4{normal[1], 0.0f};
     item->normal[2] = glm::vec4{normal[2], 0.0f};

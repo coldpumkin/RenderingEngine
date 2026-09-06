@@ -258,7 +258,18 @@ bool CreateMaterials(const VulkanDevice& dev,
 // proj[1][1] *= -1, and the normal rules all read the same y.
 constexpr glm::vec3 kWorldUp{0.0f, 1.0f, 0.0f};
 
-struct Transform {
+// Rigid: rotation and translation, and deliberately no scale
+//
+// **Scale is not a field this forgot.** Rotation and translation preserve distances
+// and angles, which is what makes the inverse below a conjugate and a negation. Give
+// this a scale and that inverse stops being the inverse -- quietly, because the
+// function reads two fields and would go on reading two. A wrong answer, not a
+// missing feature, which is why the two are separate types rather than one with a
+// field somebody has to remember not to set.
+//
+// A camera holds one of these. So does the light's viewpoint, in effect: ShadowView
+// places an eye and looks at a point, and never scales anything.
+struct Pose {
     glm::vec3 position{};
 
     // w, x, y, z. The identity looks down -z with +y up, which is the convention
@@ -266,15 +277,36 @@ struct Transform {
     glm::quat orientation{1.0f, 0.0f, 0.0f, 0.0f};
 };
 
-// Output: the view matrix -- the inverse of that transform
+// Output: the view matrix -- the inverse of that pose
 //
 // Not glm::inverse. A unit quaternion's conjugate is its inverse and a rigid
 // transform's is [R^T | -R^T t], so the general cofactor path would spend work
-// deriving what is already known.
+// deriving what is already known -- and it is only known because the input is rigid.
 //
 // This is the second half of what lookAt does: it builds a basis and then transposes
 // it. Only the first half goes away here.
-glm::mat4 ViewFromTransform(const Transform& transform) noexcept;
+glm::mat4 ViewFromPose(const Pose& pose) noexcept;
+
+// Where something is, which way it is turned, and how big it is
+//
+// The three glTF stores on a node and the three Unreal's FTransform holds, in that
+// order for that reason -- a loader reading nodes hands over exactly this.
+//
+// Scale is the whole of the difference from a Pose and the difference is not
+// cosmetic. With a non-uniform scale a normal stops transforming like a position and
+// needs the inverse transpose instead; the two rules were built side by side and
+// disagreed on 38.74% of pixels. SetDrawTransform is where that split lives.
+struct Transform {
+    glm::vec3 position{};
+    glm::quat orientation{1.0f, 0.0f, 0.0f, 0.0f};
+    glm::vec3 scale{1.0f};
+};
+
+// Output: the model matrix, T * R * S
+//
+// The columns of the rotation scaled and a translation written in, rather than three
+// matrix multiplies: the same answer, and it is what T * R * S is once expanded.
+glm::mat4 ModelFromTransform(const Transform& transform) noexcept;
 
 // The camera's state, as whatever moves it holds it
 //
@@ -285,7 +317,9 @@ glm::mat4 ViewFromTransform(const Transform& transform) noexcept;
 //   here          where it is, which way it is turned, how wide it sees
 //   the renderer  what shape the picture is, and what range becomes depth
 struct CameraState {
-    Transform transform{};
+    // A Pose and not a Transform: a camera cannot be scaled. What that would mean is
+    // already spelled by the field below.
+    Pose pose{};
 
     // The one projection input that is not the renderer's. "How wide do I want to
     // see" is a choice the thing holding the camera makes; an aspect is a fact about
@@ -703,8 +737,8 @@ struct IndexRange {
 // The material arrived here the day a second texture did. The camera has not: there
 // is still one, and it moves in the same way when there are two.
 struct DrawItem {
-    // Set together through SetDrawModel: normal is derived from model and the two must
-    // not be written apart.
+    // Set together through SetDrawTransform: normal is derived from model and the two
+    // must not be written apart.
     glm::mat4 model{1.0f};
     glm::vec4 normal[3]{{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}};
 
@@ -729,12 +763,16 @@ struct DrawItem {
     int32_t vertexOffset = 0;
 };
 
-// Effect: sets a draw's model matrix and the normal matrix that goes with it.
+// Effect: derives a draw's two matrices from the transform they represent
 //
-// One call because the two are one fact. Setting model alone leaves normals answering
-// to the previous transform, which is invisible until a scale is not uniform and
+// Takes state and not a matrix, which is the same cut the camera and the light were
+// given: what an object is belongs to whatever owns the scene, and both matrices are
+// this layer's rendering of it.
+//
+// One call because the two are one fact. Writing model alone leaves the normals
+// answering to the previous transform -- invisible while every scale is uniform, and
 // silently wrong after that.
-void SetDrawModel(DrawItem* item, const glm::mat4& model) noexcept;
+void SetDrawTransform(DrawItem* item, const Transform& transform) noexcept;
 
 
 // What a pass is asked to draw

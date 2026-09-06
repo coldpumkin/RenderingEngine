@@ -66,7 +66,6 @@
 
 // One header at a time. <glm/ext.hpp> was dropped when vendoring (VERSION.md).
 #include <glm/common.hpp>                  // clamp
-#include <glm/ext/matrix_transform.hpp>    // scale
 #include <glm/geometric.hpp>               // normalize, cross
 #include <glm/gtc/quaternion.hpp>          // angleAxis, and turning a vector by one
 #include <glm/trigonometric.hpp>           // radians
@@ -688,11 +687,20 @@ int main() {
         return 1;
     }
 
-    // glTF gives Sponza in centimetres and puts the scale on its one node. Applied
-    // here rather than baked into the positions so the file stays the source of truth.
+    // Where the scene's one object is, as state rather than as a matrix
+    //
+    // glTF gives Sponza in centimetres and puts the scale on its one node. Applied here
+    // rather than baked into the positions so the file stays the source of truth.
+    //
+    // **A stand-in, like kSceneCenter.** There is one of these because there is one
+    // object and the loader drops the node transforms it reads; a Scene would hold one
+    // per object. Named as a Transform anyway, because the renderer's side of the line
+    // does not change when there are two -- it derives a model matrix from a transform
+    // either way.
     constexpr float kSponzaScale = 0.008f;
-    const glm::mat4 sceneModel = glm::scale(glm::mat4(1.0f), glm::vec3{kSponzaScale});
-    for (DrawItem& item : items) { SetDrawModel(&item, sceneModel); }
+    const Transform sceneTransform{glm::vec3{0.0f}, glm::quat{1.0f, 0.0f, 0.0f, 0.0f},
+                                   glm::vec3{kSponzaScale}};
+    for (DrawItem& item : items) { SetDrawTransform(&item, sceneTransform); }
 
     // The same layout the scene pipeline was built with, said once here and compared
     // in CreateScenePass. It used to be sizeof(Vertex) alone, which agreed with the
@@ -988,7 +996,7 @@ int main() {
     //
     // **A stand-in, and worth naming as one.** This is not a policy the renderer chose;
     // it is a fact about the scene, standing in for something a scene would say. There
-    // is one of it because there is one Sponza and it does not move, and kSponzaScale
+    // is one of it because there is one Sponza and it does not move, and sceneTransform
     // above is the same fact wearing different clothes. The renderer takes it as an
     // argument rather than holding it, so neither of those becomes part of a type.
     //
@@ -1192,9 +1200,9 @@ int main() {
         // nothing that changes at all. Held when nothing can move it, derived when
         // something can.
         renderer.cameras[slot.index].value =
-            {.view = ViewFromTransform(camera.transform),
+            {.view = ViewFromPose(camera.pose),
              .proj = ProjectionFor(camera.fovDegrees, sceneTargetDescs.color),
-             .viewPos = glm::vec4{camera.transform.position, 1.0f}};
+             .viewPos = glm::vec4{camera.pose.position, 1.0f}};
 
         // What reaches a surface, and where its shadow map was drawn from. The second
         // is made here rather than held: it turns with the light every frame, while
