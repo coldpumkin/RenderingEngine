@@ -92,6 +92,7 @@ bool CreateGeometryPass(const Descriptors& descriptors,
     // Clear 1.0 = farthest, paired with compareOp LESS. **STORE and not DONT_CARE**:
     // the lighting pass rebuilds a world position from this, so unlike the scene
     // pass's depth it does not end with the pass that wrote it.
+    out->pass.uses[3].role = AttachmentRole::Depth;
     out->pass.uses[3].load = VK_ATTACHMENT_LOAD_OP_CLEAR;
     out->pass.uses[3].store = VK_ATTACHMENT_STORE_OP_STORE;
     out->pass.uses[3].clear.depthStencil.depth = 1.0f;

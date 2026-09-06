@@ -21,6 +21,29 @@
 // ever wanted more.
 inline constexpr uint32_t kMaxColorTargets = 4;
 
+// What happens to one attachment over one pass, and every field of it is fixed as long
+// as the pass means the same thing. The image it happens to is not: that changes with
+// the frame in flight, so it is an argument to BeginPass.
+//
+// resolveMode is the line between the two. "This pass resolves" is what the pass is;
+// "into that image" is this frame's.
+//
+// **role is an intention and not something to be discovered.** A pass decides that it
+// draws depth here; a format and a usage bit are independent facts that say whether
+// that intention can be honoured. Read back out of usage the two were one thing, and
+// nothing was left over to check. Colour is the default because most attachments are,
+// and a wrong default does not pass quietly: a colour role over a depth format is
+// refused.
+enum class AttachmentRole { Color, Depth };
+
+struct AttachmentUse {
+    AttachmentRole role = AttachmentRole::Color;
+    VkAttachmentLoadOp load = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    VkAttachmentStoreOp store = VK_ATTACHMENT_STORE_OP_STORE;
+    VkClearValue clear{};                                    // read only when load is CLEAR
+    VkResolveModeFlagBits resolve = VK_RESOLVE_MODE_NONE;    // NONE is no resolve
+};
+
 // **What one pipeline baked, and nothing a caller writes.** Every field is read off
 // the TextureDescs handed to CreateGraphicsPipeline, which is the description the
 // images themselves are made from.
@@ -70,23 +93,19 @@ struct AttachmentFormats {
 //
 // Contract: every desc must agree about samples. One rasterizationSamples covers a
 //           whole pass, so no pipeline could honour two; a disagreement is logged and
-//           the first one wins. At most one target may be a depth target, and a desc
-//           that is neither is a mistake -- both are logged and skipped.
+//           the first one wins. At most one target may be declared depth.
+//
+// uses[i] says what targets[i] is for. The role is not worked out here: what is done
+// here is refusing one the desc cannot honour.
 AttachmentFormats AttachmentFormatsOf(const TextureDesc* const targets[],
+                                      const AttachmentUse uses[],
                                       uint32_t count) noexcept;
 
-// What happens to one attachment over one pass, and every field of it is fixed as long
-// as the pass means the same thing. The image it happens to is not: that changes with
-// the frame in flight, so it is an argument to BeginPass.
-//
-// resolveMode is the line between the two. "This pass resolves" is what the pass is;
-// "into that image" is this frame's.
-struct AttachmentUse {
-    VkAttachmentLoadOp load = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    VkAttachmentStoreOp store = VK_ATTACHMENT_STORE_OP_STORE;
-    VkClearValue clear{};                                    // read only when load is CLEAR
-    VkResolveModeFlagBits resolve = VK_RESOLVE_MODE_NONE;    // NONE is no resolve
-};
+// The same for a caller with no roles to give. A graphics pipeline holds a bare list of
+// targets, so this is the one place left that works a role out of a usage bit instead
+// of being told it -- and the reason to move a pipeline off a target list.
+AttachmentFormats AttachmentFormatsOf(const TextureDesc* const targets[],
+                                      uint32_t count) noexcept;
 
 // One render pass instance, as far as it is settled before there is a frame.
 //
@@ -95,7 +114,7 @@ struct AttachmentUse {
 // about formats, and both now say what they draw into in the same words.
 //
 // The first null ends it, so how many attachments there are is the list rather than a
-// number beside it -- and which one is depth is read from usage, not from position.
+// number beside it. Which one is the depth attachment is uses[i].role, said here.
 //
 // uses[i] is what happens to targets[i]. Positional, and the views handed to BeginPass
 // are checked against the descs here rather than trusted to line up.
@@ -111,7 +130,7 @@ struct RenderPassDesc {
 // Output: what a pass draws into, in the form a pipeline bakes. The one comparison a
 //         pass creation makes against its pipeline.
 inline AttachmentFormats PassFormats(const RenderPassDesc& desc) noexcept {
-    return AttachmentFormatsOf(desc.targets, kMaxColorTargets + 1);
+    return AttachmentFormatsOf(desc.targets, desc.uses, kMaxColorTargets + 1);
 }
 
 // Effect: puts every attachment where it is about to be used, then begins the render

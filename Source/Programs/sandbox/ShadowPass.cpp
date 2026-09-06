@@ -33,6 +33,7 @@ bool CreateShadowPass(const Descriptors& descriptors,
     out->pipeline = &pipeline;
 
     out->pass.targets[0] = &maps[0]->desc;
+    out->pass.uses[0].role = AttachmentRole::Depth;
     out->pass.uses[0].load = VK_ATTACHMENT_LOAD_OP_CLEAR;
     out->pass.uses[0].store = VK_ATTACHMENT_STORE_OP_STORE;
     out->pass.uses[0].clear.depthStencil.depth = 1.0f;   // nothing seen yet is farthest

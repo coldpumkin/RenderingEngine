@@ -83,6 +83,7 @@ bool CreateScenePass(const Descriptors& descriptors,
     out->pass.uses[0].clear.color = VkClearColorValue{{0.0f, 0.0f, 0.0f, 1.0f}};
     out->pass.uses[0].resolve = VK_RESOLVE_MODE_AVERAGE_BIT;
     // Clear 1.0 = farthest, paired with the pipeline's compareOp LESS.
+    out->pass.uses[1].role = AttachmentRole::Depth;
     out->pass.uses[1].load = VK_ATTACHMENT_LOAD_OP_CLEAR;
     out->pass.uses[1].store = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     out->pass.uses[1].clear.depthStencil.depth = 1.0f;

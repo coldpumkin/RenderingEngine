@@ -25,6 +25,65 @@
 // that format works, which depth format exists, and how many samples.
 
 AttachmentFormats AttachmentFormatsOf(const TextureDesc* const targets[],
+                                      const AttachmentUse uses[],
+                                      uint32_t count) noexcept {
+    AttachmentFormats formats{};
+
+    // The first desc given decides samples, and every other one is compared to it.
+    const TextureDesc* first = nullptr;
+
+    for (uint32_t i = 0; i < count && targets[i] != nullptr; ++i) {
+        const TextureDesc& target = *targets[i];
+        const bool isDepth = uses[i].role == AttachmentRole::Depth;
+
+        // The role said, against the two facts that decide whether it can be. A format
+        // settles which of the two an image can ever be; a usage bit settles whether
+        // this one was made able to be drawn into at all. Neither is where the role
+        // comes from -- both are how a role is refused.
+        const VkImageAspectFlags aspect = AspectOfFormat(target.format);
+        const bool formatIsDepth = aspect == VK_IMAGE_ASPECT_DEPTH_BIT;
+        if (formatIsDepth != isDepth) {
+            LOG("[vk] target %u is declared %s and its format is a %s one\n", i,
+                isDepth ? "depth" : "colour", formatIsDepth ? "depth" : "colour");
+            continue;
+        }
+        const VkImageUsageFlags needed = isDepth
+                                       ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
+                                       : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        if ((target.usage & needed) == 0) {
+            LOG("[vk] target %u is declared %s and was not created to be drawn into"
+                " as one (usage 0x%x)\n", i, isDepth ? "depth" : "colour",
+                target.usage);
+            continue;
+        }
+
+        if (isDepth) {
+            if (formats.depth != VK_FORMAT_UNDEFINED) {
+                LOG("[vk] target %u is a second depth attachment\n", i);
+                continue;
+            }
+            formats.depth = target.format;
+        } else {
+            if (formats.colorCount >= kMaxColorTargets) {
+                LOG("[vk] more than %u colour targets\n", kMaxColorTargets);
+                continue;
+            }
+            formats.color[formats.colorCount] = target.format;
+            formats.colorCount += 1;
+        }
+
+        if (first == nullptr) { first = &target; }
+        else if (target.samples != first->samples) {
+            LOG("[vk] target %u is %d-sample where the first is %d-sample\n",
+                i, static_cast<int>(target.samples), static_cast<int>(first->samples));
+        }
+    }
+
+    if (first != nullptr) { formats.samples = first->samples; }
+    return formats;
+}
+
+AttachmentFormats AttachmentFormatsOf(const TextureDesc* const targets[],
                                       uint32_t count) noexcept {
     AttachmentFormats formats{};
 
@@ -174,16 +233,9 @@ bool BeginPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
 
         const AttachmentUse& use = desc.uses[i];
 
-        // The role is the image's, out of the usage it was made with -- the same rule
-        // AttachmentFormatsOf reads, so a pass and its pipeline cannot disagree about
-        // which slot is which. The layout follows from the role and is not a choice.
-        const bool isColour = (want.usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) != 0;
-        const bool isDepth =
-            (want.usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0;
-        if (isColour == isDepth) {
-            LOG("[vk] attachment %u is neither a colour nor a depth target\n", i);
-            return false;
-        }
+        // The role the pass declared, not one read back out of the image. The layout
+        // follows from it and is not a choice.
+        const bool isColour = use.role == AttachmentRole::Color;
 
         VkRenderingAttachmentInfo info{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
         info.imageView = views[i]->view.handle;
