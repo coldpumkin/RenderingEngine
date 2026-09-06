@@ -56,6 +56,8 @@ struct PipelineSources {
     uint32_t surfaceSetCount = 0;
     const RequiredBlock* blocks = nullptr;
     uint32_t blockCount = 0;
+    const RequiredMember* pushMembers = nullptr;
+    uint32_t pushMemberCount = 0;
 };
 
 // Six programs and eight pipelines. Two of the extra pipelines are wireframe variants

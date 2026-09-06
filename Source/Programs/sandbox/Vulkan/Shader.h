@@ -191,6 +191,11 @@ struct ProgramRequirements {
     uint32_t setCount = 0;
     const RequiredBlock* blocks = nullptr;
     uint32_t blockCount = 0;
+
+    // The push block, which needs no name: a stage has one or none. Every program is
+    // held to it, and a stage that declares none is not compared.
+    const RequiredMember* pushMembers = nullptr;
+    uint32_t pushMemberCount = 0;
 };
 
 struct ShaderInterface {
@@ -222,6 +227,11 @@ struct ShaderInterface {
     InterfaceSlot outputs[kMaxOutputSlots]{};
 
     uint32_t pushSize = 0;                    // 0 when the stage declares no block
+
+    // The push block's members, the way a set's are. There is one push block per
+    // stage, so unlike a descriptor binding this needs no slot to hang off.
+    uint32_t pushMemberCount = 0;
+    BlockMember pushMembers[kMaxBlockMembers]{};
 
     SetInterface sets[kMaxSets];
 

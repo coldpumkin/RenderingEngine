@@ -423,6 +423,58 @@ struct ViewOptionsUniform {
 };
 
 
+
+// The panel's answers as one per frame in flight, the way the camera and the light
+// are. The fourth of exactly the same kind, and the last to get here: it lived inside
+// Gui until 09-06, which meant three passes had to know what a Gui was to name it.
+//
+// Who decides and who sends are different questions. The panel still decides -- the
+// checkboxes are its, GuiViewUniform builds this out of them -- and UploadFrameValues
+// sends it, which is what happens to the other three as well.
+struct FrameViewOptions {
+    ViewOptionsUniform value{};
+    Buffer buffer;
+};
+
+bool CreateFrameCameras(const VulkanDevice& dev, FrameCamera* out) noexcept;
+bool CreateFrameLights(const VulkanDevice& dev, FrameLight* out) noexcept;
+bool CreateFrameShadows(const VulkanDevice& dev, FrameShadow* out) noexcept;
+bool CreateFrameViewOptions(const VulkanDevice& dev, FrameViewOptions* out) noexcept;
+
+// Rides inside the command buffer: no pool, no set, no lifetime. The spec guarantees
+// only 128 bytes, so what goes here is what changes per draw and nothing else.
+//
+// model, not an mvp. It was one when the camera was a per-draw value; the camera
+// moved into the frame's uniform, and the vertex shader multiplies viewProj there.
+// Sending both would be 128 bytes of matrices alone.
+//
+// Contract: field order and types match the shader's push_constant block. The layer
+//           checks the size, not the order.
+// Contract: every stage that reads it must be in pushRange.stageFlags - fragment
+//           reads alpha, so VERTEX alone is not enough.
+struct PushConstants {
+    glm::mat4 model;   // object -> world. viewProj is in SceneUniform
+
+    // transpose(inverse(mat3(model))), one column per vec4. A normal is a covector:
+    // it does not transform by the model matrix, and under non-uniform scale the two
+    // answers differ. Computed on the CPU because a 3x3 inverse per vertex would pay
+    // 192,496 times a frame for a value that changes when the object moves.
+    //
+    // vec4 rather than a mat3: GLSL pads a mat3's columns to 16 bytes and glm::mat3
+    // does not, so the two would disagree by 12 bytes with nothing to say so.
+    // Naming the leftover is the same choice SceneUniform makes.
+    //
+    // The tangent does not use this. It is a direction along the surface, so it takes
+    // the model matrix -- the two rules only coincide while the scale is uniform.
+    glm::vec4 normal[3];
+
+    float alpha;       // 1.0 is opaque. Opaque pipelines ignore it: blending is off
+};
+// 116 of the 128 bytes the spec guarantees. Splitting model out is the trigger written
+// in CLAUDE.md, and this is most of why there is one.
+static_assert(sizeof(PushConstants) == 116, "push constant block grew past its layout");
+
+
 // Every uniform block this renderer owns, by the name a shader gives it
 // ============================================================================
 //
@@ -492,61 +544,23 @@ inline ProgramRequirements SharedBlocks() noexcept {
         {"mtl",    kMaterial, static_cast<uint32_t>(std::size(kMaterial))},
     };
 
+    // The push block. No name -- a stage has one or none -- and every stage that
+    // declares one is held to it, whichever part of it that stage reads: shadow.vert
+    // takes model alone, scene.vert takes model and normal, and the fragment stages
+    // take alpha at the offset the two in front of it leave.
+    static const RequiredMember kPush[] = {
+        {"model",  offsetof(PushConstants, model),  sizeof(PushConstants::model)},
+        {"normal", offsetof(PushConstants, normal), sizeof(PushConstants::normal)},
+        {"alpha",  offsetof(PushConstants, alpha),  sizeof(PushConstants::alpha)},
+    };
+
     ProgramRequirements out;
     out.blocks = kBlocks;
     out.blockCount = static_cast<uint32_t>(std::size(kBlocks));
+    out.pushMembers = kPush;
+    out.pushMemberCount = static_cast<uint32_t>(std::size(kPush));
     return out;
 }
-
-// The panel's answers as one per frame in flight, the way the camera and the light
-// are. The fourth of exactly the same kind, and the last to get here: it lived inside
-// Gui until 09-06, which meant three passes had to know what a Gui was to name it.
-//
-// Who decides and who sends are different questions. The panel still decides -- the
-// checkboxes are its, GuiViewUniform builds this out of them -- and UploadFrameValues
-// sends it, which is what happens to the other three as well.
-struct FrameViewOptions {
-    ViewOptionsUniform value{};
-    Buffer buffer;
-};
-
-bool CreateFrameCameras(const VulkanDevice& dev, FrameCamera* out) noexcept;
-bool CreateFrameLights(const VulkanDevice& dev, FrameLight* out) noexcept;
-bool CreateFrameShadows(const VulkanDevice& dev, FrameShadow* out) noexcept;
-bool CreateFrameViewOptions(const VulkanDevice& dev, FrameViewOptions* out) noexcept;
-
-// Rides inside the command buffer: no pool, no set, no lifetime. The spec guarantees
-// only 128 bytes, so what goes here is what changes per draw and nothing else.
-//
-// model, not an mvp. It was one when the camera was a per-draw value; the camera
-// moved into the frame's uniform, and the vertex shader multiplies viewProj there.
-// Sending both would be 128 bytes of matrices alone.
-//
-// Contract: field order and types match the shader's push_constant block. The layer
-//           checks the size, not the order.
-// Contract: every stage that reads it must be in pushRange.stageFlags - fragment
-//           reads alpha, so VERTEX alone is not enough.
-struct PushConstants {
-    glm::mat4 model;   // object -> world. viewProj is in SceneUniform
-
-    // transpose(inverse(mat3(model))), one column per vec4. A normal is a covector:
-    // it does not transform by the model matrix, and under non-uniform scale the two
-    // answers differ. Computed on the CPU because a 3x3 inverse per vertex would pay
-    // 192,496 times a frame for a value that changes when the object moves.
-    //
-    // vec4 rather than a mat3: GLSL pads a mat3's columns to 16 bytes and glm::mat3
-    // does not, so the two would disagree by 12 bytes with nothing to say so.
-    // Naming the leftover is the same choice SceneUniform makes.
-    //
-    // The tangent does not use this. It is a direction along the surface, so it takes
-    // the model matrix -- the two rules only coincide while the scale is uniform.
-    glm::vec4 normal[3];
-
-    float alpha;       // 1.0 is opaque. Opaque pipelines ignore it: blending is off
-};
-// 116 of the 128 bytes the spec guarantees. Splitting model out is the trigger written
-// in CLAUDE.md, and this is most of why there is one.
-static_assert(sizeof(PushConstants) == 116, "push constant block grew past its layout");
 
 
 // What one draw is

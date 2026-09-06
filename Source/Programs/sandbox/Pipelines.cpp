@@ -161,21 +161,32 @@ bool CreatePipelines(const VulkanDevice& dev, const PipelineSources& sources,
     // shadow writes depth, lighting reads images, post copies one and gui draws a
     // panel. None of them reads a material, and requiring one of them to would be
     // requiring a set they do not use -- lighting's set 1 is its g-buffer.
-    // The blocks go to every program, the material set only to the two that draw a
-    // surface. shadow, lighting, post and gui each own their set 0 and are held to
-    // nothing about it -- but shadow and lighting still declare shared blocks in it,
-    // and those are checked.
+    // Three requirements, each adding to the one before it.
+    //
+    // **any** is the shared uniform blocks, and every program is held to them: a block
+    // is the same block wherever it is bound, and shadow.vert binds one at a different
+    // slot than scene.frag does.
+    //
+    // **mesh** adds the per-draw push block. gui has a push block of its own -- window
+    // pixels to clip space, nothing to do with a DrawItem -- so it is not in this
+    // group, and lighting and post push nothing at all.
+    //
+    // **surface** adds the material set, for the two that read one.
     ProgramRequirements anyProgram;
     anyProgram.blocks = sources.blocks;
     anyProgram.blockCount = sources.blockCount;
 
-    ProgramRequirements surfaceProgram = anyProgram;
+    ProgramRequirements meshProgram = anyProgram;
+    meshProgram.pushMembers = sources.pushMembers;
+    meshProgram.pushMemberCount = sources.pushMemberCount;
+
+    ProgramRequirements surfaceProgram = meshProgram;
     surfaceProgram.sets = sources.surfaceSets;
     surfaceProgram.setCount = sources.surfaceSetCount;
 
     if (!CreateShaderProgram(dev, shadowStages,
                              static_cast<uint32_t>(std::size(shadowStages)),
-                             anyProgram, &out->shadowProgram)
+                             meshProgram, &out->shadowProgram)
             || !CreateShaderProgram(dev, sceneStages,
                                     static_cast<uint32_t>(std::size(sceneStages)),
                                     surfaceProgram, &out->sceneProgram)

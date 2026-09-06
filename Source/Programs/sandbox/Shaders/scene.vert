@@ -6,7 +6,7 @@
 //   in                                 from                update
 //   -------------------------------------------------------------------------
 //   inPosition inNormal inTangent inUV vertex buffer       per vertex
-//   pc.model pc.normal0..2            push constant       per draw
+//   pc.model pc.normal[3]             push constant       per draw
 //   camera.view camera.proj           set 0, binding 0    per frame
 //
 //   out
@@ -61,11 +61,12 @@ layout(set = 0, binding = 0) uniform Camera {
 layout(push_constant) uniform Push {
     mat4 model;
 
-    // transpose(inverse(mat3(model))), one column per xyz. Three vec4 and not a mat3
-    // because GLSL pads a mat3's columns to 16 bytes and glm::mat3 does not.
-    vec4 normal0;
-    vec4 normal1;
-    vec4 normal2;
+    // transpose(inverse(mat3(model))), one column per xyz. vec4 and not mat3 because
+    // GLSL pads a mat3's columns to 16 bytes and glm::mat3 does not.
+    //
+    // An array and not three names, so it matches PushConstants::normal on the other
+    // side by name as well as by offset -- SharedBlocks() compares both.
+    vec4 normal[3];
 } pc;
 
 // The same four, one space further along. uv is handed over untouched.
@@ -84,7 +85,7 @@ void main() {
     // The normal matrix, not the model matrix. A normal has to stay perpendicular to
     // the surface, and only the inverse transpose keeps it there -- under a non-uniform
     // scale the two matrices give different answers.
-    fragNormal = mat3(pc.normal0.xyz, pc.normal1.xyz, pc.normal2.xyz) * inNormal;
+    fragNormal = mat3(pc.normal[0].xyz, pc.normal[1].xyz, pc.normal[2].xyz) * inNormal;
 
     // The model matrix, and mat3 of it so no translation applies. A tangent lies along
     // the surface rather than across it, so it follows the surface itself -- the

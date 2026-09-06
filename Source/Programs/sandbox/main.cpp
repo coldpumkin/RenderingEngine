@@ -662,6 +662,8 @@ int main() {
     const ProgramRequirements blocks = SharedBlocks();
     pipelineSources.blocks = blocks.blocks;
     pipelineSources.blockCount = blocks.blockCount;
+    pipelineSources.pushMembers = blocks.pushMembers;
+    pipelineSources.pushMemberCount = blocks.pushMemberCount;
     if (!CreatePipelines(dev, pipelineSources, &renderer.pipelines)) { return 1; }
 
     // Scene -- the mesh and the draw list, from one file

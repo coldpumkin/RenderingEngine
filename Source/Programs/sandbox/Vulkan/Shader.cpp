@@ -145,6 +145,28 @@ bool Reflect(const std::vector<uint32_t>& code, const char* path,
     if (blockCount != 0) {
         spvReflectEnumeratePushConstantBlocks(&module, &blockCount, blocks.data());
         out->pushSize = blocks[0]->size;
+
+        // absolute_offset and not offset. A stage may start its block partway in --
+        // scene.frag declares layout(offset = 112) and nothing before it -- and then
+        // the member's own offset is counted from where the block starts, which is
+        // not where the struct starts on the other side.
+        const SpvReflectBlockVariable& push = *blocks[0];
+        if (push.member_count > kMaxBlockMembers) {
+            LOG("[vk] %s declares %u push members, over the %u we allow\n",
+                path, push.member_count, kMaxBlockMembers);
+            spvReflectDestroyShaderModule(&module);
+            return false;
+        }
+        out->pushMemberCount = push.member_count;
+        for (uint32_t m = 0; m < push.member_count; ++m) {
+            const SpvReflectBlockVariable& src = push.members[m];
+            BlockMember& dst = out->pushMembers[m];
+            if (src.name != nullptr) {
+                std::strncpy(dst.name, src.name, kMaxBindingNameLength - 1);
+            }
+            dst.offset = src.absolute_offset;
+            dst.size = src.size;
+        }
     }
 
     uint32_t bindingCount = 0;
@@ -429,11 +451,11 @@ static bool CheckStageInterface(const ProgramStage& producer,
 // The shader side is the subset. Every member it names has to be in the declaration at
 // the same offset and size; one it names that is not there is the error this exists to
 // catch, because it means the two structs have drifted.
-static bool CheckBlockMembers(const char* path, uint32_t set, uint32_t binding,
-                              const SetInterface& declared,
+static bool CheckBlockMembers(const char* path, const char* where,
+                              const BlockMember* declared, uint32_t declaredCount,
                               const RequiredMember* want, uint32_t wantCount) noexcept {
-    for (uint32_t m = 0; m < declared.memberCounts[binding]; ++m) {
-        const BlockMember& have = declared.members[binding][m];
+    for (uint32_t m = 0; m < declaredCount; ++m) {
+        const BlockMember& have = declared[m];
         if (have.name[0] == '\0') { continue; }   // the compiler stripped it
 
         const RequiredMember* match = nullptr;
@@ -444,14 +466,14 @@ static bool CheckBlockMembers(const char* path, uint32_t set, uint32_t binding,
             }
         }
         if (match == nullptr) {
-            LOG("[vk] %s: set %u binding %u reads \"%s\", which the declaration "
-                "does not have\n", path, set, binding, have.name);
+            LOG("[vk] %s: %s reads \"%s\", which the declaration does not have\n",
+                path, where, have.name);
             return false;
         }
         if (match->offset != have.offset || match->size != have.size) {
-            LOG("[vk] %s: set %u binding %u reads \"%s\" at offset %u size %u, "
+            LOG("[vk] %s: %s reads \"%s\" at offset %u size %u, "
                 "declared at offset %u size %u\n",
-                path, set, binding, have.name, have.offset, have.size,
+                path, where, have.name, have.offset, have.size,
                 match->offset, match->size);
             return false;
         }
@@ -532,7 +554,10 @@ static bool CheckRequiredBlocks(const ShaderProgram& program,
                 }
                 if (match == nullptr) { continue; }
 
-                if (!CheckBlockMembers(stage.path, set, b, declared,
+                char where[48];
+                std::snprintf(where, sizeof(where), "set %u binding %u", set, b);
+                if (!CheckBlockMembers(stage.path, where,
+                                       declared.members[b], declared.memberCounts[b],
                                        match->members, match->memberCount)) {
                     return false;
                 }
@@ -620,6 +645,21 @@ bool CreateShaderProgram(const VulkanDevice& dev,
     }
     if (!CheckRequiredBlocks(*out, required.blocks, required.blockCount)) {
         return false;
+    }
+
+    // The push block, per stage. A stage declaring none is skipped -- fullscreen.vert
+    // and every fragment stage that reads no per-draw value.
+    if (required.pushMembers != nullptr) {
+        for (uint32_t i = 0; i < out->stageCount; ++i) {
+            const ProgramStage& stage = out->stages[i];
+            if (stage.interface.pushMemberCount == 0) { continue; }
+            if (!CheckBlockMembers(stage.path, "push constant",
+                                   stage.interface.pushMembers,
+                                   stage.interface.pushMemberCount,
+                                   required.pushMembers, required.pushMemberCount)) {
+                return false;
+            }
+        }
     }
 
     for (uint32_t set = 0; set < kMaxSets; ++set) {
