@@ -404,6 +404,17 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     viewportState.viewportCount = 1;
     viewportState.scissorCount = 1;
 
+    // One image carries both aspects, so a pipeline that writes both writes one
+    // format -- VUID-VkGraphicsPipelineCreateInfo-renderPass-06589. Asked of the
+    // contract alone, which is all a pipeline has and all this needs.
+    if (formats.depth != VK_FORMAT_UNDEFINED && formats.stencil != VK_FORMAT_UNDEFINED
+            && formats.depth != formats.stencil) {
+        LOG("[vk] this desc draws depth as format %d and stencil as format %d, and one"
+            " image cannot be both\n", static_cast<int>(formats.depth),
+            static_cast<int>(formats.stencil));
+        return false;
+    }
+
     if (!CheckFeatures(desc)) { return false; }
 
     if (desc.dynamicCount > kMaxDynamicStates) {

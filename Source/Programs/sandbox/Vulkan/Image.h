@@ -122,6 +122,12 @@ bool CreateImage2D(const VulkanDevice& dev,
 //
 // Stencil is never used, so a stencil format still answers DEPTH -- adding it would
 // put a second aspect on every barrier and view.
+//
+// **Which is wrong for a combined format, and measured to be.** Forcing the depth
+// candidate list onto D32_SFLOAT_S8_UINT draws ten errors from vkCmdPipelineBarrier2:
+// "has depth/stencil format VK_FORMAT_D32_SFLOAT_S8_UINT, but its aspectMask is
+// VK_IMAGE_ASPECT_DEPTH_BIT". No GPU here picks that format, so nothing runs the path;
+// one where D32_SFLOAT and X8_D24 both fail the feature check would.
 VkImageAspectFlags AspectOfFormat(VkFormat format) noexcept;
 
 // Input:  imageFormat is what the image was created with -- desc.format UNDEFINED

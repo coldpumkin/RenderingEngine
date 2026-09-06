@@ -46,6 +46,10 @@ bool CreateLightingPass(const Descriptors& descriptors,
     out->pass.attachments[0].load = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     out->pass.attachments[0].store = VK_ATTACHMENT_STORE_OP_STORE;
 
+    // Everything the declaration can be wrong about on its own, asked once here. What
+    // needs a frame's images is asked every frame by BeginPass.
+    if (!ValidatePassDesc(out->pass)) { return false; }
+
     if (!SameAttachmentFormats(PassFormats(out->pass), pipeline.formats)) {
         LOG("[vk] the lighting pass's target and its pipeline disagree about the formats\n");
         return false;

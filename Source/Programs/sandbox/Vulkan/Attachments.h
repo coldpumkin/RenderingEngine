@@ -94,8 +94,11 @@ struct AttachmentFormats {
     // And whether stencil is written, which is a separate decision over the same image.
     // Declared, not read out of the depth format: derived, a device whose depth format
     // came back D32_SFLOAT_S8_UINT would compile every pipeline claiming a stencil
-    // attachment no pass ever begins -- VUID-vkCmdDraw-dynamicRenderingUnusedAttachments
-    // -08916, at every draw.
+    // attachment that no pass begins.
+    //
+    // Forced onto that format to see it, the layer said nothing about this: 08916 is
+    // written about a null imageView and what we pass is a null pStencilAttachment. So
+    // what a declaration buys here is the right shape, not an error that was firing.
     //
     // Contract: when both are set they must be equal; one image carries both
     //           (VUID-VkGraphicsPipelineCreateInfo-renderPass-06589).
@@ -155,6 +158,17 @@ struct RenderPassDesc {
 inline AttachmentFormats PassFormats(const RenderPassDesc& desc) noexcept {
     return AttachmentFormatsOf(desc.attachments, kMaxAttachments);
 }
+
+// Output: false when this pass could not be begun with any frame's images
+//
+// **Everything a RenderPassDesc can be wrong about on its own.** No image, no render
+// area, no frame in it -- which is the point: a check that needs none of those belongs
+// where it is true, and asking it once at pass creation says so. What genuinely varies
+// per frame stays in BeginPass.
+//
+// Called once by each pass creation. Every failure is reported rather than the first,
+// so one run says everything that is wrong.
+bool ValidatePassDesc(const RenderPassDesc& desc) noexcept;
 
 // Effect: puts every attachment where it is about to be used, then begins the render
 //         pass instance desc describes over these views.

@@ -38,6 +38,10 @@ bool CreateShadowPass(const Descriptors& descriptors,
     out->pass.attachments[0].store = VK_ATTACHMENT_STORE_OP_STORE;
     out->pass.attachments[0].clear.depthStencil.depth = 1.0f;   // nothing seen is farther
 
+    // Everything the declaration can be wrong about on its own, asked once here. What
+    // needs a frame's images is asked every frame by BeginPass.
+    if (!ValidatePassDesc(out->pass)) { return false; }
+
     // The same comparison the scene pass makes, because both pipelines are built from
     // the same layout now. What differs between them is which locations their vertex
     // stages read, and that is the .spv's business rather than this one's.

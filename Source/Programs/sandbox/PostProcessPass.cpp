@@ -31,6 +31,10 @@ bool CreatePostProcessPass(const Descriptors& descriptors,
     out->pass.attachments[0].load = VK_ATTACHMENT_LOAD_OP_CLEAR;
     out->pass.attachments[0].store = VK_ATTACHMENT_STORE_OP_STORE;
     out->pass.attachments[0].clear.color = VkClearColorValue{{0.0f, 0.0f, 0.0f, 1.0f}};
+
+    // Everything the declaration can be wrong about on its own, asked once here. What
+    // needs a frame's images is asked every frame by BeginPass.
+    if (!ValidatePassDesc(out->pass)) { return false; }
     out->target = &target;
 
     // What it writes, against what the pipeline baked -- the same comparison the other

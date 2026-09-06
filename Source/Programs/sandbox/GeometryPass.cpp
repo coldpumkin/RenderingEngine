@@ -97,6 +97,10 @@ bool CreateGeometryPass(const Descriptors& descriptors,
     out->pass.attachments[3].store = VK_ATTACHMENT_STORE_OP_STORE;
     out->pass.attachments[3].clear.depthStencil.depth = 1.0f;
 
+    // Everything the declaration can be wrong about on its own, asked once here. What
+    // needs a frame's images is asked every frame by BeginPass.
+    if (!ValidatePassDesc(out->pass)) { return false; }
+
     if (wirePipeline.program != pipeline.program) {
         LOG("[vk] the geometry pass's two pipelines were built from different programs\n");
         return false;

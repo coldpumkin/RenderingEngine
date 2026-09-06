@@ -226,6 +226,10 @@ bool CreateGuiSet(const Descriptors& descriptors, const Pipeline& pipeline,
     out->pass.attachments[0].load = VK_ATTACHMENT_LOAD_OP_LOAD;
     out->pass.attachments[0].store = VK_ATTACHMENT_STORE_OP_STORE;
 
+    // Everything the declaration can be wrong about on its own, asked once here. What
+    // needs a frame's images is asked every frame by BeginPass.
+    if (!ValidatePassDesc(out->pass)) { return false; }
+
     // The comparison the other three passes make, and the one this pass could not make
     // until it said what it draws into.
     if (!SameAttachmentFormats(PassFormats(out->pass), pipeline.formats)) {

@@ -185,6 +185,121 @@ bool QueryTargetCapabilities(const VulkanInstance& inst, VkPhysicalDevice gpu,
     return true;
 }
 
+// Output: whether this format carries a stencil aspect
+//
+// AspectOfFormat answers DEPTH for a combined format on purpose -- nothing here writes
+// stencil, and a second aspect would land on every barrier and view. This is the other
+// question of the same format, and only the stencil role asks it.
+static bool HasStencilAspect(VkFormat format) noexcept {
+    switch (format) {
+        case VK_FORMAT_S8_UINT:
+        case VK_FORMAT_D16_UNORM_S8_UINT:
+        case VK_FORMAT_D24_UNORM_S8_UINT:
+        case VK_FORMAT_D32_SFLOAT_S8_UINT:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool ValidatePassDesc(const RenderPassDesc& desc) noexcept {
+    uint32_t count = 0;
+    while (count < kMaxAttachments && desc.attachments[count].resource != nullptr) {
+        count += 1;
+    }
+    if (count == 0) {
+        LOG("[vk] a pass with no attachments\n");
+        return false;
+    }
+
+    const Attachment* depth = nullptr;
+    const Attachment* stencil = nullptr;
+    bool ok = true;
+
+    for (uint32_t i = 0; i < count; ++i) {
+        const Attachment& a = desc.attachments[i];
+
+        // One rasterizationSamples covers a whole pass, so two attachments cannot
+        // disagree -- VUID-VkRenderingInfo-multisampledRenderToSingleSampled-06857.
+        // The projection used to log this and let the first one win, which meant a
+        // pipeline compiled for a sample count one of its targets did not have.
+        if (a.resource->samples != desc.attachments[0].resource->samples) {
+            LOG("[vk] attachment %u is %d-sample where attachment 0 is %d-sample\n", i,
+                static_cast<int>(a.resource->samples),
+                static_cast<int>(desc.attachments[0].resource->samples));
+            ok = false;
+        }
+
+        if (a.role == AttachmentRole::Depth) { depth = &a; }
+        if (a.role == AttachmentRole::Stencil) {
+            stencil = &a;
+            // VUID-VkRenderingInfo-pStencilAttachment-06548
+            if (!HasStencilAspect(a.resource->format)) {
+                LOG("[vk] attachment %u is declared stencil and its format %d has no"
+                    " stencil aspect\n", i, static_cast<int>(a.resource->format));
+                ok = false;
+            }
+        }
+
+        // The two halves of a resolve arrive or neither does -- a mode with nowhere to
+        // go is VUID-VkRenderingAttachmentInfo-imageView-06862, and a destination with
+        // mode NONE is a declaration that does nothing.
+        const bool hasTarget = a.resolve.target != nullptr;
+        const bool hasMode = a.resolve.mode != VK_RESOLVE_MODE_NONE;
+        if (hasTarget != hasMode) {
+            LOG("[vk] attachment %u declares a resolve %s\n", i,
+                hasTarget ? "target with mode NONE" : "mode with no target");
+            ok = false;
+            continue;
+        }
+        if (!hasTarget) { continue; }
+
+        // Resolving one sample into one sample is nothing to average
+        // (VUID-VkRenderingAttachmentInfo-imageView-06861), and the destination is
+        // where the averaging lands, so it is the single-sample one (06864).
+        if (a.resource->samples == VK_SAMPLE_COUNT_1_BIT) {
+            LOG("[vk] attachment %u resolves and is already 1-sample\n", i);
+            ok = false;
+        }
+        if (a.resolve.target->samples != VK_SAMPLE_COUNT_1_BIT) {
+            LOG("[vk] attachment %u resolves into a %d-sample image\n", i,
+                static_cast<int>(a.resolve.target->samples));
+            ok = false;
+        }
+
+        // VUID-VkRenderingAttachmentInfo-imageView-06865. Nothing converts on the way,
+        // so the two are one format written twice until something derives one from the
+        // other.
+        if (a.resolve.target->format != a.resource->format) {
+            LOG("[vk] attachment %u is format %d and resolves into format %d\n", i,
+                static_cast<int>(a.resource->format),
+                static_cast<int>(a.resolve.target->format));
+            ok = false;
+        }
+    }
+
+    // One image carries both aspects, so the two roles name one resource
+    // (VUID-VkRenderingInfo-pDepthAttachment-06085) and one resolve destination (06086).
+    //
+    // **Asked of the descs, and asked again of the views in BeginPass.** Neither
+    // answers the other: one desc is a different image every frame in flight, and two
+    // descs can describe images nothing tells apart. The projection cannot help --
+    // identity is the one thing it drops.
+    if (depth != nullptr && stencil != nullptr) {
+        if (depth->resource != stencil->resource) {
+            LOG("[vk] the depth and stencil roles name two different images\n");
+            ok = false;
+        }
+        if (depth->resolve.target != nullptr && stencil->resolve.target != nullptr
+                && depth->resolve.target != stencil->resolve.target) {
+            LOG("[vk] the depth and stencil roles resolve into two different images\n");
+            ok = false;
+        }
+    }
+
+    return ok;
+}
+
 bool BeginPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
                const RenderPassDesc& desc,
                const Texture* const views[], const Texture* const resolves[],
@@ -210,6 +325,10 @@ bool BeginPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
         // second entry over one image needs are not written. Refused rather than
         // guessed: what is missing is a STENCIL_ATTACHMENT_OPTIMAL layout here and a
         // per-aspect transition in Barrier.cpp.
+        //
+        // This is also what stands in for the frame half of 06085 -- the two views
+        // being one view. It arrives with the layout above; until then no pass can
+        // reach the case.
         if (use.role == AttachmentRole::Stencil) {
             LOG("[vk] attachment %u is declared stencil, which BeginPass does not"
                 " begin yet\n", i);
@@ -236,6 +355,23 @@ bool BeginPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
             return false;
         }
 
+        // Covering the area, not matching it: an attachment may be larger, and
+        // VUID-VkRenderingInfo-pNext-06079 and -06080 ask only that offset + extent
+        // fits. Equality would refuse a pass drawing into part of its target, which is
+        // what a render area is for.
+        //
+        // Here and not in ValidatePassDesc because the area is this frame's -- a resize
+        // changes it without changing anything the pass declared.
+        const int64_t needWidth = int64_t{area.offset.x} + area.extent.width;
+        const int64_t needHeight = int64_t{area.offset.y} + area.extent.height;
+        if (int64_t{got.extent.width} < needWidth
+                || int64_t{got.extent.height} < needHeight) {
+            LOG("[vk] attachment %u is %ux%u and the render area needs %lldx%lld\n", i,
+                got.extent.width, got.extent.height,
+                static_cast<long long>(needWidth), static_cast<long long>(needHeight));
+            return false;
+        }
+
         // The role the pass declared, not one read back out of the image. The layout
         // follows from it and is not a choice.
         const bool isColour = use.role == AttachmentRole::Color;
@@ -257,6 +393,19 @@ bool BeginPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
                 LOG("[vk] attachment %u resolves and was given nowhere to resolve to\n", i);
                 return false;
             }
+
+            // The same comparison the attachment itself gets, for the same reason:
+            // what the pass declared against what this frame handed over.
+            const TextureDesc& wantInto = *use.resolve.target;
+            const TextureDesc& gotInto = into->desc;
+            if (gotInto.format != wantInto.format || gotInto.samples != wantInto.samples
+                    || gotInto.usage != wantInto.usage) {
+                LOG("[vk] attachment %u was handed a resolve image the pass did not"
+                    " declare (format %d/%d)\n", i, static_cast<int>(gotInto.format),
+                    static_cast<int>(wantInto.format));
+                return false;
+            }
+
             info.resolveMode = use.resolve.mode;
             info.resolveImageView = into->view.handle;
             info.resolveImageLayout = info.imageLayout;
