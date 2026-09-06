@@ -56,14 +56,16 @@ struct Texture {
 // against its pipeline; what it **reads** was checked by nobody until 09-06, and two
 // of the four passes had grown their own version of one third of this.
 //
-// Three questions, and they are the only three a TextureDesc can settle:
+// **One question, and it is the one a shader cannot ask.** This began as three. The
+// other two -- one sample, and SAMPLED rather than STORAGE -- are in the .spv: a stage
+// writes sampler2D or sampler2DMS, and image2D or not, and UpdateSet holds the view it
+// is handed to what the stage declared. Asserting them here as well was writing the
+// shader down a second time.
 //
-//   one sample     a sampler cannot take a multisample image. That is the whole reason
-//                  the scene pass resolves
-//   SAMPLED        the bit is an edge in the frame rather than a property of the image
-//                  -- it marks the ones another pass reads
-//   the right kind COLOR or DEPTH, derived from the format by AspectOfFormat. A shadow
-//                  map read as a colour is legal Vulkan and a wrong picture
+//   the right kind COLOR or DEPTH, derived from the format by AspectOfFormat. GLSL's
+//                  sampler2D takes either, so no reflection reports this -- a shadow
+//                  map read as a colour is legal Vulkan and a wrong picture. The
+//                  meaning is the pass's, which is why it is still an argument
 //
 // **Everything past this is not in a desc.** That it is *the* shadow map rather than
 // some other depth image, and that it was drawn this frame, are the next two rungs and
@@ -71,7 +73,6 @@ struct Texture {
 // second the order of two lines in RecordFrame.
 //
 // Input:  what names the image in the message, in the reader's words
-// Output: false with a line saying which of the three failed
 bool CheckSampledInput(const TextureDesc& desc, const char* what,
                        VkImageAspectFlags expected) noexcept;
 

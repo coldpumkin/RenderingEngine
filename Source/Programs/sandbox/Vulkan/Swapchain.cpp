@@ -252,7 +252,10 @@ bool CreateSwapchain(const VulkanInstance& inst,
 
         // The one place ownership splits: the image is the swapchain's, the view is
         // ours. Two types now say that, where an empty allocation used to.
-        if (!CreateImageView(dev, rawImages[i], surfaceFormat.format, {}, &texture.view)) {
+        // From the desc just written, which is what these images actually are.
+        if (!CreateImageView(dev, rawImages[i], surfaceFormat.format,
+                             texture.desc.samples, texture.desc.usage,
+                             {}, &texture.view)) {
             LOG("[vk] image view failed on swapchain image %u\n", i);
             return false;
         }

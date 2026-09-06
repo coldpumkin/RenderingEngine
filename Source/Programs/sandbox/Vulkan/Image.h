@@ -64,6 +64,19 @@ struct ImageView {
     VkImageView handle = VK_NULL_HANDLE;
     ImageViewDesc desc;
 
+    // Two facts of the image behind this view, and not because a view owns them
+    //
+    // A descriptor is written with an image view, so the view is what travels to a
+    // binding -- and what a shader requires of that binding is partly the view's
+    // (which shape) and partly the image's (how many samples, what it may be used
+    // for). Without these the check at the binding could only ask half its question.
+    //
+    // Both are fixed when the image is created and never move, so a copy here cannot
+    // go stale. **Only what a binding check needs belongs here.** Extent, mip count
+    // and the rest stay where they are; this is not a second TextureDesc.
+    VkSampleCountFlagBits imageSamples = VK_SAMPLE_COUNT_1_BIT;
+    VkImageUsageFlags imageUsage = 0;
+
     ImageView() = default;
     ~ImageView();
     ImageView(const ImageView&) = delete;
@@ -115,11 +128,15 @@ VkImageAspectFlags AspectOfFormat(VkFormat format) noexcept;
 //         means that one, and desc.aspect 0 is derived from it.
 //
 // The format is passed rather than read back because Image does not keep it: the
-// caller that made the image has it, and a queried swapchain image was told it.
+// caller that made the image has it, and a queried swapchain image was told it. The
+// samples and the usage arrive for the same reason and are kept for the reason the
+// fields above give.
 //
 // Contract: image must outlive the view. Vulkan destroys neither for the other.
 bool CreateImageView(const VulkanDevice& dev,
                      VkImage image,
                      VkFormat imageFormat,
+                     VkSampleCountFlagBits imageSamples,
+                     VkImageUsageFlags imageUsage,
                      const ImageViewDesc& desc,
                      ImageView* out) noexcept;

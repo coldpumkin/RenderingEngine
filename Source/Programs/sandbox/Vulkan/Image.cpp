@@ -90,8 +90,12 @@ bool CreateImage2D(const VulkanDevice& dev,
 bool CreateImageView(const VulkanDevice& dev,
                      VkImage image,
                      VkFormat imageFormat,
+                     VkSampleCountFlagBits imageSamples,
+                     VkImageUsageFlags imageUsage,
                      const ImageViewDesc& desc,
                      ImageView* out) noexcept {
+    out->imageSamples = imageSamples;
+    out->imageUsage = imageUsage;
     out->dev = &dev;   // set first: the destructor runs even if the create below fails
     out->desc = desc;
 
@@ -145,8 +149,12 @@ Image::~Image() {
     }
 }
 
+// Contract: every member is listed here. The handle has to be taken from the source,
+//           so this cannot be defaulted, and a field added above without a line here
+//           is silently dropped on every move.
 ImageView::ImageView(ImageView&& other) noexcept
-    : dev(other.dev), handle(other.handle), desc(other.desc) {
+    : dev(other.dev), handle(other.handle), desc(other.desc),
+      imageSamples(other.imageSamples), imageUsage(other.imageUsage) {
     other.dev = nullptr;
     other.handle = VK_NULL_HANDLE;
 }

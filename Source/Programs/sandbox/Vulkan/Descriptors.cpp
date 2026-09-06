@@ -171,6 +171,40 @@ void UpdateSet(const Descriptors& descriptors, const DescriptorLayout& layout,
                 LOG("[vk] binding %u wants an image and was given none\n", i);
                 return;
             }
+            // What the stage declared it would read, against what is being written
+            // in. The requirement came out of the .spv, so nothing here is a second
+            // statement of it -- a caller asserting these again would be copying the
+            // shader by hand.
+            //
+            // The view answers all three: its own type is the shape, and the two
+            // fields it keeps of its image answer the rest.
+            const ImageRequirement& want = layout.images[i];
+            const ImageView& got = *values[i].view;
+            if (want.isImage) {
+                if (got.desc.type != want.viewType) {
+                    LOG("[vk] binding %u: the shader reads a view type %d image and was"
+                        " given type %d\n", i, static_cast<int>(want.viewType),
+                        static_cast<int>(got.desc.type));
+                    return;
+                }
+                if ((got.imageSamples != VK_SAMPLE_COUNT_1_BIT) != want.multisample) {
+                    LOG("[vk] binding %u: the shader reads a %s image and was given a"
+                        " %d-sample one\n", i,
+                        want.multisample ? "multisample" : "single-sample",
+                        static_cast<int>(got.imageSamples));
+                    return;
+                }
+                const VkImageUsageFlags needed = want.storage
+                                               ? VK_IMAGE_USAGE_STORAGE_BIT
+                                               : VK_IMAGE_USAGE_SAMPLED_BIT;
+                if ((got.imageUsage & needed) == 0) {
+                    LOG("[vk] binding %u: the shader reads it as a %s image and the one"
+                        " given was not created for that\n", i,
+                        want.storage ? "storage" : "sampled");
+                    return;
+                }
+            }
+
             imageInfo[used].sampler = descriptors.sampler;
             imageInfo[used].imageView = values[i].view->handle;
             imageInfo[used].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;

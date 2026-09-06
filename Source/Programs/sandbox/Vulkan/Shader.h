@@ -129,10 +129,31 @@ struct BlockMember {
     uint32_t size = 0;     // bytes
 };
 
+// What a stage declared it will read at one image binding, taken out of the .spv
+//
+// **The shader already says these**, so a caller asserting them again would be writing
+// down what is in the file. What SPIR-V cannot say is left out rather than stored and
+// misread: its Depth operand marks a comparison sampler (sampler2DShadow), not a depth
+// format -- our shadow map is a plain sampler2D that compares by hand -- and its Format
+// operand is filled only for storage images.
+//
+// dim and arrayed arrive separately and are folded into one VkImageViewType, because
+// that is the field on the other side: an ImageView carries a type, not a pair.
+struct ImageRequirement {
+    bool isImage = false;   // false: this binding is a buffer, and there is nothing here
+    VkImageViewType viewType = VK_IMAGE_VIEW_TYPE_2D;
+    bool multisample = false;   // sampler2DMS
+    bool storage = false;       // image2D rather than sampler2D
+};
+
 struct SetInterface {
     uint32_t bindingCount = 0;
     VkDescriptorType bindingTypes[kMaxBindingsPerSet]{};
     char bindingNames[kMaxBindingsPerSet][kMaxBindingNameLength]{};
+
+    // What the stage requires of the image at each binding. Empty where the binding is
+    // a buffer or where no stage declares one.
+    ImageRequirement images[kMaxBindingsPerSet]{};
 
     // Filled for uniform buffer bindings only -- an image has no members. 0 means the
     // binding is not a block, or the compiler stripped the names.
@@ -259,6 +280,11 @@ struct DescriptorLayout {
     VkDescriptorSetLayout handle = VK_NULL_HANDLE;
     uint32_t bindingCount = 0;
     VkDescriptorType types[kMaxBindingsPerSet]{};
+
+    // Carried down from the stages that declared them, so that whoever writes a
+    // resource into this set can be held to what the shader asked for. A binding two
+    // stages declare differently is refused while this is built.
+    ImageRequirement images[kMaxBindingsPerSet]{};
 };
 
 // Effect: builds one set's layout from what every stage declares between them. All are

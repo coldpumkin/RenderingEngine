@@ -77,6 +77,15 @@ static bool HasLocation(const SpvReflectInterfaceVariable& v) noexcept {
     return v.built_in == -1 && v.location != UINT32_MAX;
 }
 
+// Which descriptor types are written with an image view. The rest are buffers, and an
+// ImageRequirement stays empty for those.
+static bool IsImageBinding(VkDescriptorType type) noexcept {
+    return type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
+        || type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE
+        || type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
+        || type == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
+}
+
 bool Reflect(const std::vector<uint32_t>& code, const char* path,
              ShaderInterface* out) noexcept {
     SpvReflectShaderModule module{};
@@ -191,6 +200,45 @@ bool Reflect(const std::vector<uint32_t>& code, const char* path,
         SetInterface& set = out->sets[b->set];
         set.bindingTypes[b->binding] = static_cast<VkDescriptorType>(b->descriptor_type);
         if (b->binding + 1 > set.bindingCount) { set.bindingCount = b->binding + 1; }
+
+        // What the stage requires of the image, for the bindings that take one.
+        //
+        // dim and arrayed are folded into a VkImageViewType because that is the field
+        // on the other side: a descriptor is written with an image view, and a view
+        // carries a type rather than the pair. Anything but the four we can name is a
+        // refusal -- Rect, Buffer and SubpassData are not shapes this program binds.
+        if (IsImageBinding(set.bindingTypes[b->binding])) {
+            ImageRequirement& want = set.images[b->binding];
+            want.isImage = true;
+            want.multisample = b->image.ms != 0;
+
+            // SPIR-V's Sampled operand: 1 is used with a sampler, 2 is a storage image.
+            want.storage = b->image.sampled == 2;
+
+            const bool arrayed = b->image.arrayed != 0;
+            switch (b->image.dim) {
+                case SpvDim1D:
+                    want.viewType = arrayed ? VK_IMAGE_VIEW_TYPE_1D_ARRAY
+                                            : VK_IMAGE_VIEW_TYPE_1D;
+                    break;
+                case SpvDim2D:
+                    want.viewType = arrayed ? VK_IMAGE_VIEW_TYPE_2D_ARRAY
+                                            : VK_IMAGE_VIEW_TYPE_2D;
+                    break;
+                case SpvDim3D:
+                    want.viewType = VK_IMAGE_VIEW_TYPE_3D;
+                    break;
+                case SpvDimCube:
+                    want.viewType = arrayed ? VK_IMAGE_VIEW_TYPE_CUBE_ARRAY
+                                            : VK_IMAGE_VIEW_TYPE_CUBE;
+                    break;
+                default:
+                    LOG("[vk] %s binding %u is a dim %d image, which this does not"
+                        " bind\n", path, b->binding, static_cast<int>(b->image.dim));
+                    spvReflectDestroyShaderModule(&module);
+                    return false;
+            }
+        }
 
         // Copied, because the module this points into is freed below. Truncated rather
         // than refused: a name is for telling two bindings apart, and a prefix does
@@ -308,11 +356,28 @@ bool BuildSetLayout(const VulkanDevice& dev,
         // never declare one, so the two need not be told apart.
         VkDescriptorType type = static_cast<VkDescriptorType>(0);
         VkShaderStageFlags stageFlags = 0;
+        const ProgramStage* declaredBy = nullptr;
         for (uint32_t s = 0; s < stageCount; ++s) {
-            const VkDescriptorType declared = stages[s].interface.sets[set].bindingTypes[i];
+            const SetInterface& face = stages[s].interface.sets[set];
+            const VkDescriptorType declared = face.bindingTypes[i];
             if (declared == 0) { continue; }
             type = declared;   // the last stage that declares it wins, as before
             stageFlags |= stages[s].interface.stage;
+
+            // Two stages reading one binding must be reading the same shape of image.
+            // The set layout is their union, so a disagreement here would produce one
+            // layout that neither of them is right about.
+            if (declaredBy == nullptr) {
+                declaredBy = &stages[s];
+                out->images[i] = face.images[i];
+            } else if (face.images[i].isImage != out->images[i].isImage
+                       || face.images[i].viewType != out->images[i].viewType
+                       || face.images[i].multisample != out->images[i].multisample
+                       || face.images[i].storage != out->images[i].storage) {
+                LOG("[vk] set %u binding %u: %s and %s ask for different images\n",
+                    set, i, declaredBy->path, stages[s].path);
+                return false;
+            }
         }
         if (stageFlags == 0) { continue; }   // a hole in the numbering
 
