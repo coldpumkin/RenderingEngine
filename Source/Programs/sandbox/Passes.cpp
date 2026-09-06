@@ -78,15 +78,22 @@ glm::mat4 ViewFromTransform(const Transform& transform) noexcept {
     return out;
 }
 
-Camera MakeCamera(const CameraDesc& desc) noexcept {
-    Camera out;
-    out.desc = desc;
-    out.view = ViewFromTransform(desc.transform);
+glm::mat4 ProjectionFor(float fovDegrees, const TextureDesc& target) noexcept {
+    // The aspect is the target's, which is the whole reason this takes one: a
+    // projection answers to the shape of the image it lands on.
+    const float aspect = static_cast<float>(target.extent.width)
+                       / static_cast<float>(target.extent.height);
 
     // No proj[1][1] *= -1: the viewport height is already negative.
     // Depth lands in [0,1] thanks to GLM_FORCE_DEPTH_ZERO_TO_ONE on the CMake target.
-    out.proj = glm::perspective(glm::radians(desc.fovDegrees), CameraAspect(desc),
-                                desc.nearPlane, desc.farPlane);
+    return glm::perspective(glm::radians(fovDegrees), aspect, kNearPlane, kFarPlane);
+}
+
+Camera MakeCamera(const CameraState& state, const TextureDesc& target) noexcept {
+    Camera out;
+    out.state = state;
+    out.view = ViewFromTransform(state.transform);
+    out.proj = ProjectionFor(state.fovDegrees, target);
     return out;
 }
 

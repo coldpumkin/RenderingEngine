@@ -1183,17 +1183,16 @@ int main() {
         // pass's frame the same way.
         FrameSlot& slot = renderer.slots[slotIndex];
 
-        // The desc's two halves, and they answer to different things: the transform to
-        // the keyboard, the rest to the image the projection lands on. Only the field
-        // of view is this program's own -- an aspect and two planes are the target's.
+        // State, and the image it is drawn into. Nothing here is a matrix: what the
+        // camera is belongs to this loop, what it looks like to the GPU is made from
+        // it, and the two arguments are that line.
         //
-        // viewPos comes out of the desc rather than being copied beside it -- one
-        // camera, one place its position is written down.
-        const Camera camera = MakeCamera(CameraDesc{Transform{eye, orientation},
-                                                    sceneTargetDescs.color.extent,
-                                                    kFovDegrees, kNearPlane, kFarPlane});
+        // viewPos comes back out of the state rather than being copied beside it --
+        // one camera, one place its position is written down.
+        const Camera camera = MakeCamera(CameraState{{eye, orientation}, kFovDegrees},
+                                         sceneTargetDescs.color);
         renderer.cameras[slot.index].value =
-            {camera.view, camera.proj, glm::vec4{camera.desc.transform.position, 0.0f}};
+            {camera.view, camera.proj, glm::vec4{camera.state.transform.position, 0.0f}};
 
         // What reaches a surface, and where its shadow map was drawn from.
         renderer.lights[slot.index].value =

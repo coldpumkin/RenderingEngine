@@ -269,42 +269,59 @@ struct Transform {
 // it. Only the first half goes away here.
 glm::mat4 ViewFromTransform(const Transform& transform) noexcept;
 
-struct CameraDesc {
-    // What the view is made from. Owned by whatever moves the camera.
+// The camera's state, as whatever moves it holds it
+//
+// State and not a rendering of it: the matrices below are made from this, and nothing
+// here is made from them. Two fields and not more -- what is missing is what belongs
+// to the renderer, and the split is the point:
+//
+//   here          where it is, which way it is turned, how wide it sees
+//   the renderer  what shape the picture is, and what range becomes depth
+struct CameraState {
     Transform transform{};
 
-    // What the projection is made from, and all three answer to the render target
-    // rather than to the camera: the extent is that target's, and the planes are the
-    // range its depth buffer resolves over. Only the field of view is the camera's.
-    //
-    // Where the aspect comes from. The projection answers to the image it lands on,
-    // and this is that image's size.
-    VkExtent2D target{};
-
+    // The one projection input that is not the renderer's. "How wide do I want to
+    // see" is a choice the thing holding the camera makes; an aspect is a fact about
+    // the image, and the planes are a policy (see ProjectionFor).
     float fovDegrees = 0.0f;
-    float nearPlane = 0.0f;
-    float farPlane = 0.0f;
 };
 
+// The two matrices are two functions, and their inputs do not overlap
+// ----------------------------------------------------------------------------
+//
+// One call making both hid that they answer to different things and change at
+// different times:
+//
+//   view  <- the transform                        every frame, while a key is held
+//   proj  <- fov, the target's extent, the planes  when a projection input changes
+//
+// The second is not "on resize" -- a resize is one case of it, and a field of view
+// that moved would be another. The light's projection is already this shape: every
+// argument of its ortho is a constant, so it is built once outside the loop.
+//
+// Neither is stored. A held proj is a second variable that a resize has to remember
+// to update, and one perspective() a frame buys the derivation instead.
+
+// Output: the projection, from what shapes it
+//
+// near and far are not taken. They decide which view-space range becomes depth and
+// how the precision spreads across it -- an input to this matrix, not a property of
+// the depth attachment, which only says how many bits store the result. They are
+// fixed here as the renderer's policy rather than exposed as camera state; the day
+// something wants to move them (a zoom, a precision fix) they join CameraState.
+glm::mat4 ProjectionFor(float fovDegrees, const TextureDesc& target) noexcept;
+
 struct Camera {
-    CameraDesc desc;
+    CameraState state;   // what it was made from
     glm::mat4 view{1.0f};
     glm::mat4 proj{1.0f};
 };
 
-// Output: the aspect the projection is built with, from the target it lands on
-constexpr float CameraAspect(const CameraDesc& desc) noexcept {
-    return static_cast<float>(desc.target.width)
-         / static_cast<float>(desc.target.height);
-}
-
-// Output: both matrices, from the desc that makes them
+// Output: both matrices, each from its own inputs
 //
-// Built every frame, which the 09-01 note about proj is not an argument against: that
-// value was rebuilt in a loop while nothing said what it depended on. Here the
-// dependency is the desc, and remaking from it is what keeps proj and target from
-// being two variables that have to be updated in step.
-Camera MakeCamera(const CameraDesc& desc) noexcept;
+// Two arguments because there are two owners: the state comes from whatever moves the
+// camera, the target from the renderer that draws into it.
+Camera MakeCamera(const CameraState& state, const TextureDesc& target) noexcept;
 
 // Two matrices and not their product
 // ----------------------------------------------------------------------------
