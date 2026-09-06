@@ -81,16 +81,16 @@ bool QuerySurfaceExtent(const VulkanInstance& inst,
     return caps.currentExtent.width != 0 && caps.currentExtent.height != 0;
 }
 
-TextureDesc SwapchainTargetDesc(VkSurfaceFormatKHR format, VkExtent2D extent) noexcept {
-    // One sample: a presentable image has no depth and cannot be multisampled. Every
-    // field here is the presentation engine's, which makes this the one target desc we
-    // do not decide.
+TextureDesc SwapchainTargetDesc(const SwapchainConfig& config, VkExtent2D extent) noexcept {
+    // One sample: a presentable image has no depth and cannot be multisampled.
     //
-    // TRANSFER_SRC matches what CreateSwapchain asks the surface for, so a reader can
-    // see from the desc that a frame may be copied out of one of these.
-    return TextureDesc{extent, format.format, VK_SAMPLE_COUNT_1_BIT,
-                       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
-                           | VK_IMAGE_USAGE_TRANSFER_SRC_BIT};
+    // The usage is the one the swapchain was asked for and not a constant written
+    // twice. It used to be spelled out here as COLOR_ATTACHMENT | TRANSFER_SRC while
+    // CreateSwapchain added the second bit only if the surface allowed it, so on a
+    // surface that did not, this desc claimed a bit the images did not have -- and
+    // ReadTexturePixels, whose whole guard is that bit, was reading the claim.
+    return TextureDesc{extent, config.format.format, VK_SAMPLE_COUNT_1_BIT,
+                       config.imageUsage};
 }
 
 TextureDesc SwapchainTargetDesc(const Window& window) noexcept {
@@ -101,12 +101,34 @@ TextureDesc SwapchainTargetDesc(const Window& window) noexcept {
     // Contract: the extent is true only at the call. Kept past a resize it is stale,
     //           and a pipeline reads the format and sample count from one, never the
     //           size. A live swapchain image carries the real extent.
-    return SwapchainTargetDesc(window.surfaceFormat, window.surfaceExtent);
+    return SwapchainTargetDesc(window.swapchainConfig, window.surfaceExtent);
 }
 
-bool SelectSurfaceFormat(const VulkanInstance& inst,
-                         VkPhysicalDevice gpu,
-                         Window* window) noexcept {
+bool ChooseSwapchainConfig(const VulkanInstance& inst,
+                           VkPhysicalDevice gpu,
+                           Window* window) noexcept {
+    // What the surface allows, asked once here rather than at every recreation.
+    VkSurfaceCapabilitiesKHR caps{};
+    if (inst.table.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gpu, window->surface, &caps)
+            != VK_SUCCESS) {
+        LOG("[vk] vkGetPhysicalDeviceSurfaceCapabilitiesKHR failed\n");
+        return false;
+    }
+
+    // COLOR_ATTACHMENT because passes draw straight into these, and it is the one usage
+    // the spec always puts in supportedUsageFlags.
+    //
+    // TRANSFER_SRC so a frame can be read back off the presented image rather than off
+    // something earlier in the chain. Asked for always and not only while capturing: a
+    // capture has to be of the same images a normal run presents, or it measures a path
+    // nobody runs. Optional, so what is recorded is what was granted.
+    window->swapchainConfig.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    if ((caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0) {
+        window->swapchainConfig.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    } else {
+        LOG("[vk] the surface does not allow TRANSFER_SRC; a frame cannot be read back\n");
+    }
+
     uint32_t count = 0;
     inst.table.vkGetPhysicalDeviceSurfaceFormatsKHR(gpu, window->surface, &count, nullptr);
     if (count == 0) {
@@ -124,7 +146,7 @@ bool SelectSurfaceFormat(const VulkanInstance& inst,
         LOG("[vk] surface offers no SRGB format\n");
         return false;
     }
-    window->surfaceFormat = chosen;
+    window->swapchainConfig.format = chosen;
     return true;
 }
 
@@ -137,9 +159,8 @@ bool SelectSurfaceFormat(const VulkanInstance& inst,
 bool CreateSwapchain(const VulkanInstance& inst,
                      const VulkanDevice& dev,
                      VkSurfaceKHR surface,
-                     VkSurfaceFormatKHR surfaceFormat,
+                     const SwapchainConfig& config,
                      VkExtent2D extent,
-                     uint32_t desiredImages,
                      VkSwapchainKHR oldSwapchain,
                      Swapchain* out) noexcept {
     Swapchain& sc = *out;
@@ -167,14 +188,14 @@ bool CreateSwapchain(const VulkanInstance& inst,
     // The caller's number, and 0 means the caller never said one. Refused rather
     // than clamped: the clamp below would turn it into the surface's minimum, which
     // is a legal swapchain and would hide the mistake.
-    if (desiredImages == 0) {
+    if (config.desiredImages == 0) {
         LOG("[vk] a swapchain was asked for with no image count\n");
         return false;
     }
 
     // Clamped to what the surface allows. maxImageCount == 0 means no upper bound, so
     // it is left out of the clamp rather than treated as zero.
-    uint32_t imageCount = desiredImages;
+    uint32_t imageCount = config.desiredImages;
     if (imageCount < caps.minImageCount) { imageCount = caps.minImageCount; }
     if (caps.maxImageCount > 0 && imageCount > caps.maxImageCount) {
         imageCount = caps.maxImageCount;
@@ -183,23 +204,14 @@ bool CreateSwapchain(const VulkanInstance& inst,
     VkSwapchainCreateInfoKHR info{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
     info.surface = surface;
     info.minImageCount = imageCount;
-    info.imageFormat = surfaceFormat.format;
-    info.imageColorSpace = surfaceFormat.colorSpace;
+    info.imageFormat = config.format.format;
+    info.imageColorSpace = config.format.colorSpace;
     info.imageExtent = extent;
     info.imageArrayLayers = 1;
-    // COLOR_ATTACHMENT because passes draw straight into these, and it is the one usage
-    // the spec always puts in supportedUsageFlags.
-    //
-    // TRANSFER_SRC so a frame can be read back off the presented image rather than off
-    // something earlier in the chain. Asked for always and not only while capturing: a
-    // capture has to be of the same images a normal run presents, or it measures a path
-    // nobody runs. Checked, because unlike the first this one is optional.
-    info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-    if ((caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0) {
-        info.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-    } else {
-        LOG("[vk] the surface does not allow TRANSFER_SRC; a frame cannot be read back\n");
-    }
+    // Settled once by ChooseSwapchainConfig against the same capabilities, so what is
+    // asked for here and what a target desc says are one value rather than two that
+    // agreed by habit.
+    info.imageUsage = config.imageUsage;
     // Only the graphics queue touches a swapchain image. Compute writing here
     // directly would mean CONCURRENT or a queue family ownership transfer, both of
     // which cost something -- picked when there is a reason to.
@@ -246,14 +258,14 @@ bool CreateSwapchain(const VulkanInstance& inst,
         // A queried image with a view of ours on it. The desc says what the image is,
         // and the post-process pipeline has to have been built for that same format.
         Texture& texture = sc.images[i].texture;
-        texture.desc = SwapchainTargetDesc(surfaceFormat, sc.extent);
+        texture.desc = SwapchainTargetDesc(config, sc.extent);
         texture.image.dev = &dev;
         texture.image.handle = rawImages[i];   // no allocation: it is not ours
 
         // The one place ownership splits: the image is the swapchain's, the view is
         // ours. Two types now say that, where an empty allocation used to.
         // From the desc just written, which is what these images actually are.
-        if (!CreateImageView(dev, rawImages[i], surfaceFormat.format,
+        if (!CreateImageView(dev, rawImages[i], config.format.format,
                              texture.desc.samples, texture.desc.usage,
                              {}, &texture.view)) {
             LOG("[vk] image view failed on swapchain image %u\n", i);
@@ -285,7 +297,7 @@ bool CreateSwapchain(const VulkanInstance& inst,
 
     LOG("[vk] swapchain %ux%u, %u images (min %u), format %d, FIFO\n",
         sc.extent.width, sc.extent.height, actualCount, caps.minImageCount,
-        static_cast<int>(surfaceFormat.format));
+        static_cast<int>(config.format.format));
     return true;
 }
 
@@ -304,16 +316,10 @@ bool EnsureSwapchain(const VulkanDevice& dev, Window* window) noexcept {
         return true;
     }
 
-    // **The format is not asked again.** window->surfaceFormat is settled once at
-    // startup and fed back in here, the way Unreal's FVulkanViewport carries
-    // PixelFormat into RecreateSwapchainFromRT.
-    //
-    // Re-querying makes "this can change at any time" the premise, and then something
-    // has to watch for it in the rendering path.
-    //
-    // Being wrong about that is not silent: calling vkCreateSwapchainKHR with an
-    // unsupported format is a VUID violation and the validation layer reports it. A
-    // real change (HDR) would be a request rather than a detection.
+    // **Nothing in the configuration is asked again.** It is settled once at startup
+    // and fed back in here, the way Unreal's FVulkanViewport carries PixelFormat into
+    // RecreateSwapchainFromRT. A real change (HDR) would be a request rather than a
+    // detection.
 
     // The old handle goes in as oldSwapchain, which retires it, and is released after
     // the new one exists. Per spec the retirement happens even if creation fails, so
@@ -325,8 +331,7 @@ bool EnsureSwapchain(const VulkanDevice& dev, Window* window) noexcept {
     // frame, so what a swapchain is made at is the size that was already read.
     auto fresh = std::make_unique<Swapchain>();
     const bool created = CreateSwapchain(*window->inst, dev, window->surface,
-                                         window->surfaceFormat, window->surfaceExtent,
-                                         window->desiredImages,
+                                         window->swapchainConfig, window->surfaceExtent,
                                          retiring, fresh.get());
 
     // Released **after** the new one is made, and not destroyed here: present may

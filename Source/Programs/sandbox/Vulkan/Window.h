@@ -52,39 +52,15 @@ struct Window {
     GLFWwindow* handle = nullptr;
     VkSurfaceKHR surface = VK_NULL_HANDLE;
 
-    // How many images we want the swapchain to rotate. **A policy and not a fact
-    // about anything here**, which is why it is a field the caller writes rather
-    // than a constant this layer reads -- nothing under Vulkan/ includes Config.h,
-    // and this was the last thing that did.
+    // What we ask this surface for. Settled once at startup by ChooseSwapchainConfig,
+    // and fed back in on every recreation rather than asked again -- re-querying makes
+    // "this can change at any time" the premise, and then something in the rendering
+    // path has to watch for it. Being wrong is not silent: creating a swapchain with an
+    // unsupported format is a VUID violation and the layer reports it.
     //
-    // Carried on the Window because EnsureSwapchain runs from BeginFrame, and a
-    // frame is not where a number like this can come from. It sits beside
-    // surfaceFormat for the same reason: settled once at startup, read on every
-    // recreation.
-    //
-    // Contract: set before the first EnsureSwapchain. 0 is refused rather than
-    //           clamped -- a swapchain of the surface's minimum is a legal thing to
-    //           make and not what forgetting to set this means.
-    uint32_t desiredImages = 0;
-
-    // The format belongs to the surface rather than the swapchain -- it is decided by
-    // the (GPU, surface) pair. Keeping it here means a pipeline does not have to wait
-    // for a swapchain to exist. SelectSurfaceFormat fills it in rather than
-    // OpenWindow, because the GPU has to be picked first.
-    //
-    // **Settled once at startup and left alone.** Recreating the swapchain feeds this
-    // same value back in, the way Unreal's FVulkanViewport carries PixelFormat into
-    // RecreateSwapchainFromRT.
-    //
-    // Asking again on every recreate makes "this can change at any time" the premise,
-    // and then something has to watch for it in the rendering path. Something did, and
-    // it never fired after the first frame.
-    //
-    // Being wrong about that is not silent: calling vkCreateSwapchainKHR with an
-    // unsupported format is a VUID violation and the validation layer reports it. If
-    // the format genuinely has to change one day (HDR), that is a request rather than
-    // a detection, and the place for it is another call to SelectSurfaceFormat.
-    VkSurfaceFormatKHR surfaceFormat{};
+    // Carried here because EnsureSwapchain runs from BeginFrame, and a frame is not
+    // where any of these can come from.
+    SwapchainConfig swapchainConfig;
 
     // The other half of what the (GPU, surface) pair answers, and it lives here for
     // the same reason the format does: it is an instance-level fact about this window

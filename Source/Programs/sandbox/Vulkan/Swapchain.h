@@ -16,6 +16,33 @@
 // Window.h includes this file; going back the other way, the name is enough.
 struct Window;
 
+// What we ask a surface for, settled once
+//
+// **These are choices, not facts.** The surface reports candidate formats, the usage
+// bits it allows and the bounds on image count; what is here is what we picked inside
+// those, and it is fixed for the life of the surface -- a swapchain remade on a resize
+// asks for exactly this again at a new size.
+//
+// imageUsage is the one that used to be worked out twice. CreateSwapchain chose it
+// from the capabilities and SwapchainTargetDesc wrote a constant, so a desc said
+// TRANSFER_SRC whether or not the surface had given it -- and ReadTexturePixels, which
+// refuses a texture without that bit, was reading the claim rather than the grant.
+//
+// A member of Window because there is one of these per surface, and the surface lives
+// there. The type is what says whose they are: a window does not decide what a
+// swapchain is made of, it is what one is made for.
+struct SwapchainConfig {
+    VkSurfaceFormatKHR format{};
+
+    // What was actually asked for and granted, not what we would have liked.
+    VkImageUsageFlags imageUsage = 0;
+
+    // Contract: set before the first EnsureSwapchain. 0 is refused rather than clamped
+    //           -- a swapchain of the surface's minimum is a legal thing to make and
+    //           not what forgetting to set this means.
+    uint32_t desiredImages = 0;
+};
+
 // An image something draws into, so it is a Texture -- the same type our own
 // attachments are, and its desc says what format it is. The one difference is that
 // there is no allocation: the image was queried, and only the view is ours.
@@ -46,9 +73,8 @@ struct Swapchain {
 bool CreateSwapchain(const VulkanInstance& inst,
                      const VulkanDevice& dev,
                      VkSurfaceKHR surface,
-                     VkSurfaceFormatKHR surfaceFormat,
+                     const SwapchainConfig& config,
                      VkExtent2D extent,
-                     uint32_t desiredImages,
                      VkSwapchainKHR oldSwapchain,
                      Swapchain* out) noexcept;
 
@@ -64,7 +90,12 @@ bool CreateSwapchain(const VulkanInstance& inst,
 // fed back into every recreate; the extent changes whenever the window does.
 
 // Effect: fills in window->surfaceFormat
-bool SelectSurfaceFormat(const VulkanInstance& inst,
+// Effect: settles what this surface will be asked for, into window->swapchainConfig
+//
+// Both queries the choices need, in one call: the format list and the capabilities.
+// Runs before the device exists, because a pipeline is compiled against the format and
+// cannot wait for a swapchain.
+bool ChooseSwapchainConfig(const VulkanInstance& inst,
                          VkPhysicalDevice gpu,
                          Window* window) noexcept;
 
@@ -85,7 +116,7 @@ bool QuerySurfaceExtent(const VulkanInstance& inst,
 // Output: what one swapchain image is, in the type our own targets use
 //
 // **Received, not chosen** -- the presentation engine hands back single-sample colour
-// images with no depth, and SelectSurfaceFormat settled which colour. That is the
+// images with no depth, and ChooseSwapchainConfig settled which colour. That is the
 // opposite of the targets we make, and the type does not say which, so the call does.
 //
 // CreateSwapchain fills each image's desc from this too, so what a pipeline is built
@@ -93,8 +124,8 @@ bool QuerySurfaceExtent(const VulkanInstance& inst,
 // The window overload exists because those pipelines are built before the first
 // swapchain does -- EnsureSwapchain runs from BeginFrame.
 //
-// Contract: SelectSurfaceFormat has run.
-TextureDesc SwapchainTargetDesc(VkSurfaceFormatKHR format, VkExtent2D extent) noexcept;
+// Contract: ChooseSwapchainConfig has run.
+TextureDesc SwapchainTargetDesc(const SwapchainConfig& config, VkExtent2D extent) noexcept;
 TextureDesc SwapchainTargetDesc(const Window& window) noexcept;
 
 // Effect: remakes window->swapchain when it is out of date or absent
