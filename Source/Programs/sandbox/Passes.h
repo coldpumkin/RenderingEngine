@@ -251,6 +251,13 @@ bool CreateMaterials(const VulkanDevice& dev,
 // single constant that belongs to the asset's units rather than to any one object. A
 // loader that reads glTF nodes brings the third field with it, and stores the same
 // quaternion these nodes already hold.
+// Which way is up, for everything in this program
+//
+// Neither the app's nor the renderer's -- a convention both sides already agree on and
+// could not disagree about without the picture inverting. ViewportY, the ban on
+// proj[1][1] *= -1, and the normal rules all read the same y.
+constexpr glm::vec3 kWorldUp{0.0f, 1.0f, 0.0f};
+
 struct Transform {
     glm::vec3 position{};
 
@@ -322,6 +329,42 @@ struct Camera {
 // Two arguments because there are two owners: the state comes from whatever moves the
 // camera, the target from the renderer that draws into it.
 Camera MakeCamera(const CameraState& state, const TextureDesc& target) noexcept;
+
+// The light's state, as whatever moves it holds it
+//
+// A direction where the camera has a Transform, and the asymmetry is the light's own:
+// a directional light has no position -- parallel rays have no eye point -- and nothing
+// owns a roll about its axis. So the camera hands over a placement and this hands over
+// a direction, out of which the shadow technique makes a placement.
+//
+// Which is why quaternions do not follow here. They were worth it for the camera
+// because an orientation was state being derived every frame; there is no orientation
+// to preserve in a direction, so a basis has to be manufactured either way.
+struct LightState {
+    glm::vec3 direction{};       // from a surface toward the light
+    glm::vec3 color{1.0f};
+    float ambient = 0.0f;
+};
+
+// Output: the world from the light's side -- what the shadow pass draws the map with,
+//         and what the passes that sample it compare against
+//
+// sceneCenter is neither the light's nor the renderer's: it is what the box has to
+// cover, which is a fact about the scene. Taken as an argument rather than held here,
+// so "there is one scene and it sits at this point" stays out of the renderer.
+//
+// The up is chosen inside, next to the cross product it protects. It used to live in
+// the frame loop, far from this lookAt, which is how one constant came to hold both a
+// lighting decision and this one with only the first written down.
+glm::mat4 ShadowView(const glm::vec3& direction, const glm::vec3& sceneCenter) noexcept;
+
+// Output: the box the light sees through
+//
+// Takes no state at all. How much world the map covers and how far back the light sits
+// are the technique's, the aspect is the map's, and nothing of the app's reaches any of
+// it -- so this is built once and not per frame, which is the same rule ProjectionFor
+// states and the reason both of these read a TextureDesc rather than an extent.
+glm::mat4 ShadowProjectionFor(const TextureDesc& map) noexcept;
 
 // Two matrices and not their product
 // ----------------------------------------------------------------------------

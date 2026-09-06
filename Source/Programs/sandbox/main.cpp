@@ -66,8 +66,7 @@
 
 // One header at a time. <glm/ext.hpp> was dropped when vendoring (VERSION.md).
 #include <glm/common.hpp>                  // clamp
-#include <glm/ext/matrix_clip_space.hpp>   // perspective
-#include <glm/ext/matrix_transform.hpp>    // rotate, translate, scale, lookAt
+#include <glm/ext/matrix_transform.hpp>    // scale
 #include <glm/geometric.hpp>               // normalize, cross
 #include <glm/gtc/quaternion.hpp>          // angleAxis, and turning a vector by one
 #include <glm/trigonometric.hpp>           // radians
@@ -985,20 +984,21 @@ int main() {
     uint32_t slotIndex = 0;       // which slot this frame borrows
     double lastTime = glfwGetTime();
 
-    // The light's half that does not move -- the loop turns its direction, not these.
+    // Where the scene is, for the shadow box to cover
     //
-    // The centre is fixed rather than fitted to the camera, so the box covers this
-    // scene and nothing larger; scene.frag returns "lit" outside it. Orthographic
-    // because the light is directional: parallel rays have no eye point, only a box,
-    // and the box decides how much world one texel covers.
+    // **A stand-in, and worth naming as one.** This is not a policy the renderer chose;
+    // it is a fact about the scene, standing in for something a scene would say. There
+    // is one of it because there is one Sponza and it does not move, and kSponzaScale
+    // above is the same fact wearing different clothes. The renderer takes it as an
+    // argument rather than holding it, so neither of those becomes part of a type.
     //
-    // Its aspect comes from the map, the way the camera's comes from its target.
+    // Fixed rather than fitted to the camera, so the box covers this scene and nothing
+    // larger; scene.frag returns "lit" outside it.
     constexpr glm::vec3 kSceneCenter{0.0f, 3.0f, 0.0f};
-    const float shadowAspect = static_cast<float>(shadowTarget.extent.width)
-                             / static_cast<float>(shadowTarget.extent.height);
-    const glm::mat4 lightProj =
-        glm::ortho(-kShadowRadius * shadowAspect, kShadowRadius * shadowAspect,
-                   -kShadowRadius, kShadowRadius, 0.1f, kShadowDistance * 2.0f);
+
+    // Built once, because none of its inputs move -- see ShadowProjectionFor, which
+    // takes no state at all.
+    const glm::mat4 lightProj = ShadowProjectionFor(shadowTarget);
 
     // What the item order costs in state changes. Outside the loop because the panel
     // is built before RecordFrame fills it, so what it shows is the last frame's --
@@ -1127,8 +1127,6 @@ int main() {
         // vertical is not what these four keys are for.
         pitch = glm::clamp(pitch, -89.0f, 89.0f);
 
-        constexpr glm::vec3 kWorldUp{0.0f, 1.0f, 0.0f};
-
         // What the renderer is handed: the orientation itself, rather than a direction
         // read off it. Built from the two angles each frame and not accumulated -- a
         // running product of small turns drifts and needs renormalizing, and these two
@@ -1155,27 +1153,17 @@ int main() {
         if (held(GLFW_KEY_Q)) { eye -= kWorldUp * kMoveSpeed * dt; }
 
 
-        // Light
+        // Light -- state, and only state
         //
         // One directional light, circling in xz so the shadows sweep. y is fixed at
         // 3.0: measured, not chosen -- at 0.5 and 1.4 the arcades cut the sun off
-        // before the courtyard and the scene reads as one flat dark mass.
-        const glm::vec3 lightDir = glm::normalize(
-            glm::vec3{std::cos(t) * 0.7f, 3.0f, std::sin(t) * 0.7f});
-
-        // lightDir points from a surface toward the light, so the eye is the centre
-        // plus it.
-        //
-        // **The up is chosen rather than assumed.** lookAt builds a basis by crossing
-        // the forward with the up, and that collapses when the two are parallel -- a
-        // sun overhead. It has not happened because y is fixed at 3.0, which puts the
-        // direction 13.2 degrees off vertical, but **3.0 was chosen for how the scene
-        // is lit** (see above) and nothing said it was also holding this up. One
-        // constant doing two jobs, with only one of them written down.
-        const glm::vec3 lightUp = glm::abs(lightDir.y) > 0.99f
-                                ? glm::vec3{0.0f, 0.0f, 1.0f} : kWorldUp;
-        const glm::mat4 lightView =
-            glm::lookAt(kSceneCenter + lightDir * kShadowDistance, kSceneCenter, lightUp);
+        // before the courtyard and the scene reads as one flat dark mass. It no longer
+        // holds a second job: the degenerate up that used to depend on it is chosen
+        // inside ShadowView now.
+        const LightState light{
+            glm::normalize(glm::vec3{std::cos(t) * 0.7f, 3.0f, std::sin(t) * 0.7f}),
+            glm::vec3{1.0f, 0.95f, 0.9f},
+            0.15f};
         // Fill this frame's share of the pass
         //
         // Assignment only, so it belongs up here: what reaches the GPU, and when, is
@@ -1203,12 +1191,15 @@ int main() {
                                               .viewPos = glm::vec4{
                                                   camera.state.transform.position, 1.0f}};
 
-        // What reaches a surface, and where its shadow map was drawn from.
+        // What reaches a surface, and where its shadow map was drawn from. The second
+        // is made here rather than held: it turns with the light every frame, while
+        // lightProj above does not move at all.
         renderer.lights[slot.index].value =
-            {.direction = glm::vec4{lightDir, 0.0f},
-             .color = glm::vec4{1.0f, 0.95f, 0.9f, 0.15f}};
-        renderer.shadows[slot.index].value = {.lightView = lightView,
-                                              .lightProj = lightProj};
+            {.direction = glm::vec4{light.direction, 0.0f},
+             .color = glm::vec4{light.color, light.ambient}};
+        renderer.shadows[slot.index].value =
+            {.lightView = ShadowView(light.direction, kSceneCenter),
+             .lightProj = lightProj};
 
         // Draw it
         // --------------------------------------------------------------------

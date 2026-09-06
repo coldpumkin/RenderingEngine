@@ -13,8 +13,10 @@
 #include <vector>     // one handle per material, counted at load time
 #include <iterator>   // std::size
 
-#include <glm/matrix.hpp>                  // inverse, transpose
-#include <glm/ext/matrix_clip_space.hpp>    // perspective
+#include <glm/common.hpp>                   // abs
+#include <glm/matrix.hpp>                   // inverse, transpose
+#include <glm/ext/matrix_clip_space.hpp>    // perspective, ortho
+#include <glm/ext/matrix_transform.hpp>     // lookAt
 #include <glm/trigonometric.hpp>            // radians
 
 bool CreateMaterials(const VulkanDevice& dev,
@@ -95,6 +97,32 @@ Camera MakeCamera(const CameraState& state, const TextureDesc& target) noexcept 
     out.view = ViewFromTransform(state.transform);
     out.proj = ProjectionFor(state.fovDegrees, target);
     return out;
+}
+
+glm::mat4 ShadowView(const glm::vec3& direction, const glm::vec3& sceneCenter) noexcept {
+    // direction runs from a surface toward the light, so the eye is the centre plus it.
+    //
+    // Chosen and not assumed: lookAt builds a basis by crossing the forward with the
+    // up, and that collapses when the two are parallel -- a sun directly overhead.
+    const glm::vec3 up = glm::abs(direction.y) > 0.99f
+                       ? glm::vec3{0.0f, 0.0f, 1.0f} : kWorldUp;
+
+    return glm::lookAt(sceneCenter + direction * kShadowDistance, sceneCenter, up);
+}
+
+glm::mat4 ShadowProjectionFor(const TextureDesc& map) noexcept {
+    // Orthographic because the light is directional: parallel rays have no eye point to
+    // project from, only a box, and the box decides how much world one texel covers.
+    //
+    // The aspect comes from the map the way the camera's comes from its target, which
+    // is what lets the map stop being square without anything else knowing.
+    const float aspect = static_cast<float>(map.extent.width)
+                       / static_cast<float>(map.extent.height);
+
+    // 0.1 rather than 0: an ortho box with a zero near plane is legal and wastes half
+    // its depth range on space behind the light.
+    return glm::ortho(-kShadowRadius * aspect, kShadowRadius * aspect,
+                      -kShadowRadius, kShadowRadius, 0.1f, kShadowDistance * 2.0f);
 }
 
 // HOST_VISIBLE + MAPPED, like every uniform here: one memcpy a frame, so a staging
