@@ -404,6 +404,14 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     viewportState.viewportCount = 1;
     viewportState.scissorCount = 1;
 
+    // A stencil test reads the stencil aspect, so there has to be one to read. The
+    // Contract on the field said this and nothing asked it; the declared stencil format
+    // is what it is asked of, which is why the field had to exist first.
+    if (desc.stencilTest != VK_FALSE && formats.stencil == VK_FORMAT_UNDEFINED) {
+        LOG("[vk] this desc enables the stencil test and draws no stencil attachment\n");
+        return false;
+    }
+
     // One image carries both aspects, so a pipeline that writes both writes one
     // format -- VUID-VkGraphicsPipelineCreateInfo-renderPass-06589. Asked of the
     // contract alone, which is all a pipeline has and all this needs.

@@ -85,12 +85,11 @@ AttachmentFormats AttachmentFormatsOf(const Attachment attachments[],
         if (slot == nullptr) { continue; }
         *slot = a.resource->format;
 
+        // A disagreement is not reported here. ValidatePassDesc refuses it, and this
+        // runs once per frame in flight on some paths, so one fault would say three
+        // things. The projection answers with the first, which is what a pipeline is
+        // compiled against.
         if (first == nullptr) { first = a.resource; }
-        else if (a.resource->samples != first->samples) {
-            LOG("[vk] attachment %u is %d-sample where the first is %d-sample\n", i,
-                static_cast<int>(a.resource->samples),
-                static_cast<int>(first->samples));
-        }
     }
 
     if (first != nullptr) { formats.samples = first->samples; }
@@ -127,18 +126,32 @@ bool QueryTargetCapabilities(const VulkanInstance& inst, VkPhysicalDevice gpu,
                              TargetCapabilities* out) noexcept {
     TargetCapabilities& formats = *out;
 
-    // Most precise first, and stencil-free ahead of stencil since we never use
-    // stencil: carrying it costs memory and puts another aspectMask on every
-    // barrier and view. optimalTiling because render targets are never linear.
+    // Most precise first, and every candidate is depth-only. optimalTiling because
+    // render targets are never linear.
+    //
+    // **A combined format is not on this list, and that is a refusal rather than a
+    // preference.** The aspect an image needs is not the format's -- it is the format's
+    // and the use's together, and on a combined format the two uses this repo already
+    // has want opposite things. A barrier over one needs both aspects named
+    // (VUID-VkImageMemoryBarrier2-image-03320, since separateDepthStencilLayouts is not
+    // asked for), while a view sampled from one must name exactly one
+    // (VUID-VkDescriptorImageInfo-imageView-01976). The shadow map is both, so one
+    // image would need two views and a layout of DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+    // rather than DEPTH_ATTACHMENT_OPTIMAL, which naming both aspects rules out (08702).
+    //
+    // Measured before deciding: forcing the list onto D32_SFLOAT_S8_UINT draws ten
+    // errors from vkCmdPipelineBarrier2 and nothing else works differently. Nothing
+    // here uses stencil, so the machinery buys a format we do not want -- and a search
+    // that can land on it is worse than one that cannot.
     //
     // What each candidate has to satisfy comes from the usage handed in -- so a GPU
     // where D32_SFLOAT can be drawn into but not sampled moves on to the next one
-    // instead of being found out at the shadow map.
+    // instead of being found out at the shadow map. D16_UNORM last: least precise, and
+    // there so the refusal below stays as rare as a depth-only search can make it.
     const VkFormatFeatureFlags neededDepth = RequiredFormatFeatures(depthUsage);
     for (const VkFormat candidate : {VK_FORMAT_D32_SFLOAT,
                                      VK_FORMAT_X8_D24_UNORM_PACK32,
-                                     VK_FORMAT_D32_SFLOAT_S8_UINT,
-                                     VK_FORMAT_D24_UNORM_S8_UINT}) {
+                                     VK_FORMAT_D16_UNORM}) {
         VkFormatProperties props{};
         inst.table.vkGetPhysicalDeviceFormatProperties(gpu, candidate, &props);
         if ((props.optimalTilingFeatures & neededDepth) == neededDepth) {
@@ -175,7 +188,9 @@ bool QueryTargetCapabilities(const VulkanInstance& inst, VkPhysicalDevice gpu,
     // Both failures live here, not at the call site: the caller would have to know
     // that UNDEFINED and 1_BIT are the sentinels.
     if (formats.depthFormat == VK_FORMAT_UNDEFINED) {
-        LOG("[vk] no usable depth format\n");
+        LOG("[vk] no depth-only format on this GPU does all of usage 0x%x. A combined"
+            " depth/stencil one would need per-aspect barriers and a second view for"
+            " every sampled depth image; see the candidate list above\n", depthUsage);
         return false;
     }
     if (formats.samples == VK_SAMPLE_COUNT_1_BIT) {

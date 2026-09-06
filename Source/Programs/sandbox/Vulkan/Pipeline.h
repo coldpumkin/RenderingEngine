@@ -189,11 +189,10 @@ struct GraphicsPipelineDesc {
     // Needs multiview.
     uint32_t viewMask = 0;
 
-    // Off unless the depth format carries a stencil aspect, which is the resource's
-    // fact -- ChooseDepthFormat may land on D32_SFLOAT_S8_UINT.
-    //
-    // Contract: enabling this needs a depth target whose format has a stencil aspect.
-    //           Nothing here can see the image, so this stays a contract.
+    // Enabling this needs a stencil attachment to read, and formats.stencil is where
+    // the desc says whether there is one. CreateGraphicsPipeline refuses the pair --
+    // a contract until the format was declared rather than inferred, because until
+    // then the only thing to ask was the depth format, which is a different question.
     VkBool32 stencilTest = VK_FALSE;
     VkStencilOpState stencilFront{};
     VkStencilOpState stencilBack{};
@@ -204,9 +203,11 @@ struct GraphicsPipelineDesc {
     // Zeroed, so a colour target nothing was said about writes no channels --
     // CreateGraphicsPipeline refuses that rather than compiling a black attachment.
     //
-    // Contract: an attachment that blends with what is behind it needs depthWrite off,
-    //           or it hides what is drawn after. depthWrite is dynamic state, so nothing
-    //           here holds the two together.
+    // Blending with depthWrite on hides what is drawn after, which is usually a
+    // mistake and is not one Vulkan forbids -- additive over opaque geometry wants
+    // exactly that. So this is not checked anywhere: a refusal would refuse a legal
+    // picture. The one pipeline here that blends is the panel's, and it has the depth
+    // test off, which is what makes depthWrite moot rather than agreed.
     VkPipelineColorBlendAttachmentState blend[kMaxColorTargets]{};
 
     // What every state is filled with -- baked in, or issued by BindPipeline if

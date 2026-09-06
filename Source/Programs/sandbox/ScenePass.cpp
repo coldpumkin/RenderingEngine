@@ -11,22 +11,30 @@
 
 SceneTargetDescs MakeSceneTargets(VkExtent2D extent, VkFormat colour,
                                   const TargetCapabilities& caps) noexcept {
-    return SceneTargetDescs{
-        // No SAMPLED: a sampler2D cannot read a multisample image.
-        {extent, colour, caps.samples, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT},
+    SceneTargetDescs descs{};
 
-        // The only image that leaves this pass. SAMPLED because the post pass reads
-        // it, TRANSFER_SRC because the capture does -- both bits are edges rather
-        // than properties, and TRANSFER_SRC is always on because a flag set only in
-        // capture builds would make the captured frame a different frame.
-        {extent, colour, VK_SAMPLE_COUNT_1_BIT,
-         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
-             | VK_IMAGE_USAGE_SAMPLED_BIT
-             | VK_IMAGE_USAGE_TRANSFER_SRC_BIT},
+    // No SAMPLED: a sampler2D cannot read a multisample image.
+    descs.color = {extent, colour, caps.samples, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT};
 
-        {extent, caps.depthFormat, caps.samples,
-         VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT},
-    };
+    // **From the colour, not written again beside it.** A resolve destination has to
+    // match its source's format (VUID-VkRenderingAttachmentInfo-imageView-06865) and
+    // cover the same area, and both were spelled out twice here -- the same shape as
+    // the swapchain usage that a desc claimed and a swapchain granted separately.
+    // What differs is what a resolve destination is for: one sample, and the two edges
+    // out of this pass.
+    //
+    // SAMPLED because the post pass reads it, TRANSFER_SRC because the capture does.
+    // TRANSFER_SRC is always on rather than only in capture builds, because a flag set
+    // one way for a capture would make the captured frame a different frame.
+    descs.resolve = descs.color;
+    descs.resolve.samples = VK_SAMPLE_COUNT_1_BIT;
+    descs.resolve.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+                        | VK_IMAGE_USAGE_SAMPLED_BIT
+                        | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+
+    descs.depth = {extent, caps.depthFormat, caps.samples,
+                   VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT};
+    return descs;
 }
 
 // One frame's three images, from the descs that say what they are.
