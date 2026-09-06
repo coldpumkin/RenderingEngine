@@ -15,7 +15,6 @@
 
 #include <glm/matrix.hpp>                  // inverse, transpose
 #include <glm/ext/matrix_clip_space.hpp>    // perspective
-#include <glm/ext/matrix_transform.hpp>     // lookAt
 #include <glm/trigonometric.hpp>            // radians
 
 bool CreateMaterials(const VulkanDevice& dev,
@@ -70,10 +69,19 @@ bool CreateMaterials(const VulkanDevice& dev,
     return true;
 }
 
+glm::mat4 ViewFromTransform(const Transform& transform) noexcept {
+    // The inverse of T(p) * R(q), which is R(q^-1) * T(-p).
+    const glm::quat back = glm::conjugate(transform.orientation);
+
+    glm::mat4 out = glm::mat4_cast(back);
+    out[3] = glm::vec4{back * -transform.position, 1.0f};
+    return out;
+}
+
 Camera MakeCamera(const CameraDesc& desc) noexcept {
     Camera out;
     out.desc = desc;
-    out.view = glm::lookAt(desc.eye, desc.eye + desc.forward, desc.up);
+    out.view = ViewFromTransform(desc.transform);
 
     // No proj[1][1] *= -1: the viewport height is already negative.
     // Depth lands in [0,1] thanks to GLM_FORCE_DEPTH_ZERO_TO_ONE on the CMake target.

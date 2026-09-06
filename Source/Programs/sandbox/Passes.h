@@ -49,7 +49,8 @@
 #include <cstddef>    // offsetof, for the block members MaterialSet declares
 #include <iterator>   // std::size
 
-#include <glm/glm.hpp>   // the shader-facing structs hold matrices
+#include <glm/glm.hpp>                // the shader-facing structs hold matrices
+#include <glm/gtc/quaternion.hpp>     // Transform holds an orientation
 
 struct Mesh;
 
@@ -237,7 +238,45 @@ bool CreateMaterials(const VulkanDevice& dev,
 // comparison, because one side of it had been multiplied away.
 //
 // So: the same shape as Texture. What it was made from, then what was made.
+// Where something is and which way it is turned
+// ----------------------------------------------------------------------------
+//
+// State, and not a direction derived from it. lookAt does not take an orientation --
+// it makes one, by crossing a forward with an up hint, and that manufacture is what
+// costs: the up is consumed rather than kept, so roll has nowhere to live, and the
+// cross collapses when the two are parallel. main.cpp's pitch clamp is that collapse
+// and not a decision about how a camera should move.
+//
+// No scale. Nothing here has one -- a camera cannot scale, and the draw items share a
+// single constant that belongs to the asset's units rather than to any one object. A
+// loader that reads glTF nodes brings the third field with it, and stores the same
+// quaternion these nodes already hold.
+struct Transform {
+    glm::vec3 position{};
+
+    // w, x, y, z. The identity looks down -z with +y up, which is the convention
+    // mat4_cast writes and the one a projection built by GLM expects.
+    glm::quat orientation{1.0f, 0.0f, 0.0f, 0.0f};
+};
+
+// Output: the view matrix -- the inverse of that transform
+//
+// Not glm::inverse. A unit quaternion's conjugate is its inverse and a rigid
+// transform's is [R^T | -R^T t], so the general cofactor path would spend work
+// deriving what is already known.
+//
+// This is the second half of what lookAt does: it builds a basis and then transposes
+// it. Only the first half goes away here.
+glm::mat4 ViewFromTransform(const Transform& transform) noexcept;
+
 struct CameraDesc {
+    // What the view is made from. Owned by whatever moves the camera.
+    Transform transform{};
+
+    // What the projection is made from, and all three answer to the render target
+    // rather than to the camera: the extent is that target's, and the planes are the
+    // range its depth buffer resolves over. Only the field of view is the camera's.
+    //
     // Where the aspect comes from. The projection answers to the image it lands on,
     // and this is that image's size.
     VkExtent2D target{};
@@ -245,10 +284,6 @@ struct CameraDesc {
     float fovDegrees = 0.0f;
     float nearPlane = 0.0f;
     float farPlane = 0.0f;
-
-    glm::vec3 eye{};
-    glm::vec3 forward{};
-    glm::vec3 up{0.0f, 1.0f, 0.0f};
 };
 
 struct Camera {

@@ -69,7 +69,8 @@
 #include <glm/ext/matrix_clip_space.hpp>   // perspective
 #include <glm/ext/matrix_transform.hpp>    // rotate, translate, scale, lookAt
 #include <glm/geometric.hpp>               // normalize, cross
-#include <glm/trigonometric.hpp>           // radians, cos, sin
+#include <glm/gtc/quaternion.hpp>          // angleAxis, and turning a vector by one
+#include <glm/trigonometric.hpp>           // radians
 
 // Scene data
 // ============================================================================
@@ -978,8 +979,9 @@ int main() {
     // Frame state -- what the loop carries across frames
     // ------------------------------------------------------------------------
     //
-    // Not a struct: only lookAt reads the camera values, so grouping would enforce
-    // nothing.
+    // Not a struct: these are the angles the keys change, and the boundary already has
+    // a type -- the loop hands the renderer a Transform built from eye and the two of
+    // them. Grouping them here would name the same thing twice.
     uint32_t slotIndex = 0;       // which slot this frame borrows
     double lastTime = glfwGetTime();
 
@@ -1120,18 +1122,30 @@ int main() {
         if (held(GLFW_KEY_UP))    { pitch += kTurnSpeed * dt; }
         if (held(GLFW_KEY_DOWN))  { pitch -= kTurnSpeed * dt; }
 
-        // At +-90 forward aligns with world up and the cross product below collapses.
+        // A limit now, and not a collapse. Nothing below crosses two vectors, so +-90
+        // is a representable orientation; this stays because a camera that tips past
+        // vertical is not what these four keys are for.
         pitch = glm::clamp(pitch, -89.0f, 89.0f);
 
-        const glm::vec3 forward = glm::normalize(glm::vec3{
-            glm::cos(glm::radians(yaw)) * glm::cos(glm::radians(pitch)),
-            glm::sin(glm::radians(pitch)),
-            glm::sin(glm::radians(yaw)) * glm::cos(glm::radians(pitch)),
-        });
-
-        // Derived from forward, so it cannot drift out of step with it.
         constexpr glm::vec3 kWorldUp{0.0f, 1.0f, 0.0f};
-        const glm::vec3 right = glm::normalize(glm::cross(forward, kWorldUp));
+
+        // What the renderer is handed: the orientation itself, rather than a direction
+        // read off it. Built from the two angles each frame and not accumulated -- a
+        // running product of small turns drifts and needs renormalizing, and these two
+        // angles are already the whole of what the keys change.
+        //
+        // The quarter turn is where two conventions meet: yaw is measured from +x (see
+        // its initial value) and a quaternion's identity looks down -z.
+        constexpr float kYawFromIdentity = 90.0f;
+        const glm::quat orientation =
+              glm::angleAxis(glm::radians(-(yaw + kYawFromIdentity)), kWorldUp)
+            * glm::angleAxis(glm::radians(pitch), glm::vec3{1.0f, 0.0f, 0.0f});
+
+        // Read back out of the orientation rather than kept beside it, so neither can
+        // drift from it. right stays horizontal: pitch turns about the local x, which
+        // leaves the axis the yaw put it on.
+        const glm::vec3 forward = orientation * glm::vec3{0.0f, 0.0f, -1.0f};
+        const glm::vec3 right   = orientation * glm::vec3{1.0f, 0.0f, 0.0f};
 
         if (held(GLFW_KEY_W)) { eye += forward * kMoveSpeed * dt; }
         if (held(GLFW_KEY_S)) { eye -= forward * kMoveSpeed * dt; }
@@ -1169,14 +1183,17 @@ int main() {
         // pass's frame the same way.
         FrameSlot& slot = renderer.slots[slotIndex];
 
-        // center is eye + forward: an absolute target would pin the gaze and rotation
-        // would stop working. viewPos comes out of the desc rather than being copied
-        // beside it -- one camera, one place its position is written down.
-        const Camera camera = MakeCamera(CameraDesc{sceneTargetDescs.color.extent,
-                                                    kFovDegrees, kNearPlane, kFarPlane,
-                                                    eye, forward, kWorldUp});
+        // The desc's two halves, and they answer to different things: the transform to
+        // the keyboard, the rest to the image the projection lands on. Only the field
+        // of view is this program's own -- an aspect and two planes are the target's.
+        //
+        // viewPos comes out of the desc rather than being copied beside it -- one
+        // camera, one place its position is written down.
+        const Camera camera = MakeCamera(CameraDesc{Transform{eye, orientation},
+                                                    sceneTargetDescs.color.extent,
+                                                    kFovDegrees, kNearPlane, kFarPlane});
         renderer.cameras[slot.index].value =
-            {camera.view, camera.proj, glm::vec4{camera.desc.eye, 0.0f}};
+            {camera.view, camera.proj, glm::vec4{camera.desc.transform.position, 0.0f}};
 
         // What reaches a surface, and where its shadow map was drawn from.
         renderer.lights[slot.index].value =
