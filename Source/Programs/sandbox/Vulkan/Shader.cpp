@@ -176,6 +176,34 @@ bool Reflect(const std::vector<uint32_t>& code, const char* path,
         if (b->name != nullptr) {
             std::strncpy(set.bindingNames[b->binding], b->name, kMaxBindingNameLength - 1);
         }
+
+        // The block's members, for a uniform buffer. An image has none, and this is
+        // the field the Contract comments in the shaders were standing in for: a
+        // renderer declares CameraUniform and a stage reads part of it, and until
+        // this was read nothing could compare the two.
+        //
+        // offset is from the block's start, which is what offsetof gives on the other
+        // side. absolute_offset would be right for a push constant range and wrong
+        // here.
+        if (b->descriptor_type == SPV_REFLECT_DESCRIPTOR_TYPE_UNIFORM_BUFFER) {
+            const SpvReflectBlockVariable& block = b->block;
+            if (block.member_count > kMaxBlockMembers) {
+                LOG("[vk] %s declares %u members in binding %u, over the %u we allow\n",
+                    path, block.member_count, b->binding, kMaxBlockMembers);
+                spvReflectDestroyShaderModule(&module);
+                return false;
+            }
+            set.memberCounts[b->binding] = block.member_count;
+            for (uint32_t m = 0; m < block.member_count; ++m) {
+                const SpvReflectBlockVariable& src = block.members[m];
+                BlockMember& dst = set.members[b->binding][m];
+                if (src.name != nullptr) {
+                    std::strncpy(dst.name, src.name, kMaxBindingNameLength - 1);
+                }
+                dst.offset = src.offset;
+                dst.size = src.size;
+            }
+        }
     }
 
     // Gaps, both ends, before anyone else sees this. A gap is a fact about this one
@@ -392,6 +420,45 @@ static bool CheckStageInterface(const ProgramStage& producer,
 // Names are compared because types cannot tell four samplers apart, and swapping two of
 // them is a picture that is wrong and legal. An empty name on either side skips that
 // half: the compiler may strip one, and a caller may not care which slot is which.
+// Output: false when a stage reads a block laid out differently from the declaration
+//
+// Per stage rather than over the union, because each stage's declaration stands on its
+// own: two stages may take different parts of one block and both be right. A union
+// would have to merge two subsets and could not say which stage was wrong.
+//
+// The shader side is the subset. Every member it names has to be in the declaration at
+// the same offset and size; one it names that is not there is the error this exists to
+// catch, because it means the two structs have drifted.
+static bool CheckBlockMembers(const char* path, uint32_t set, uint32_t binding,
+                              const SetInterface& declared,
+                              const RequiredMember* want, uint32_t wantCount) noexcept {
+    for (uint32_t m = 0; m < declared.memberCounts[binding]; ++m) {
+        const BlockMember& have = declared.members[binding][m];
+        if (have.name[0] == '\0') { continue; }   // the compiler stripped it
+
+        const RequiredMember* match = nullptr;
+        for (uint32_t w = 0; w < wantCount; ++w) {
+            if (want[w].name != nullptr && std::strcmp(want[w].name, have.name) == 0) {
+                match = &want[w];
+                break;
+            }
+        }
+        if (match == nullptr) {
+            LOG("[vk] %s: set %u binding %u reads \"%s\", which the declaration "
+                "does not have\n", path, set, binding, have.name);
+            return false;
+        }
+        if (match->offset != have.offset || match->size != have.size) {
+            LOG("[vk] %s: set %u binding %u reads \"%s\" at offset %u size %u, "
+                "declared at offset %u size %u\n",
+                path, set, binding, have.name, have.offset, have.size,
+                match->offset, match->size);
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool CheckRequiredSet(const ShaderProgram& program, const RequiredSet& want) noexcept {
     if (want.set >= kMaxSets) {
         LOG("[vk] a required set %u, over the %u we allow\n", want.set, kMaxSets);
@@ -433,6 +500,20 @@ static bool CheckRequiredSet(const ShaderProgram& program, const RequiredSet& wa
                 program.stages[0].path, want.set, b,
                 declared.bindingNames[b], want.names[b]);
             return false;
+        }
+    }
+
+    // The members, per stage. A binding the declaration says nothing about is left
+    // alone -- an image has no members, and a block whose contents are not shared is
+    // the program's own business.
+    for (uint32_t b = 0; b < want.bindingCount; ++b) {
+        if (want.members[b] == nullptr) { continue; }
+        for (uint32_t i = 0; i < program.stageCount; ++i) {
+            if (!CheckBlockMembers(program.stages[i].path, want.set, b,
+                                   program.stages[i].interface.sets[want.set],
+                                   want.members[b], want.memberCounts[b])) {
+                return false;
+            }
         }
     }
     return true;

@@ -113,10 +113,31 @@ FormatChannels ChannelsOfFormat(VkFormat format) noexcept;
 // Copied and not pointed at: reflection frees its module before this is read.
 constexpr uint32_t kMaxBindingNameLength = 48;
 
+// How many members of one uniform block we record. Our widest is ViewOptionsUniform
+// at eight floats.
+constexpr uint32_t kMaxBlockMembers = 8;
+
+// One member of a uniform block, as the .spv declares it.
+//
+// **A stage declares only the members it reads**, so this is a subset of whatever the
+// renderer's struct holds -- scene.frag takes viewPos out of CameraUniform and names
+// neither matrix. offset is from the block's start, which is what makes it comparable
+// to offsetof on the C++ side.
+struct BlockMember {
+    char name[kMaxBindingNameLength]{};
+    uint32_t offset = 0;   // bytes from the start of the block
+    uint32_t size = 0;     // bytes
+};
+
 struct SetInterface {
     uint32_t bindingCount = 0;
     VkDescriptorType bindingTypes[kMaxBindingsPerSet]{};
     char bindingNames[kMaxBindingsPerSet][kMaxBindingNameLength]{};
+
+    // Filled for uniform buffer bindings only -- an image has no members. 0 means the
+    // binding is not a block, or the compiler stripped the names.
+    uint32_t memberCounts[kMaxBindingsPerSet]{};
+    BlockMember members[kMaxBindingsPerSet][kMaxBlockMembers]{};
 };
 
 // What a caller requires of one set, when more than one program has to speak it.
@@ -125,11 +146,30 @@ struct SetInterface {
 // A set several programs must agree on is not: it is the renderer's, and each program
 // makes a claim about it that this can refuse. Which sets are which is the caller's --
 // this layer only compares.
+// One member of a block, as the renderer declares it. **Written with offsetof and
+// sizeof on the C++ struct**, never by hand: moving a field there moves this, and a
+// shader that did not move with it is refused.
+struct RequiredMember {
+    const char* name = nullptr;
+    uint32_t offset = 0;
+    uint32_t size = 0;
+};
+
 struct RequiredSet {
     uint32_t set = 0;
     uint32_t bindingCount = 0;
     VkDescriptorType types[kMaxBindingsPerSet]{};
     const char* names[kMaxBindingsPerSet]{};   // nullptr in a slot skips the name check
+
+    // The members of a uniform buffer binding. nullptr means the block's contents are
+    // not part of the contract -- the binding is still checked for type and name.
+    //
+    // **A stage is held to a subset**: every member it declares has to appear here at
+    // the same offset and size, and one it declares that is not here is refused. That
+    // is the direction the whole boundary runs -- the renderer states the block and a
+    // stage takes the part it reads.
+    const RequiredMember* members[kMaxBindingsPerSet]{};
+    uint32_t memberCounts[kMaxBindingsPerSet]{};
 };
 
 struct ShaderInterface {

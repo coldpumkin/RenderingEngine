@@ -46,6 +46,9 @@
 #include "Vulkan/Pipeline.h"
 #include "Vulkan/Texture.h"
 
+#include <cstddef>    // offsetof, for the block members MaterialSet declares
+#include <iterator>   // std::size
+
 #include <glm/glm.hpp>   // the shader-facing structs hold matrices
 
 struct Mesh;
@@ -84,20 +87,7 @@ constexpr uint32_t kMaterialSet = 1;   // what a surface looks like. One per mat
 //
 // The order is the binding order, and CreateMaterials fills in this order for the same
 // reason: one declaration or two.
-inline RequiredSet MaterialSet() noexcept {
-    RequiredSet set;
-    set.set = kMaterialSet;
-    set.bindingCount = 4;
-    set.types[0] = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    set.names[0] = "baseColor";
-    set.types[1] = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    set.names[1] = "normalMap";
-    set.types[2] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    set.names[2] = "mtl";
-    set.types[3] = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    set.names[3] = "metallicRoughnessMap";
-    return set;
-}
+// (MaterialSet() is below MaterialParams, which it takes its offsets from.)
 
 
 // The material's numbers, as the shader reads them. One per material, in set 1
@@ -121,6 +111,42 @@ struct MaterialParams {
 
     float pad{};   // std140 rounds the block to 32
 };
+
+// Contract: the members come from MaterialParams above, by offsetof and sizeof.
+//           Moving a field there moves this, and a shader that did not move with it
+//           is refused -- which is what the shaders' "field order and std140 padding
+//           match MaterialParams" comments used to say and nothing checked.
+//
+// pad is not declared. It exists so std140 rounds the block to 32, and no shader reads
+// it; a member a stage does not name is not compared.
+inline RequiredSet MaterialSet() noexcept {
+    static const RequiredMember kParams[] = {
+        {"baseColorFactor", offsetof(MaterialParams, baseColorFactor),
+                            sizeof(MaterialParams::baseColorFactor)},
+        {"alphaCutoff",     offsetof(MaterialParams, alphaCutoff),
+                            sizeof(MaterialParams::alphaCutoff)},
+        {"metallic",        offsetof(MaterialParams, metallic),
+                            sizeof(MaterialParams::metallic)},
+        {"roughness",       offsetof(MaterialParams, roughness),
+                            sizeof(MaterialParams::roughness)},
+    };
+
+    RequiredSet set;
+    set.set = kMaterialSet;
+    set.bindingCount = 4;
+    set.types[0] = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    set.names[0] = "baseColor";
+    set.types[1] = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    set.names[1] = "normalMap";
+    set.types[2] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    set.names[2] = "mtl";
+    set.members[2] = kParams;
+    set.memberCounts[2] = static_cast<uint32_t>(std::size(kParams));
+    set.types[3] = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    set.names[3] = "metallicRoughnessMap";
+    return set;
+}
+
 
 
 // Material - what a surface looks like, apart from where it is
