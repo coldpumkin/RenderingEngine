@@ -148,7 +148,7 @@ bool CreateScenePass(const Descriptors& descriptors,
     // A colour image of the right shape would have gone in and drawn a wrong picture.
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
         if (!CheckSampledInput(shadowMaps[i]->desc, "shadow map",
-                               VK_IMAGE_ASPECT_DEPTH_BIT)) {
+                               true)) {
             return false;
         }
     }

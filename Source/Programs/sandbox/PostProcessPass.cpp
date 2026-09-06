@@ -50,7 +50,7 @@ bool CreatePostProcessPass(const Descriptors& descriptors,
     // used to be that one question alone, written here.
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
         if (!CheckSampledInput(source[i]->desc, "post pass's source",
-                               VK_IMAGE_ASPECT_COLOR_BIT)) {
+                               false)) {
             return false;
         }
     }

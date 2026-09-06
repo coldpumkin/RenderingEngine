@@ -2,18 +2,25 @@
 
 #include <new>   // placement new in move assignment
 
-VkImageAspectFlags AspectOfFormat(VkFormat format) noexcept {
+VkImageAspectFlags FormatAspects(VkFormat format) noexcept {
     switch (format) {
         case VK_FORMAT_D16_UNORM:
         case VK_FORMAT_X8_D24_UNORM_PACK32:
         case VK_FORMAT_D32_SFLOAT:
+            return VK_IMAGE_ASPECT_DEPTH_BIT;
+        case VK_FORMAT_S8_UINT:
+            return VK_IMAGE_ASPECT_STENCIL_BIT;
         case VK_FORMAT_D16_UNORM_S8_UINT:
         case VK_FORMAT_D24_UNORM_S8_UINT:
         case VK_FORMAT_D32_SFLOAT_S8_UINT:
-            return VK_IMAGE_ASPECT_DEPTH_BIT;
+            return VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
         default:
             return VK_IMAGE_ASPECT_COLOR_BIT;
     }
+}
+
+bool IsDepthFormat(VkFormat format) noexcept {
+    return (FormatAspects(format) & VK_IMAGE_ASPECT_DEPTH_BIT) != 0;
 }
 
 VkFormatFeatureFlags RequiredFormatFeatures(VkImageUsageFlags usage) noexcept {
@@ -99,10 +106,33 @@ bool CreateImageView(const VulkanDevice& dev,
     out->dev = &dev;   // set first: the destructor runs even if the create below fails
     out->desc = desc;
 
-    // The two "take it from the image" defaults are resolved here rather than stored
-    // that way, so desc keeps saying what the caller asked for.
+    // desc keeps saying what the caller asked for; the "take it from the image"
+    // default is resolved into locals.
     const VkFormat format = desc.format != VK_FORMAT_UNDEFINED ? desc.format : imageFormat;
-    const VkImageAspectFlags aspect = desc.aspect != 0 ? desc.aspect : AspectOfFormat(format);
+
+    // What this view exposes, settled here and nowhere else.
+    //
+    // A format with one aspect leaves nothing to decide, so 0 means that rather than
+    // "nobody said". A format with two is a decision, and it is not this function's:
+    // the same image wants both aspects in a barrier and exactly one in a sampled view,
+    // so anything answered here would be wrong for one of them. Refused, with the
+    // caller told to say.
+    const VkImageAspectFlags available = FormatAspects(format);
+    VkImageAspectFlags aspect = desc.aspect;
+    if (aspect == 0) {
+        const bool oneCandidate = (available & (available - 1)) == 0;
+        if (!oneCandidate) {
+            LOG("[vk] format %d has more than one aspect, so a view over it has to say"
+                " which it exposes\n", static_cast<int>(format));
+            return false;
+        }
+        aspect = available;
+    } else if ((aspect & ~available) != 0) {
+        LOG("[vk] a view asks for aspect 0x%x and format %d only has 0x%x\n",
+            aspect, static_cast<int>(format), available);
+        return false;
+    }
+    out->aspect = aspect;
 
     VkImageViewCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     info.image = image;
@@ -154,7 +184,8 @@ Image::~Image() {
 //           is silently dropped on every move.
 ImageView::ImageView(ImageView&& other) noexcept
     : dev(other.dev), handle(other.handle), desc(other.desc),
-      imageSamples(other.imageSamples), imageUsage(other.imageUsage) {
+      imageSamples(other.imageSamples), imageUsage(other.imageUsage),
+      aspect(other.aspect) {
     other.dev = nullptr;
     other.handle = VK_NULL_HANDLE;
 }

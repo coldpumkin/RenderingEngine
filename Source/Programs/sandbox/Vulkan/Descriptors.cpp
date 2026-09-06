@@ -194,6 +194,19 @@ void UpdateSet(const Descriptors& descriptors, const DescriptorLayout& layout,
                         static_cast<int>(got.imageSamples));
                     return;
                 }
+                // A depth/stencil image reaches a shader through one aspect at a
+                // time -- VUID-VkDescriptorImageInfo-imageView-01976. The rule is the
+                // binding's, so it is asked here and not where the view was made:
+                // that same view would be legal, and required, to carry both in a
+                // barrier.
+                const VkImageAspectFlags both = VK_IMAGE_ASPECT_DEPTH_BIT
+                                              | VK_IMAGE_ASPECT_STENCIL_BIT;
+                if ((got.aspect & both) == both) {
+                    LOG("[vk] binding %u: a view exposing both depth and stencil cannot"
+                        " be read by a shader\n", i);
+                    return;
+                }
+
                 const VkImageUsageFlags needed = want.storage
                                                ? VK_IMAGE_USAGE_STORAGE_BIT
                                                : VK_IMAGE_USAGE_SAMPLED_BIT;

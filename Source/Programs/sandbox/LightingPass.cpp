@@ -61,13 +61,13 @@ bool CreateLightingPass(const Descriptors& descriptors,
     // Vulkan and a wrong picture, so the kind is stated here rather than assumed.
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
         if (!CheckSampledInput(source[i]->albedo.desc, "g-buffer albedo",
-                               VK_IMAGE_ASPECT_COLOR_BIT)
+                               false)
                 || !CheckSampledInput(source[i]->normal.desc, "g-buffer normal",
-                                      VK_IMAGE_ASPECT_COLOR_BIT)
+                                      false)
                 || !CheckSampledInput(source[i]->material.desc, "g-buffer material",
-                                      VK_IMAGE_ASPECT_COLOR_BIT)
+                                      false)
                 || !CheckSampledInput(source[i]->depth.desc, "g-buffer depth",
-                                      VK_IMAGE_ASPECT_DEPTH_BIT)) {
+                                      true)) {
             return false;
         }
         // Every frame draws into an image of the same shape, which is what lets one

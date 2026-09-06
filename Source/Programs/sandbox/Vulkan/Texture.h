@@ -62,7 +62,7 @@ struct Texture {
 // is handed to what the stage declared. Asserting them here as well was writing the
 // shader down a second time.
 //
-//   the right kind COLOR or DEPTH, derived from the format by AspectOfFormat. GLSL's
+//   the right kind COLOR or DEPTH, from the format by IsDepthFormat. GLSL's
 //                  sampler2D takes either, so no reflection reports this -- a shadow
 //                  map read as a colour is legal Vulkan and a wrong picture. The
 //                  meaning is the pass's, which is why it is still an argument
@@ -73,8 +73,11 @@ struct Texture {
 // second the order of two lines in RecordFrame.
 //
 // Input:  what names the image in the message, in the reader's words
+// wantDepth rather than an aspect mask: what a pass can say about an image it reads is
+// which kind it is, and a mask would invite the answer to be confused with the aspect a
+// view exposes, which is a different question with different rules.
 bool CheckSampledInput(const TextureDesc& desc, const char* what,
-                       VkImageAspectFlags expected) noexcept;
+                       bool wantDepth) noexcept;
 
 bool CreateTexture(const VulkanDevice& dev, const TextureDesc& desc,
                    Texture* out) noexcept;

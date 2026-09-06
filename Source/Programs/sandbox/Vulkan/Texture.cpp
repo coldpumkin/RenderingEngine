@@ -7,12 +7,11 @@
 #include <cstring>
 
 bool CheckSampledInput(const TextureDesc& desc, const char* what,
-                       VkImageAspectFlags expected) noexcept {
-    const VkImageAspectFlags aspect = AspectOfFormat(desc.format);
-    if (aspect != expected) {
+                       bool wantDepth) noexcept {
+    const bool isDepth = IsDepthFormat(desc.format);
+    if (isDepth != wantDepth) {
         LOG("[vk] the %s is a %s image and a %s one is wanted\n", what,
-            aspect == VK_IMAGE_ASPECT_DEPTH_BIT ? "depth" : "colour",
-            expected == VK_IMAGE_ASPECT_DEPTH_BIT ? "depth" : "colour");
+            isDepth ? "depth" : "colour", wantDepth ? "depth" : "colour");
         return false;
     }
     return true;

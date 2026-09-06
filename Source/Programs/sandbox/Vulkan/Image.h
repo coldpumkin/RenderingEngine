@@ -47,7 +47,13 @@ struct Image {
 struct ImageViewDesc {
     VkImageViewType type = VK_IMAGE_VIEW_TYPE_2D;
     VkFormat format = VK_FORMAT_UNDEFINED;   // UNDEFINED = the image's own format
-    VkImageAspectFlags aspect = 0;           // 0 = derived from that format
+
+    // Which aspects this view exposes. 0 means "the format has only one, use it" --
+    // not "nobody said". A format with two is refused unless this names one or both,
+    // because there the answer is a decision and CreateImageView is not where it is
+    // made. Left as a derivation, that decision would be silently taken here and then
+    // taken again, differently, by everything downstream.
+    VkImageAspectFlags aspect = 0;
 
     uint32_t baseMip = 0;
     uint32_t mipCount = VK_REMAINING_MIP_LEVELS;
@@ -76,6 +82,16 @@ struct ImageView {
     // and the rest stay where they are; this is not a second TextureDesc.
     VkSampleCountFlagBits imageSamples = VK_SAMPLE_COUNT_1_BIT;
     VkImageUsageFlags imageUsage = 0;
+
+    // What this view actually exposes, after desc.aspect's 0 is resolved. The view's
+    // own fact, unlike the two above.
+    //
+    // Kept where desc.format's resolution is not, because nothing downstream needs the
+    // resolved format -- a TextureDesc already carries it -- while the aspect has no
+    // other home. **Read it to check against, never to answer with**: what a barrier
+    // or a copy must name is its own question with its own rule, and the two differ on
+    // exactly the format where it matters.
+    VkImageAspectFlags aspect = 0;
 
     ImageView() = default;
     ~ImageView();
@@ -120,15 +136,22 @@ bool CreateImage2D(const VulkanDevice& dev,
 // caller leaves desc.aspect at 0, and a pass checking what it reads asks the same
 // question of the same function.
 //
-// Stencil is never used, so a stencil format still answers DEPTH -- adding it would
-// put a second aspect on every barrier and view.
+// **Every aspect it has, which is a fact -- not the one to use, which is not.**
 //
-// **Which is wrong for a combined format, and measured to be.** Forcing the depth
-// candidate list onto D32_SFLOAT_S8_UINT draws ten errors from vkCmdPipelineBarrier2:
-// "has depth/stencil format VK_FORMAT_D32_SFLOAT_S8_UINT, but its aspectMask is
-// VK_IMAGE_ASPECT_DEPTH_BIT". No GPU here picks that format, so nothing runs the path;
-// one where D32_SFLOAT and X8_D24 both fail the feature check would.
-VkImageAspectFlags AspectOfFormat(VkFormat format) noexcept;
+// A combined format answers DEPTH | STENCIL. That makes "is there anything to decide"
+// a question this answers (one bit set, or more), and it is the only thing any caller
+// should read it for. Which aspect an operation names is that operation's rule:
+// a barrier over a combined image must name both
+// (VUID-VkImageMemoryBarrier2-image-03320, with separateDepthStencilLayouts off) while
+// a view sampled from one must name exactly one
+// (VUID-VkDescriptorImageInfo-imageView-01976). One answer cannot serve both.
+VkImageAspectFlags FormatAspects(VkFormat format) noexcept;
+
+// Output: whether this format is a depth one rather than a colour one
+//
+// A different question from the one above, and it used to be asked of it by comparing
+// its answer to DEPTH_BIT. Two of that function's three callers were asking this.
+bool IsDepthFormat(VkFormat format) noexcept;
 
 // Input:  imageFormat is what the image was created with -- desc.format UNDEFINED
 //         means that one, and desc.aspect 0 is derived from it.

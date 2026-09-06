@@ -30,8 +30,7 @@
 // ever be; a usage bit settles whether it was made able to be drawn into at all.
 static VkFormat* SlotForRole(const Attachment& a, AttachmentFormats* out,
                              uint32_t index) noexcept {
-    const VkImageAspectFlags aspect = AspectOfFormat(a.resource->format);
-    const bool formatIsDepth = aspect == VK_IMAGE_ASPECT_DEPTH_BIT;
+    const bool formatIsDepth = IsDepthFormat(a.resource->format);
     const bool wantsDepth = a.role != AttachmentRole::Color;
     if (formatIsDepth != wantsDepth) {
         LOG("[vk] attachment %u is declared %s and its format is a %s one\n", index,
@@ -202,9 +201,8 @@ bool QueryTargetCapabilities(const VulkanInstance& inst, VkPhysicalDevice gpu,
 
 // Output: whether this format carries a stencil aspect
 //
-// AspectOfFormat answers DEPTH for a combined format on purpose -- nothing here writes
-// stencil, and a second aspect would land on every barrier and view. This is the other
-// question of the same format, and only the stencil role asks it.
+// FormatAspects reports both on a combined format; this asks only whether stencil is
+// among them, which is what a stencil role has to be refused by.
 static bool HasStencilAspect(VkFormat format) noexcept {
     switch (format) {
         case VK_FORMAT_S8_UINT:
@@ -391,6 +389,21 @@ bool BeginPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
         // follows from it and is not a choice.
         const bool isColour = use.role == AttachmentRole::Color;
 
+        // What drawing in this role needs to reach, against what the view exposes.
+        //
+        // **Asked, not taken.** The view settled what it shows and this pass settled
+        // what it draws; either can be right while the pair is wrong, and a role whose
+        // aspect the view does not carry would render into nothing.
+        const VkImageAspectFlags roleAspect =
+            isColour ? VK_IMAGE_ASPECT_COLOR_BIT
+                     : (use.role == AttachmentRole::Depth ? VK_IMAGE_ASPECT_DEPTH_BIT
+                                                          : VK_IMAGE_ASPECT_STENCIL_BIT);
+        if ((views[i]->view.aspect & roleAspect) == 0) {
+            LOG("[vk] attachment %u is drawn as aspect 0x%x through a view that exposes"
+                " 0x%x\n", i, roleAspect, views[i]->view.aspect);
+            return false;
+        }
+
         VkRenderingAttachmentInfo info{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
         info.imageView = views[i]->view.handle;
         info.imageLayout = isColour ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
@@ -429,10 +442,12 @@ bool BeginPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
         // Where it has to be before the first draw. Skipped for LOAD, which reads what
         // came before and so has a writer to issue it instead.
         if (use.load != VK_ATTACHMENT_LOAD_OP_LOAD) {
+            // Every aspect the image has, which is the barrier's own rule and not the
+            // view's answer -- VUID-VkImageMemoryBarrier2-image-03320 wants both on a
+            // combined format while a sampled view over the same image may carry only
+            // one. A transition covers the image; a view is a window onto it.
             RecordAttachmentTransition(vk, cmd, views[i]->image.handle,
-                                       isColour ? VK_IMAGE_ASPECT_COLOR_BIT
-                                                : VK_IMAGE_ASPECT_DEPTH_BIT,
-                                       info, waitedStage);
+                                       FormatAspects(got.format), info, waitedStage);
         }
 
         if (isColour) {
