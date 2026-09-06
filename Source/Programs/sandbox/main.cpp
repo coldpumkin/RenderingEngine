@@ -1177,8 +1177,7 @@ int main() {
         //
         // viewPos comes back out of the state rather than being copied beside it --
         // one camera, one place its position is written down.
-        const Camera camera = MakeCamera(CameraState{{eye, orientation}, kFovDegrees},
-                                         sceneTargetDescs.color);
+        const CameraState camera{{eye, orientation}, kFovDegrees};
 
         // Named and not positional, in all three. Every one of these blocks has two
         // adjacent fields of the same type -- two mat4 here, two mat4 in the shadow,
@@ -1186,10 +1185,16 @@ int main() {
         // a wrong picture, and passes every check we have: reflection compares the
         // layout, not which matrix went in which slot. C++20 requires designators to
         // follow declaration order, so a transposition is a compile error instead.
-        renderer.cameras[slot.index].value = {.view = camera.view,
-                                              .proj = camera.proj,
-                                              .viewPos = glm::vec4{
-                                                  camera.state.transform.position, 1.0f}};
+        //
+        // The camera's projection is rebuilt here and the light's is not, and the
+        // difference is in what can move: this one answers to a target that resizes
+        // and a field of view the app could change, and ShadowProjectionFor takes
+        // nothing that changes at all. Held when nothing can move it, derived when
+        // something can.
+        renderer.cameras[slot.index].value =
+            {.view = ViewFromTransform(camera.transform),
+             .proj = ProjectionFor(camera.fovDegrees, sceneTargetDescs.color),
+             .viewPos = glm::vec4{camera.transform.position, 1.0f}};
 
         // What reaches a surface, and where its shadow map was drawn from. The second
         // is made here rather than held: it turns with the light every frame, while

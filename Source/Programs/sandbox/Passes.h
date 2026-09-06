@@ -318,17 +318,15 @@ struct CameraState {
 // something wants to move them (a zoom, a precision fix) they join CameraState.
 glm::mat4 ProjectionFor(float fovDegrees, const TextureDesc& target) noexcept;
 
-struct Camera {
-    CameraState state;   // what it was made from
-    glm::mat4 view{1.0f};
-    glm::mat4 proj{1.0f};
-};
-
-// Output: both matrices, each from its own inputs
+// **There is no Camera type holding these two beside the state they came from.** One
+// existed for a while: it kept the desc it was made from, so something could ask what
+// shape of target a projection answered to. Nothing ever asked. Counted across all
+// three things that turn state into matrices -- camera, light, object -- the readers
+// of such a record are zero, and the camera's had already stopped being able to answer
+// its own question once the target became an argument rather than a field.
 //
-// Two arguments because there are two owners: the state comes from whatever moves the
-// camera, the target from the renderer that draws into it.
-Camera MakeCamera(const CameraState& state, const TextureDesc& target) noexcept;
+// So a caller holds the state, calls the two, and writes the block. The light does the
+// same two lines below, and the two now read alike.
 
 // The light's state, as whatever moves it holds it
 //

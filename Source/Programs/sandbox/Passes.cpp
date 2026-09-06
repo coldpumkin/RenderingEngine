@@ -91,14 +91,6 @@ glm::mat4 ProjectionFor(float fovDegrees, const TextureDesc& target) noexcept {
     return glm::perspective(glm::radians(fovDegrees), aspect, kNearPlane, kFarPlane);
 }
 
-Camera MakeCamera(const CameraState& state, const TextureDesc& target) noexcept {
-    Camera out;
-    out.state = state;
-    out.view = ViewFromTransform(state.transform);
-    out.proj = ProjectionFor(state.fovDegrees, target);
-    return out;
-}
-
 glm::mat4 ShadowView(const glm::vec3& direction, const glm::vec3& sceneCenter) noexcept {
     // direction runs from a surface toward the light, so the eye is the centre plus it.
     //
