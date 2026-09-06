@@ -1201,7 +1201,7 @@ int main() {
         renderer.cameras[slot.index].value = {.view = camera.view,
                                               .proj = camera.proj,
                                               .viewPos = glm::vec4{
-                                                  camera.state.transform.position, 0.0f}};
+                                                  camera.state.transform.position, 1.0f}};
 
         // What reaches a surface, and where its shadow map was drawn from.
         renderer.lights[slot.index].value =

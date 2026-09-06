@@ -343,9 +343,17 @@ struct CameraUniform {
     glm::mat4 view;
     glm::mat4 proj;
 
-    // w is unused. It carried one specular exponent for the whole scene until
-    // roughness came out of the material, which is the value that replaced it.
-    glm::vec4 viewPos;      // xyz = camera position
+    // A point, so w is 1
+    //
+    // **The fourth component is not padding here.** A vec4 that a matrix may multiply
+    // carries which of two things it is: 1 makes a point and translation reaches it,
+    // 0 makes a direction and translation does not. Nothing multiplies this one today
+    // -- both shaders read .xyz -- so writing 0 changed no pixel, and the day a stage
+    // writes view * viewPos it would have been a silently wrong answer.
+    //
+    // The rule is CPU-side: what is written here has to mean what the GPU will take it
+    // to mean. It held a specular exponent once, which is why it was called unused.
+    glm::vec4 viewPos;      // xyz = camera position, w = 1
 };
 
 // A light and the technique that shadows it are two things
@@ -390,7 +398,12 @@ struct ShadowUniform {
 
 // Contract: field order and types match the shader's Light block.
 struct LightUniform {
-    glm::vec4 direction;   // xyz = surface toward the light, w unused
+    // w = 0 for the reason CameraUniform::viewPos is 1: this one is a direction, and a
+    // direction is what translation must not reach.
+    glm::vec4 direction;   // xyz = surface toward the light, w = 0
+
+    // Here w is a payload and not a homogeneous coordinate -- the two meanings share a
+    // slot and only the comment separates them.
     glm::vec4 color;       // rgb = colour, a = ambient
 };
 
