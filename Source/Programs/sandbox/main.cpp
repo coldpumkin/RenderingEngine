@@ -1150,10 +1150,18 @@ int main() {
             glm::vec3{std::cos(t) * 0.7f, 3.0f, std::sin(t) * 0.7f});
 
         // lightDir points from a surface toward the light, so the eye is the centre
-        // plus it. It never lines up with world up -- y is fixed well above the
-        // horizon -- which keeps lookAt's cross product from collapsing.
+        // plus it.
+        //
+        // **The up is chosen rather than assumed.** lookAt builds a basis by crossing
+        // the forward with the up, and that collapses when the two are parallel -- a
+        // sun overhead. It has not happened because y is fixed at 3.0, which puts the
+        // direction 13.2 degrees off vertical, but **3.0 was chosen for how the scene
+        // is lit** (see above) and nothing said it was also holding this up. One
+        // constant doing two jobs, with only one of them written down.
+        const glm::vec3 lightUp = glm::abs(lightDir.y) > 0.99f
+                                ? glm::vec3{0.0f, 0.0f, 1.0f} : kWorldUp;
         const glm::mat4 lightView =
-            glm::lookAt(kSceneCenter + lightDir * kShadowDistance, kSceneCenter, kWorldUp);
+            glm::lookAt(kSceneCenter + lightDir * kShadowDistance, kSceneCenter, lightUp);
         // Fill this frame's share of the pass
         //
         // Assignment only, so it belongs up here: what reaches the GPU, and when, is
