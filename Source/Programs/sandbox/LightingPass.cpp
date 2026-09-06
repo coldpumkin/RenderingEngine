@@ -51,20 +51,20 @@ bool CreateLightingPass(const Descriptors& descriptors,
         return false;
     }
 
-    // A sampler cannot take a multisample image, and there are five of them here: the
-    // four it reads and the one it draws into. The g-buffer is one sample by
-    // construction -- see MakeGBufferTargets -- and this is what says so out loud.
+    // The four it reads, in lighting.frag's binding order, and the last is a depth --
+    // which is the whole shape of this pass: three colours describing a surface and a
+    // depth the position is rebuilt from. Reading that one as a colour would be legal
+    // Vulkan and a wrong picture, so the kind is stated here rather than assumed.
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
-        const TextureDesc* const read[] = {
-            &source[i]->albedo.desc, &source[i]->normal.desc,
-            &source[i]->material.desc, &source[i]->depth.desc,
-        };
-        for (uint32_t b = 0; b < std::size(read); ++b) {
-            if (read[b]->samples != VK_SAMPLE_COUNT_1_BIT) {
-                LOG("[vk] the lighting pass was given a %d-sample image to read\n",
-                    static_cast<int>(read[b]->samples));
-                return false;
-            }
+        if (!CheckSampledInput(source[i]->albedo.desc, "g-buffer albedo",
+                               VK_IMAGE_ASPECT_COLOR_BIT)
+                || !CheckSampledInput(source[i]->normal.desc, "g-buffer normal",
+                                      VK_IMAGE_ASPECT_COLOR_BIT)
+                || !CheckSampledInput(source[i]->material.desc, "g-buffer material",
+                                      VK_IMAGE_ASPECT_COLOR_BIT)
+                || !CheckSampledInput(source[i]->depth.desc, "g-buffer depth",
+                                      VK_IMAGE_ASPECT_DEPTH_BIT)) {
+            return false;
         }
         // Every frame draws into an image of the same shape, which is what lets one
         // RenderPassDesc describe them all -- targets[0] above is frame 0's desc.

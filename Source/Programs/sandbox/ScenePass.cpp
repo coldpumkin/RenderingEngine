@@ -125,6 +125,16 @@ bool CreateScenePass(const Descriptors& descriptors,
         }
     }
 
+    // The one image this pass reads. Nothing looked at it until 09-06: the argument
+    // was named shadowMaps and that was the whole of what said it held shadow maps.
+    // A colour image of the right shape would have gone in and drawn a wrong picture.
+    for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+        if (!CheckSampledInput(shadowMaps[i]->desc, "shadow map",
+                               VK_IMAGE_ASPECT_DEPTH_BIT)) {
+            return false;
+        }
+    }
+
     // Drawn in one call, then handed out: vkAllocateDescriptorSets writes a flat
     // array and PerFrame is not one.
     VkDescriptorSet sets[kFramesInFlight]{};

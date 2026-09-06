@@ -6,6 +6,27 @@
 
 #include <cstring>
 
+bool CheckSampledInput(const TextureDesc& desc, const char* what,
+                       VkImageAspectFlags expected) noexcept {
+    if (desc.samples != VK_SAMPLE_COUNT_1_BIT) {
+        LOG("[vk] the %s is %d-sample, and a sampler takes one\n",
+            what, static_cast<int>(desc.samples));
+        return false;
+    }
+    if ((desc.usage & VK_IMAGE_USAGE_SAMPLED_BIT) == 0) {
+        LOG("[vk] the %s was not created with SAMPLED usage\n", what);
+        return false;
+    }
+    const VkImageAspectFlags aspect = AspectOfFormat(desc.format);
+    if (aspect != expected) {
+        LOG("[vk] the %s is a %s image and a %s one is wanted\n", what,
+            aspect == VK_IMAGE_ASPECT_DEPTH_BIT ? "depth" : "colour",
+            expected == VK_IMAGE_ASPECT_DEPTH_BIT ? "depth" : "colour");
+        return false;
+    }
+    return true;
+}
+
 bool CreateTexture(const VulkanDevice& dev, const TextureDesc& desc,
                    Texture* out) noexcept {
     out->desc = desc;

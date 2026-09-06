@@ -2,9 +2,7 @@
 
 #include <new>   // placement new in move assignment
 
-// Stencil is never used, so a stencil format still gets a depth-only view. Adding
-// stencil here would put a second aspect on every barrier and view.
-static VkImageAspectFlags AspectOf(VkFormat format) noexcept {
+VkImageAspectFlags AspectOfFormat(VkFormat format) noexcept {
     switch (format) {
         case VK_FORMAT_D16_UNORM:
         case VK_FORMAT_X8_D24_UNORM_PACK32:
@@ -100,7 +98,7 @@ bool CreateImageView(const VulkanDevice& dev,
     // The two "take it from the image" defaults are resolved here rather than stored
     // that way, so desc keeps saying what the caller asked for.
     const VkFormat format = desc.format != VK_FORMAT_UNDEFINED ? desc.format : imageFormat;
-    const VkImageAspectFlags aspect = desc.aspect != 0 ? desc.aspect : AspectOf(format);
+    const VkImageAspectFlags aspect = desc.aspect != 0 ? desc.aspect : AspectOfFormat(format);
 
     VkImageViewCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     info.image = image;

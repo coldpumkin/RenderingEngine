@@ -49,6 +49,32 @@ struct Texture {
 };
 
 // Output: an empty texture. Something has to draw into it before it is worth reading.
+// What a pass can state about an image it reads, and the whole of what a desc answers
+// ----------------------------------------------------------------------------
+//
+// A pass draws into some images and reads others. What it draws into is checked
+// against its pipeline; what it **reads** was checked by nobody until 09-06, and two
+// of the four passes had grown their own version of one third of this.
+//
+// Three questions, and they are the only three a TextureDesc can settle:
+//
+//   one sample     a sampler cannot take a multisample image. That is the whole reason
+//                  the scene pass resolves
+//   SAMPLED        the bit is an edge in the frame rather than a property of the image
+//                  -- it marks the ones another pass reads
+//   the right kind COLOR or DEPTH, derived from the format by AspectOfFormat. A shadow
+//                  map read as a colour is legal Vulkan and a wrong picture
+//
+// **Everything past this is not in a desc.** That it is *the* shadow map rather than
+// some other depth image, and that it was drawn this frame, are the next two rungs and
+// neither is written down anywhere -- the first is a loop index at pass creation, the
+// second the order of two lines in RecordFrame.
+//
+// Input:  what names the image in the message, in the reader's words
+// Output: false with a line saying which of the three failed
+bool CheckSampledInput(const TextureDesc& desc, const char* what,
+                       VkImageAspectFlags expected) noexcept;
+
 bool CreateTexture(const VulkanDevice& dev, const TextureDesc& desc,
                    Texture* out) noexcept;
 

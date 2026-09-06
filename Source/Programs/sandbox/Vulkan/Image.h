@@ -100,6 +100,17 @@ bool CreateImage2D(const VulkanDevice& dev,
                    VkImageUsageFlags usage,
                    Image* out) noexcept;
 
+// Output: which aspect a format is read through -- COLOR or DEPTH
+//
+// **Derived and not chosen.** Whether an image holds a colour or a depth is a fact
+// about its format, so nothing has to say it twice; CreateImageView takes this when a
+// caller leaves desc.aspect at 0, and a pass checking what it reads asks the same
+// question of the same function.
+//
+// Stencil is never used, so a stencil format still answers DEPTH -- adding it would
+// put a second aspect on every barrier and view.
+VkImageAspectFlags AspectOfFormat(VkFormat format) noexcept;
+
 // Input:  imageFormat is what the image was created with -- desc.format UNDEFINED
 //         means that one, and desc.aspect 0 is derived from it.
 //
