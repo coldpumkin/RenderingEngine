@@ -32,11 +32,11 @@ bool CreateShadowPass(const Descriptors& descriptors,
     out->mesh = &mesh;
     out->pipeline = &pipeline;
 
-    out->pass.targets[0] = &maps[0]->desc;
-    out->pass.uses[0].role = AttachmentRole::Depth;
-    out->pass.uses[0].load = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    out->pass.uses[0].store = VK_ATTACHMENT_STORE_OP_STORE;
-    out->pass.uses[0].clear.depthStencil.depth = 1.0f;   // nothing seen yet is farthest
+    out->pass.attachments[0].resource = &maps[0]->desc;
+    out->pass.attachments[0].role = AttachmentRole::Depth;
+    out->pass.attachments[0].load = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    out->pass.attachments[0].store = VK_ATTACHMENT_STORE_OP_STORE;
+    out->pass.attachments[0].clear.depthStencil.depth = 1.0f;   // nothing seen is farther
 
     // The same comparison the scene pass makes, because both pipelines are built from
     // the same layout now. What differs between them is which locations their vertex

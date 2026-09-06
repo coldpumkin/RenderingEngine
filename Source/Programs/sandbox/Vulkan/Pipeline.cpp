@@ -37,20 +37,6 @@ static bool IsStripOrFan(VkPrimitiveTopology topology) noexcept {
     }
 }
 
-// Output: whether this depth format carries a stencil aspect, which is what decides
-//         where a stencil test reads from. ChooseDepthFormat's candidates include one.
-static bool HasStencilAspect(VkFormat format) noexcept {
-    switch (format) {
-        case VK_FORMAT_S8_UINT:
-        case VK_FORMAT_D16_UNORM_S8_UINT:
-        case VK_FORMAT_D24_UNORM_S8_UINT:
-        case VK_FORMAT_D32_SFLOAT_S8_UINT:
-            return true;
-        default:
-            return false;
-    }
-}
-
 // Effect: refuses a desc asking for something the device was never asked to enable.
 //
 // The desc is free to say any of it -- what it wants is its own business. Whether it is
@@ -505,11 +491,8 @@ bool CreateGraphicsPipeline(const VulkanDevice& dev,
     pipelineRendering.colorAttachmentCount = formats.colorCount;
     pipelineRendering.pColorAttachmentFormats =
         formats.colorCount != 0 ? formats.color : nullptr;
-    pipelineRendering.depthAttachmentFormat = formats.depth;   // UNDEFINED = no depth
-    // The same format when it carries a stencil aspect, which is what a stencil test
-    // reads.
-    pipelineRendering.stencilAttachmentFormat =
-        HasStencilAspect(formats.depth) ? formats.depth : VK_FORMAT_UNDEFINED;
+    pipelineRendering.depthAttachmentFormat = formats.depth;       // UNDEFINED = none
+    pipelineRendering.stencilAttachmentFormat = formats.stencil;   // UNDEFINED = none
     pipelineRendering.viewMask = desc.viewMask;
 
     // --- Assemble and compile -----------------------------------------------

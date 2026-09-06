@@ -76,17 +76,22 @@ bool CreateScenePass(const Descriptors& descriptors,
     out->mesh = &mesh;
     out->pipeline = &pipeline;
 
-    out->pass.targets[0] = &targets[0]->color.desc;
-    out->pass.targets[1] = &targets[0]->depth.desc;
-    out->pass.uses[0].load = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    out->pass.uses[0].store = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    out->pass.uses[0].clear.color = VkClearColorValue{{0.0f, 0.0f, 0.0f, 1.0f}};
-    out->pass.uses[0].resolve = VK_RESOLVE_MODE_AVERAGE_BIT;
+    out->pass.attachments[0].resource = &targets[0]->color.desc;
+    out->pass.attachments[0].load = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    out->pass.attachments[0].store = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    out->pass.attachments[0].clear.color = VkClearColorValue{{0.0f, 0.0f, 0.0f, 1.0f}};
+
+    // Where the multisample colour is averaged into, said here rather than only handed
+    // over at record time. It is the one image that leaves this pass -- both attachments
+    // store DONT_CARE -- so it was the pass's only output with no declaration.
+    out->pass.attachments[0].resolve = {&targets[0]->resolve.desc,
+                                        VK_RESOLVE_MODE_AVERAGE_BIT};
     // Clear 1.0 = farthest, paired with the pipeline's compareOp LESS.
-    out->pass.uses[1].role = AttachmentRole::Depth;
-    out->pass.uses[1].load = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    out->pass.uses[1].store = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    out->pass.uses[1].clear.depthStencil.depth = 1.0f;
+    out->pass.attachments[1].resource = &targets[0]->depth.desc;
+    out->pass.attachments[1].role = AttachmentRole::Depth;
+    out->pass.attachments[1].load = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    out->pass.attachments[1].store = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    out->pass.attachments[1].clear.depthStencil.depth = 1.0f;
     out->wirePipeline = &wirePipeline;
 
     // Both variants have to answer to the same set layouts, or the sets filled below

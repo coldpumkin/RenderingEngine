@@ -24,58 +24,72 @@
 // The caller fills it now and this function answers only what the GPU can: whether
 // that format works, which depth format exists, and how many samples.
 
-AttachmentFormats AttachmentFormatsOf(const TextureDesc* const targets[],
-                                      const AttachmentUse uses[],
+// Output: what the role's format lands in, or nullptr if the role cannot be honoured
+//
+// The two facts a role is refused by. A format settles which of the three an image can
+// ever be; a usage bit settles whether it was made able to be drawn into at all.
+static VkFormat* SlotForRole(const Attachment& a, AttachmentFormats* out,
+                             uint32_t index) noexcept {
+    const VkImageAspectFlags aspect = AspectOfFormat(a.resource->format);
+    const bool formatIsDepth = aspect == VK_IMAGE_ASPECT_DEPTH_BIT;
+    const bool wantsDepth = a.role != AttachmentRole::Color;
+    if (formatIsDepth != wantsDepth) {
+        LOG("[vk] attachment %u is declared %s and its format is a %s one\n", index,
+            wantsDepth ? "depth/stencil" : "colour", formatIsDepth ? "depth" : "colour");
+        return nullptr;
+    }
+
+    const VkImageUsageFlags needed = wantsDepth
+                                   ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
+                                   : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    if ((a.resource->usage & needed) == 0) {
+        LOG("[vk] attachment %u is declared %s and was not created to be drawn into"
+            " as one (usage 0x%x)\n", index,
+            wantsDepth ? "depth/stencil" : "colour", a.resource->usage);
+        return nullptr;
+    }
+
+    switch (a.role) {
+    case AttachmentRole::Depth:
+        if (out->depth != VK_FORMAT_UNDEFINED) {
+            LOG("[vk] attachment %u is a second depth attachment\n", index);
+            return nullptr;
+        }
+        return &out->depth;
+    case AttachmentRole::Stencil:
+        if (out->stencil != VK_FORMAT_UNDEFINED) {
+            LOG("[vk] attachment %u is a second stencil attachment\n", index);
+            return nullptr;
+        }
+        return &out->stencil;
+    case AttachmentRole::Color:
+    default:
+        if (out->colorCount >= kMaxColorTargets) {
+            LOG("[vk] more than %u colour attachments\n", kMaxColorTargets);
+            return nullptr;
+        }
+        return &out->color[out->colorCount++];
+    }
+}
+
+AttachmentFormats AttachmentFormatsOf(const Attachment attachments[],
                                       uint32_t count) noexcept {
     AttachmentFormats formats{};
 
-    // The first desc given decides samples, and every other one is compared to it.
+    // The first entry decides samples, and every other one is compared to it.
     const TextureDesc* first = nullptr;
 
-    for (uint32_t i = 0; i < count && targets[i] != nullptr; ++i) {
-        const TextureDesc& target = *targets[i];
-        const bool isDepth = uses[i].role == AttachmentRole::Depth;
+    for (uint32_t i = 0; i < count && attachments[i].resource != nullptr; ++i) {
+        const Attachment& a = attachments[i];
+        VkFormat* slot = SlotForRole(a, &formats, i);
+        if (slot == nullptr) { continue; }
+        *slot = a.resource->format;
 
-        // The role said, against the two facts that decide whether it can be. A format
-        // settles which of the two an image can ever be; a usage bit settles whether
-        // this one was made able to be drawn into at all. Neither is where the role
-        // comes from -- both are how a role is refused.
-        const VkImageAspectFlags aspect = AspectOfFormat(target.format);
-        const bool formatIsDepth = aspect == VK_IMAGE_ASPECT_DEPTH_BIT;
-        if (formatIsDepth != isDepth) {
-            LOG("[vk] target %u is declared %s and its format is a %s one\n", i,
-                isDepth ? "depth" : "colour", formatIsDepth ? "depth" : "colour");
-            continue;
-        }
-        const VkImageUsageFlags needed = isDepth
-                                       ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
-                                       : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-        if ((target.usage & needed) == 0) {
-            LOG("[vk] target %u is declared %s and was not created to be drawn into"
-                " as one (usage 0x%x)\n", i, isDepth ? "depth" : "colour",
-                target.usage);
-            continue;
-        }
-
-        if (isDepth) {
-            if (formats.depth != VK_FORMAT_UNDEFINED) {
-                LOG("[vk] target %u is a second depth attachment\n", i);
-                continue;
-            }
-            formats.depth = target.format;
-        } else {
-            if (formats.colorCount >= kMaxColorTargets) {
-                LOG("[vk] more than %u colour targets\n", kMaxColorTargets);
-                continue;
-            }
-            formats.color[formats.colorCount] = target.format;
-            formats.colorCount += 1;
-        }
-
-        if (first == nullptr) { first = &target; }
-        else if (target.samples != first->samples) {
-            LOG("[vk] target %u is %d-sample where the first is %d-sample\n",
-                i, static_cast<int>(target.samples), static_cast<int>(first->samples));
+        if (first == nullptr) { first = a.resource; }
+        else if (a.resource->samples != first->samples) {
+            LOG("[vk] attachment %u is %d-sample where the first is %d-sample\n", i,
+                static_cast<int>(a.resource->samples),
+                static_cast<int>(first->samples));
         }
     }
 
@@ -88,21 +102,24 @@ AttachmentFormats AttachmentFormatsFor(const TextureDesc* const colour[],
                                        const TextureDesc* depth) noexcept {
     // Built into the one shape the projection reads, so there is one place that turns
     // descs and roles into a contract rather than two that could come to differ.
-    const TextureDesc* targets[kMaxColorTargets + 1]{};
-    AttachmentUse uses[kMaxColorTargets + 1]{};
+    //
+    // No stencil argument: nothing here writes stencil, and a parameter for it would be
+    // a role no caller can honour yet. The field it fills stays UNDEFINED, which is
+    // what a pipeline that begins no stencil attachment must say.
+    Attachment attachments[kMaxAttachments]{};
 
     uint32_t count = 0;
     for (uint32_t i = 0; i < colourCount && i < kMaxColorTargets; ++i) {
-        targets[count] = colour[i];
-        uses[count].role = AttachmentRole::Color;
+        attachments[count].resource = colour[i];
+        attachments[count].role = AttachmentRole::Color;
         ++count;
     }
     if (depth != nullptr) {
-        targets[count] = depth;
-        uses[count].role = AttachmentRole::Depth;
+        attachments[count].resource = depth;
+        attachments[count].role = AttachmentRole::Depth;
         ++count;
     }
-    return AttachmentFormatsOf(targets, uses, count);
+    return AttachmentFormatsOf(attachments, count);
 }
 
 bool QueryTargetCapabilities(const VulkanInstance& inst, VkPhysicalDevice gpu,
@@ -173,7 +190,9 @@ bool BeginPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
                const Texture* const views[], const Texture* const resolves[],
                VkRect2D area, VkPipelineStageFlags2 waitedStage) noexcept {
     uint32_t count = 0;
-    while (count <= kMaxColorTargets && desc.targets[count] != nullptr) { count += 1; }
+    while (count < kMaxAttachments && desc.attachments[count].resource != nullptr) {
+        count += 1;
+    }
     if (count == 0) {
         LOG("[vk] a pass with no attachments\n");
         return false;
@@ -185,6 +204,18 @@ bool BeginPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
     bool haveDepth = false;
 
     for (uint32_t i = 0; i < count; ++i) {
+        const Attachment& use = desc.attachments[i];
+
+        // Nothing here begins a stencil attachment, and the layout and the aspect a
+        // second entry over one image needs are not written. Refused rather than
+        // guessed: what is missing is a STENCIL_ATTACHMENT_OPTIMAL layout here and a
+        // per-aspect transition in Barrier.cpp.
+        if (use.role == AttachmentRole::Stencil) {
+            LOG("[vk] attachment %u is declared stencil, which BeginPass does not"
+                " begin yet\n", i);
+            return false;
+        }
+
         if (views[i] == nullptr) {
             LOG("[vk] attachment %u has no view\n", i);
             return false;
@@ -194,7 +225,7 @@ bool BeginPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
         // order is what this catches -- and it catches it wherever the two descs differ,
         // which is not everywhere: two targets of the same format and sample count are
         // still tellable apart only by where they sit.
-        const TextureDesc& want = *desc.targets[i];
+        const TextureDesc& want = *use.resource;
         const TextureDesc& got = views[i]->desc;
         if (got.format != want.format || got.samples != want.samples
                 || got.usage != want.usage) {
@@ -204,8 +235,6 @@ bool BeginPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
                 static_cast<int>(got.samples), static_cast<int>(want.samples));
             return false;
         }
-
-        const AttachmentUse& use = desc.uses[i];
 
         // The role the pass declared, not one read back out of the image. The layout
         // follows from it and is not a choice.
@@ -219,13 +248,16 @@ bool BeginPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
         info.storeOp = use.store;
         info.clearValue = use.clear;
 
-        if (use.resolve != VK_RESOLVE_MODE_NONE) {
+        // The declared destination and this frame's image for it, in that order. Both
+        // are needed and neither implies the other: one desc is a different image every
+        // frame in flight, and two descs can describe the same thing.
+        if (use.resolve.target != nullptr) {
             const Texture* into = resolves != nullptr ? resolves[i] : nullptr;
             if (into == nullptr) {
                 LOG("[vk] attachment %u resolves and was given nowhere to resolve to\n", i);
                 return false;
             }
-            info.resolveMode = use.resolve;
+            info.resolveMode = use.resolve.mode;
             info.resolveImageView = into->view.handle;
             info.resolveImageLayout = info.imageLayout;
         }

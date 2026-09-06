@@ -27,10 +27,10 @@ bool CreatePostProcessPass(const Descriptors& descriptors,
 
     out->pipeline = &pipeline;
 
-    out->pass.targets[0] = &target;
-    out->pass.uses[0].load = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    out->pass.uses[0].store = VK_ATTACHMENT_STORE_OP_STORE;
-    out->pass.uses[0].clear.color = VkClearColorValue{{0.0f, 0.0f, 0.0f, 1.0f}};
+    out->pass.attachments[0].resource = &target;
+    out->pass.attachments[0].load = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    out->pass.attachments[0].store = VK_ATTACHMENT_STORE_OP_STORE;
+    out->pass.attachments[0].clear.color = VkClearColorValue{{0.0f, 0.0f, 0.0f, 1.0f}};
     out->target = &target;
 
     // What it writes, against what the pipeline baked -- the same comparison the other

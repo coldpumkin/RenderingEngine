@@ -222,9 +222,9 @@ bool CreateGuiSet(const Descriptors& descriptors, const Pipeline& pipeline,
 
     out->pipeline = &pipeline;
 
-    out->pass.targets[0] = &target;
-    out->pass.uses[0].load = VK_ATTACHMENT_LOAD_OP_LOAD;
-    out->pass.uses[0].store = VK_ATTACHMENT_STORE_OP_STORE;
+    out->pass.attachments[0].resource = &target;
+    out->pass.attachments[0].load = VK_ATTACHMENT_LOAD_OP_LOAD;
+    out->pass.attachments[0].store = VK_ATTACHMENT_STORE_OP_STORE;
 
     // The comparison the other three passes make, and the one this pass could not make
     // until it said what it draws into.

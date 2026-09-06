@@ -21,28 +21,51 @@
 // ever wanted more.
 inline constexpr uint32_t kMaxColorTargets = 4;
 
-// What happens to one attachment over one pass, and every field of it is fixed as long
-// as the pass means the same thing. The image it happens to is not: that changes with
-// the frame in flight, so it is an argument to BeginPass.
+// Three roles, and a role is declared rather than discovered
 //
-// resolveMode is the line between the two. "This pass resolves" is what the pass is;
-// "into that image" is this frame's.
+// A pass decides what it draws here; a format and a usage bit are independent facts
+// that say whether that decision can be honoured. Read back out of usage the two were
+// one thing and nothing was left over to check.
 //
-// **role is an intention and not something to be discovered.** A pass decides that it
-// draws depth here; a format and a usage bit are independent facts that say whether
-// that intention can be honoured. Read back out of usage the two were one thing, and
-// nothing was left over to check. Colour is the default because most attachments are,
-// and a wrong default does not pass quietly: a colour role over a depth format is
-// refused.
-enum class AttachmentRole { Color, Depth };
+// Depth and Stencil are separate roles over one image, which is Vulkan's shape:
+// VkRenderingInfo carries pDepthAttachment and pStencilAttachment with a loadOp and a
+// storeOp each, and VUID-VkRenderingInfo-pDepthAttachment-06085 requires their views to
+// be the same one when both are used. A combined format cannot say which was meant, so
+// here the inference is not merely lossy -- there is no answer to infer.
+enum class AttachmentRole { Color, Depth, Stencil };
 
-struct AttachmentUse {
+// Where a resolve goes, and how. Declared together because neither means anything
+// alone, and NONE is the default so a pass that resolves has to say so.
+//
+// target is the logical destination, fixed for as long as the pass means the same
+// thing. Which image that is this frame is BeginPass's resolves[] -- the same split
+// the attachment itself is under.
+//
+// Contract: mode is not NONE exactly when target is not null.
+struct ResolveUse {
+    const TextureDesc* target = nullptr;
+    VkResolveModeFlagBits mode = VK_RESOLVE_MODE_NONE;
+};
+
+// One attachment: which image, what this pass uses it as, and what happens to it.
+//
+// One struct rather than two arrays walked in step. The pair that had drifted furthest
+// apart was the resolve -- the mode was declared and the destination only arrived as a
+// record-time argument, so there was no declaration to check it against.
+//
+// resource is the logical image; the first null one ends the list. This frame's image
+// for it is BeginPass's views[].
+struct Attachment {
+    const TextureDesc* resource = nullptr;
     AttachmentRole role = AttachmentRole::Color;
     VkAttachmentLoadOp load = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     VkAttachmentStoreOp store = VK_ATTACHMENT_STORE_OP_STORE;
-    VkClearValue clear{};                                    // read only when load is CLEAR
-    VkResolveModeFlagBits resolve = VK_RESOLVE_MODE_NONE;    // NONE is no resolve
+    VkClearValue clear{};                 // read only when load is CLEAR
+    ResolveUse resolve;
 };
+
+// Every colour target plus depth and stencil, which are two entries over one image.
+inline constexpr uint32_t kMaxAttachments = kMaxColorTargets + 2;
 
 // **What one pipeline baked, and nothing a caller writes.** Every field is read off
 // the TextureDescs handed to CreateGraphicsPipeline, which is the description the
@@ -68,6 +91,16 @@ struct AttachmentFormats {
     // unlike the field above, this one really is the pass's to choose.
     VkFormat depth = VK_FORMAT_UNDEFINED;
 
+    // And whether stencil is written, which is a separate decision over the same image.
+    // Declared, not read out of the depth format: derived, a device whose depth format
+    // came back D32_SFLOAT_S8_UINT would compile every pipeline claiming a stencil
+    // attachment no pass ever begins -- VUID-vkCmdDraw-dynamicRenderingUnusedAttachments
+    // -08916, at every draw.
+    //
+    // Contract: when both are set they must be equal; one image carries both
+    //           (VUID-VkGraphicsPipelineCreateInfo-renderPass-06589).
+    VkFormat stencil = VK_FORMAT_UNDEFINED;
+
     // Highest count both color and depth support, capped by kDesiredSampleCount.
     // 1 would mean no MSAA, which the resolve path does not handle (Config.h).
     VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
@@ -77,33 +110,26 @@ struct AttachmentFormats {
 //
 // **The one projection**, and the only way an AttachmentFormats is ever made.
 //
-// One list, not a colour array beside a depth pointer. What a target is for is in its
-// usage -- COLOR_ATTACHMENT_BIT or DEPTH_STENCIL_ATTACHMENT_BIT -- so a caller
-// separating them was restating by argument position what every desc already says.
-// The projection drops usage, and which slot each format lands in was the one thing
-// it dropped that the caller then had to hand back.
+// One list, and each entry's role says which slot its format lands in. Colour order is
+// the list's order, because location 0, 1, 2 is an order the fragment stage relies on;
+// depth and stencil have one slot each and so no position to be in.
 //
-// Colour order is the list's order, because location 0, 1, 2 is a real order that the
-// fragment stage relies on. Depth is found rather than placed: there is only one, so
-// it has no position to be in.
-//
-// **The first null ends the list**, so how many targets there are is the list rather
+// **The first null resource ends the list**, so how many there are is the list rather
 // than a number written beside it. A gap is not expressible, on purpose -- a fragment
 // stage's output locations have none either, and CheckOutputInterface refuses those.
 //
+// The role is not worked out here. What is done here is refusing one the desc cannot
+// honour: a depth role over a colour format, or an image not made to be drawn into.
+//
 // Contract: every desc must agree about samples. One rasterizationSamples covers a
 //           whole pass, so no pipeline could honour two; a disagreement is logged and
-//           the first one wins. At most one target may be declared depth.
-//
-// uses[i] says what targets[i] is for. The role is not worked out here: what is done
-// here is refusing one the desc cannot honour.
-AttachmentFormats AttachmentFormatsOf(const TextureDesc* const targets[],
-                                      const AttachmentUse uses[],
+//           the first one wins. At most one entry each may be depth or stencil.
+AttachmentFormats AttachmentFormatsOf(const Attachment attachments[],
                                       uint32_t count) noexcept;
 
 // Output: the same contract, with the roles said by which argument a desc arrives as
 //
-// For a caller that has no uses[] to point at -- a pipeline is compiled against a
+// For a caller that has no attachments to point at -- a pipeline is compiled against a
 // contract and has no pass to take one from. Position is the declaration here: colour
 // order is the array's order, and depth is null for a pass that has none.
 AttachmentFormats AttachmentFormatsFor(const TextureDesc* const colour[],
@@ -112,18 +138,12 @@ AttachmentFormats AttachmentFormatsFor(const TextureDesc* const colour[],
 
 // One render pass instance, as far as it is settled before there is a frame.
 //
-// targets[] is the same list a GraphicsPipelineDesc holds, and holding it is what lets
-// the two be compared with one call: a pass and the pipeline drawn in it have to agree
-// about formats, and both now say what they draw into in the same words.
-//
-// The first null ends it, so how many attachments there are is the list rather than a
-// number beside it. Which one is the depth attachment is uses[i].role, said here.
-//
-// uses[i] is what happens to targets[i]. Positional, and the views handed to BeginPass
-// are checked against the descs here rather than trusted to line up.
+// **The whole of what this pass intends, and nothing of this frame.** Everything here
+// is true for every frame in flight; the images are not, so they arrive at BeginPass.
+// Projected, it is the same contract a GraphicsPipelineDesc holds, which is what lets a
+// pass and its pipeline be compared with one call.
 struct RenderPassDesc {
-    const TextureDesc* targets[kMaxColorTargets + 1]{};
-    AttachmentUse uses[kMaxColorTargets + 1]{};
+    Attachment attachments[kMaxAttachments]{};
 
     uint32_t layerCount = 1;
     uint32_t viewMask = 0;             // needs multiview, which we do not ask for
@@ -133,7 +153,7 @@ struct RenderPassDesc {
 // Output: what a pass draws into, in the form a pipeline bakes. The one comparison a
 //         pass creation makes against its pipeline.
 inline AttachmentFormats PassFormats(const RenderPassDesc& desc) noexcept {
-    return AttachmentFormatsOf(desc.targets, desc.uses, kMaxColorTargets + 1);
+    return AttachmentFormatsOf(desc.attachments, kMaxAttachments);
 }
 
 // Effect: puts every attachment where it is about to be used, then begins the render
@@ -146,9 +166,10 @@ inline AttachmentFormats PassFormats(const RenderPassDesc& desc) noexcept {
 // An attachment whose loadOp is LOAD gets none. Loading reads what came before, and
 // what wrote it is not in this call -- that barrier belongs to whoever wrote it.
 //
-// views[i] is this frame's image for targets[i], and resolves[i] is where uses[i].resolve
-// sends it -- null wherever resolve is NONE. waitedStage is what already waits on these
-// images from outside this command buffer, TOP_OF_PIPE when nothing does.
+// views[i] is this frame's image for attachments[i].resource, and resolves[i] is this
+// frame's image for attachments[i].resolve.target -- null wherever there is none.
+// waitedStage is what already waits on these images from outside this command buffer,
+// TOP_OF_PIPE when nothing does.
 //
 // How many there are comes from desc, not from an argument. Each view is checked
 // against the desc it is standing in for, so handing them over in the wrong order is a
@@ -162,7 +183,8 @@ bool BeginPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
 // what their pipeline actually baked. Nobody else can see both ends.
 inline bool SameAttachmentFormats(const AttachmentFormats& a,
                                   const AttachmentFormats& b) noexcept {
-    if (a.colorCount != b.colorCount || a.depth != b.depth || a.samples != b.samples) {
+    if (a.colorCount != b.colorCount || a.depth != b.depth || a.stencil != b.stencil
+            || a.samples != b.samples) {
         return false;
     }
     for (uint32_t i = 0; i < a.colorCount; ++i) {

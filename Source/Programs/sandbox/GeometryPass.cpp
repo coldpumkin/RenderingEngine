@@ -76,26 +76,26 @@ bool CreateGeometryPass(const Descriptors& descriptors,
 
     // The order is geometry.frag's output order, and the depth last. uses[i] is what
     // happens to targets[i], so the two arrays are read together.
-    out->pass.targets[0] = &targets[0]->albedo.desc;
-    out->pass.targets[1] = &targets[0]->normal.desc;
-    out->pass.targets[2] = &targets[0]->material.desc;
-    out->pass.targets[3] = &targets[0]->depth.desc;
+    out->pass.attachments[0].resource = &targets[0]->albedo.desc;
+    out->pass.attachments[1].resource = &targets[0]->normal.desc;
+    out->pass.attachments[2].resource = &targets[0]->material.desc;
+    out->pass.attachments[3].resource = &targets[0]->depth.desc;
 
     for (uint32_t i = 0; i < 3; ++i) {
-        out->pass.uses[i].load = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        out->pass.attachments[i].load = VK_ATTACHMENT_LOAD_OP_CLEAR;
         // STORE, where the scene pass is DONT_CARE. Its colour is resolved and thrown
         // away; these are the pass's product and the next pass reads them.
-        out->pass.uses[i].store = VK_ATTACHMENT_STORE_OP_STORE;
-        out->pass.uses[i].clear.color = VkClearColorValue{{0.0f, 0.0f, 0.0f, 0.0f}};
+        out->pass.attachments[i].store = VK_ATTACHMENT_STORE_OP_STORE;
+        out->pass.attachments[i].clear.color = VkClearColorValue{{0.0f, 0.0f, 0.0f, 0.0f}};
     }
 
     // Clear 1.0 = farthest, paired with compareOp LESS. **STORE and not DONT_CARE**:
     // the lighting pass rebuilds a world position from this, so unlike the scene
     // pass's depth it does not end with the pass that wrote it.
-    out->pass.uses[3].role = AttachmentRole::Depth;
-    out->pass.uses[3].load = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    out->pass.uses[3].store = VK_ATTACHMENT_STORE_OP_STORE;
-    out->pass.uses[3].clear.depthStencil.depth = 1.0f;
+    out->pass.attachments[3].role = AttachmentRole::Depth;
+    out->pass.attachments[3].load = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    out->pass.attachments[3].store = VK_ATTACHMENT_STORE_OP_STORE;
+    out->pass.attachments[3].clear.depthStencil.depth = 1.0f;
 
     if (wirePipeline.program != pipeline.program) {
         LOG("[vk] the geometry pass's two pipelines were built from different programs\n");

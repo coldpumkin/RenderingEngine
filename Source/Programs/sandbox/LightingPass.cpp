@@ -42,9 +42,9 @@ bool CreateLightingPass(const Descriptors& descriptors,
 
     out->pipeline = &pipeline;
 
-    out->pass.targets[0] = &target[0]->desc;
-    out->pass.uses[0].load = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    out->pass.uses[0].store = VK_ATTACHMENT_STORE_OP_STORE;
+    out->pass.attachments[0].resource = &target[0]->desc;
+    out->pass.attachments[0].load = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    out->pass.attachments[0].store = VK_ATTACHMENT_STORE_OP_STORE;
 
     if (!SameAttachmentFormats(PassFormats(out->pass), pipeline.formats)) {
         LOG("[vk] the lighting pass's target and its pipeline disagree about the formats\n");
