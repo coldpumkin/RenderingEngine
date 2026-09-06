@@ -986,7 +986,7 @@ int main() {
 
     // Built once, because none of its inputs move -- see ShadowProjectionFor, which
     // takes no state at all.
-    const glm::mat4 lightProj = ShadowProjectionFor(shadowTarget);
+    const glm::mat4 lightProj = ShadowProjectionFor(shadowTarget.extent);
 
     // What the item order costs in state changes. Outside the loop because the panel
     // is built before RecordFrame fills it, so what it shows is the last frame's --
@@ -1181,7 +1181,7 @@ int main() {
         // something can.
         renderer.cameras[slot.index].value =
             {.view = ViewFromPose(camera.pose),
-             .proj = ProjectionFor(camera.fovDegrees, sceneTargetDescs.color),
+             .proj = ProjectionFor(camera.fovDegrees, sceneTargetDescs.color.extent),
              .viewPos = glm::vec4{camera.pose.position, 1.0f}};
 
         // What reaches a surface, and where its shadow map was drawn from. The second

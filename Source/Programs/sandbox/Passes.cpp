@@ -92,11 +92,11 @@ glm::mat4 ModelFromTransform(const Transform& transform) noexcept {
     return out;
 }
 
-glm::mat4 ProjectionFor(float fovDegrees, const TextureDesc& target) noexcept {
-    // The aspect is the target's, which is the whole reason this takes one: a
-    // projection answers to the shape of the image it lands on.
-    const float aspect = static_cast<float>(target.extent.width)
-                       / static_cast<float>(target.extent.height);
+glm::mat4 ProjectionFor(float fovDegrees, VkExtent2D target) noexcept {
+    // An extent and not the target's desc: a format or a sample count changing does
+    // not change this answer, so taking one would claim a dependency there is not.
+    const float aspect = static_cast<float>(target.width)
+                       / static_cast<float>(target.height);
 
     // No proj[1][1] *= -1: the viewport height is already negative.
     // Depth lands in [0,1] thanks to GLM_FORCE_DEPTH_ZERO_TO_ONE on the CMake target.
@@ -114,14 +114,14 @@ glm::mat4 ShadowView(const glm::vec3& direction, const glm::vec3& sceneCenter) n
     return glm::lookAt(sceneCenter + direction * kShadowDistance, sceneCenter, up);
 }
 
-glm::mat4 ShadowProjectionFor(const TextureDesc& map) noexcept {
+glm::mat4 ShadowProjectionFor(VkExtent2D map) noexcept {
     // Orthographic because the light is directional: parallel rays have no eye point to
     // project from, only a box, and the box decides how much world one texel covers.
     //
     // The aspect comes from the map the way the camera's comes from its target, which
     // is what lets the map stop being square without anything else knowing.
-    const float aspect = static_cast<float>(map.extent.width)
-                       / static_cast<float>(map.extent.height);
+    const float aspect = static_cast<float>(map.width)
+                       / static_cast<float>(map.height);
 
     // 0.1 rather than 0: an ortho box with a zero near plane is legal and wastes half
     // its depth range on space behind the light.

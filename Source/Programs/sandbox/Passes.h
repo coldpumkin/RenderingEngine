@@ -341,7 +341,7 @@ struct CameraState {
 // the depth attachment, which only says how many bits store the result. They are
 // fixed here as the renderer's policy rather than exposed as camera state; the day
 // something wants to move them (a zoom, a precision fix) they join CameraState.
-glm::mat4 ProjectionFor(float fovDegrees, const TextureDesc& target) noexcept;
+glm::mat4 ProjectionFor(float fovDegrees, VkExtent2D target) noexcept;
 
 // No Camera type holding the two matrices beside the state: a caller holds the state,
 // calls the two functions and writes the block. The light reads the same way below.
@@ -380,7 +380,7 @@ glm::mat4 ShadowView(const glm::vec3& direction, const glm::vec3& sceneCenter) n
 // are the technique's, the aspect is the map's, and nothing of the app's reaches any of
 // it -- so this is built once and not per frame, which is the same rule ProjectionFor
 // states and the reason both of these read a TextureDesc rather than an extent.
-glm::mat4 ShadowProjectionFor(const TextureDesc& map) noexcept;
+glm::mat4 ShadowProjectionFor(VkExtent2D map) noexcept;
 
 // Output: how big to render -- the one of this program's three extents we choose. A
 //         surface extent is what the platform answers and a swapchain's must equal
