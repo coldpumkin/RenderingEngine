@@ -129,6 +129,14 @@ glm::mat4 ShadowProjectionFor(const TextureDesc& map) noexcept {
                       -kShadowRadius, kShadowRadius, 0.1f, kShadowDistance * 2.0f);
 }
 
+VkExtent2D RenderExtentFor(VkExtent2D windowExtent) noexcept {
+    // The policy decides whether to look at the argument at all. Following the window
+    // is what an editor does; a fixed size is what a client usually ships, and the
+    // panel switches between the two.
+    return kRenderFollowsWindow ? windowExtent
+                                : VkExtent2D{kRenderWidth, kRenderHeight};
+}
+
 // HOST_VISIBLE + MAPPED, like every uniform here: one memcpy a frame, so a staging
 // buffer and a copy command would buy nothing.
 //

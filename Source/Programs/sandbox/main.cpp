@@ -522,14 +522,6 @@ static bool LoadTextureFile(const VulkanDevice& dev, const Commands& commands,
     return uploaded;
 }
 
-// Output: how big the render targets should be under kRenderFollowsWindow
-//
-// One place, because startup and the loop both ask and two copies of one policy drift.
-static VkExtent2D DesiredRenderExtent(const Window& window) noexcept {
-    return kRenderFollowsWindow ? window.surfaceExtent
-                                : VkExtent2D{kRenderWidth, kRenderHeight};
-}
-
 int main() {
     // Declarations -- in destruction order, which is not the fill order
     // ========================================================================
@@ -603,13 +595,13 @@ int main() {
                                  kDesiredSampleCount, &caps)) { return 1; }
 
     SceneTargetDescs sceneTargetDescs =
-        MakeSceneTargets(DesiredRenderExtent(window), kRenderColorFormat, caps);
+        MakeSceneTargets(RenderExtentFor(window.surfaceExtent), kRenderColorFormat, caps);
 
     // The deferred path's four, at the same size and from the same colour choice. One
     // sample, unlike the scene's -- a g-buffer cannot be resolved before it is lit, so
     // MakeGBufferTargets does not ask caps for a count.
     GBufferTargetDescs gbufferDescs =
-        MakeGBufferTargets(DesiredRenderExtent(window), kRenderColorFormat, caps);
+        MakeGBufferTargets(RenderExtentFor(window.surfaceExtent), kRenderColorFormat, caps);
     const TextureDesc shadowTarget = MakeShadowTarget(kShadowExtent, caps);
 
     // Device -- and past it, everything that needs one
@@ -1060,7 +1052,7 @@ int main() {
         // Above the acquire, because the query above is where a window's size comes
         // from. vkDeviceWaitIdle and not a fence: a fence covers one slot, and these
         // images belong to every slot.
-        const VkExtent2D wanted = DesiredRenderExtent(window);
+        const VkExtent2D wanted = RenderExtentFor(window.surfaceExtent);
 
         // Compared against the desc and not against a copy of it: the desc is where
         // the current size lives, so there is no second number to keep in step.

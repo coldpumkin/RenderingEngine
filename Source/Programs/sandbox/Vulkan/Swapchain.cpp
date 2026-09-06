@@ -97,6 +97,13 @@ TextureDesc SwapchainTargetDesc(const Window& window) noexcept {
     // surfaceExtent and not a swapchain's: the pipelines that bake this are built
     // before the first swapchain exists. The two agree because CreateSwapchain is
     // handed that same extent.
+    //
+    // **The extent in the result is only true when it is read.** A desc kept past this
+    // call goes stale the first time the window resizes, and what a pipeline takes from
+    // one is the format and the sample count -- never the size. Nothing reads it today
+    // and the field cannot be left out, so this is the whole of the guard. A live
+    // swapchain image carries the real one: CreateSwapchain builds each image's desc
+    // from the extent it actually got.
     return SwapchainTargetDesc(window.surfaceFormat, window.surfaceExtent);
 }
 

@@ -317,8 +317,21 @@ glm::mat4 ModelFromTransform(const Transform& transform) noexcept;
 //   here          where it is, which way it is turned, how wide it sees
 //   the renderer  what shape the picture is, and what range becomes depth
 struct CameraState {
-    // A Pose and not a Transform: a camera cannot be scaled. What that would mean is
-    // already spelled by the field below.
+    // A Pose and not a Transform, for two reasons that hold separately.
+    //
+    // The first is correctness: ViewFromPose inverts a rigid transform by conjugating
+    // and negating, so a scale would make its answer wrong rather than incomplete.
+    //
+    // The second is that a camera has nothing to say with a scale. Scale view space
+    // uniformly by k and the perspective divide cancels it -- clip.x/clip.w is
+    // x/(k*z) over 1/k, which is where it started -- so the picture does not move at
+    // all. What does change is depth, because near and far are compared against a
+    // z that scaled: that is a clipping range, and the projection already takes two
+    // planes for it. A non-uniform scale would squash the image anisotropically,
+    // which is a lens this is not modelling. And what is usually called zoom is the
+    // angle of the frustum, which is the field below.
+    //
+    // So every effect a scale here could have is already a projection parameter.
     Pose pose{};
 
     // The one projection input that is not the renderer's. "How wide do I want to
@@ -397,6 +410,22 @@ glm::mat4 ShadowView(const glm::vec3& direction, const glm::vec3& sceneCenter) n
 // it -- so this is built once and not per frame, which is the same rule ProjectionFor
 // states and the reason both of these read a TextureDesc rather than an extent.
 glm::mat4 ShadowProjectionFor(const TextureDesc& map) noexcept;
+
+// Output: how big to render, which is a policy and not the window's business
+//
+// **Three extents exist in this program and only this one is a choice.** A surface
+// extent is what the platform answers; a swapchain's must equal it. Both are facts we
+// are told. This is the one we decide, and all three are VkExtent2D, which is what
+// made them easy to confuse.
+//
+// Takes an extent rather than a Window because that is the whole of what it needs: a
+// policy that reaches into a window type knows more than its question.
+//
+// The two chains that read the result -- the scene's targets and the g-buffer's --
+// have to agree on it, and nothing says so except main handing both the same value.
+// That agreement is a pass-to-pass dependency, which this program has no way to write
+// down yet; moving this function does not change that.
+VkExtent2D RenderExtentFor(VkExtent2D windowExtent) noexcept;
 
 // Two matrices and not their product
 // ----------------------------------------------------------------------------
