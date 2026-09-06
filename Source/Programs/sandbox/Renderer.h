@@ -3,9 +3,50 @@
 // Renderer - everything a frame is drawn with, grouped by what kind of thing it is
 // ============================================================================
 //
-// main declared these one after another in destruction order, which says when each
-// dies and nothing about what it is. Here they are grouped by the question that
-// actually separates them:
+// What this is, in one sentence:
+//
+//   Renderer consumes renderable scene state, owns its GPU resources, derives
+//   rendering representations, and records their execution.
+//
+// Four verbs and they are not synonyms. The one that is easy to lose is the gap
+// between the middle two, and three structs in Passes.h hold both sides of it:
+//
+//   struct FrameCamera { CameraUniform value; Buffer buffer; };
+//                        ^ derived, no lifetime   ^ owned, has a destructor
+//
+// A view matrix is remade from state and never freed. A buffer is created once and
+// must be destroyed. Owning and deriving are different obligations, which is why the
+// sentence spends a verb on each.
+//
+// The same shape appears four times, at four rates:
+//
+//   asset load             CPU asset            -> GPU resource
+//   renderer setup         render policy        -> pipeline, target, set layout
+//   per-frame preparation  scene state          -> frame and draw representation
+//   command recording      prepared state       -> vkCmd*
+//
+// Read down that list and it is the same arrow four times; what changes is how often
+// it is drawn. It is also CLAUDE.md's "when is this value fixed" axis seen from the
+// other side -- that one asks when, this one asks who.
+//
+// **No scene state is held here.** Counted member by member: Mesh is not geometry but
+// a vertex and an index buffer, Texture is not an image file but a VkImage and a view,
+// Material is not a glTF material but a descriptor set. Every one of them is a
+// representation or the machinery that runs one. The single exception is the panel,
+// which holds switches -- state, but the tool's rather than the scene's.
+//
+// What that decides, where it used to be argued:
+//
+//   how many lights there are     scene state    consumed, so not fixed at one here
+//   where the shadow box centres  scene state    consumed -- an argument, not a constant
+//   how wide that box is          technique      owned
+//   near and far planes           policy         owned
+//
+// Three places still break the sentence, and they are the open work: main builds
+// lightView and lightProj, main turns one scale into 103 model matrices, and LoadGltf
+// -- which is exactly "consume an asset, make GPU resources" -- lives in main.cpp.
+//
+// Below, the members are grouped by the question that separates them:
 //
 //   HOW to draw     baked into a pipeline at creation. Never changes after
 //   WHAT it reaches descriptor pool and sampler -- the rules, not the data
