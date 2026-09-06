@@ -683,8 +683,7 @@ int main() {
     for (DrawItem& item : items) { SetDrawTransform(&item, sceneTransform); }
 
     // The same layout the scene pipeline was built with, said once here and compared
-    // in CreateScenePass. It used to be sizeof(Vertex) alone, which agreed with the
-    // pipeline by habit rather than by anything.
+    // in CreateScenePass.
     const MeshDesc meshDesc{VertexInput(),
                             static_cast<uint32_t>(vertices.size()),
                             static_cast<uint32_t>(indices.size())};
@@ -711,8 +710,7 @@ int main() {
     // One white texel, for a material that names no base colour. glTF says such a
     // material is its baseColorFactor alone, and white is the texture that multiplies
     // to exactly that -- a pattern here would be inventing detail the file does not
-    // have. A checker lived here for that reason and drew one nowhere in this asset:
-    // all 25 materials name a base colour.
+    // have. All 25 of this asset's materials name a base colour, so this draws nowhere.
     //
     // SRGB, because this is multiplied with the shader's output and has to be in the
     // same space as the render target. UNORM would brighten the result.
@@ -1012,9 +1010,7 @@ int main() {
     uint32_t framesDrawn = 0;
     constexpr float kFixedTime = 1.0f;   // any constant. 1.0 puts the light off-axis
 
-    // Inside the atrium, looking along it. The old value put the camera at the origin
-    // facing -z, which is a wall from here -- it was chosen when the scene was five
-    // spheres around the origin.
+    // Inside the atrium, looking along it.
     glm::vec3 eye{-7.0f, 5.5f, 0.0f};
     float yaw = 0.0f;             // 0 looks down +x, per the forward expression below
     float pitch = -12.0f;         // the atrium floor, from the height of its gallery
@@ -1081,13 +1077,12 @@ int main() {
 
         // Clock
         //
-        // One clock reading, two values: t is absolute (object spin), dt is the gap
-        // (camera movement). Reading twice would let them drift apart.
+        // One reading, two values: t is absolute (object spin), dt is the gap (camera
+        // movement). Reading twice would let them drift apart.
         //
-        // Both fixed together, and dt matters as much as t: the panel prints a frame
-        // time, so a real one puts the machine's speed into the picture. Two runs of
-        // one build differed by that alone until this line existed. 1/60 rather than 0
-        // -- a zero gap is a frame nothing could have moved in.
+        // dt is fixed with t and not left real: the panel prints a frame time, so the
+        // machine's speed would reach the picture. 1/60 and not 0 -- a zero gap is a
+        // frame nothing could have moved in.
         const double now = glfwGetTime();
         const float t = fixedTime ? kFixedTime : static_cast<float>(now);
         const float dt = fixedTime ? 1.0f / 60.0f
@@ -1096,10 +1091,9 @@ int main() {
 
         // Camera -- input to a view
         //
-        // glfwGetKey polls the state glfwPollEvents cached, so this block reads the same
-        // value wherever it sits. A callback suits an event; holding a key is a state.
-        //
-        // Speeds are multiplied by dt, or the frame rate becomes the speed.
+        // glfwGetKey reads the state glfwPollEvents cached, so this block gives the
+        // same answer wherever it sits. Speeds are multiplied by dt, or the frame rate
+        // becomes the speed.
 
         const auto held = [&](int key) {
             return glfwGetKey(window.handle, key) == GLFW_PRESS;
@@ -1110,15 +1104,14 @@ int main() {
         if (held(GLFW_KEY_UP))    { pitch += kTurnSpeed * dt; }
         if (held(GLFW_KEY_DOWN))  { pitch -= kTurnSpeed * dt; }
 
-        // A limit now, and not a collapse. Nothing below crosses two vectors, so +-90
-        // is a representable orientation; this stays because a camera that tips past
-        // vertical is not what these four keys are for.
+        // A choice, not a requirement: nothing below crosses two vectors, so +-90 is
+        // a representable orientation. It stays because these four keys are not for
+        // tipping past vertical.
         pitch = glm::clamp(pitch, -89.0f, 89.0f);
 
-        // What the renderer is handed: the orientation itself, rather than a direction
-        // read off it. Built from the two angles each frame and not accumulated -- a
-        // running product of small turns drifts and needs renormalizing, and these two
-        // angles are already the whole of what the keys change.
+        // Built from the two angles each frame and not accumulated: a running product
+        // of small turns drifts and needs renormalizing, and these two angles are
+        // already the whole of what the keys change.
         //
         // The quarter turn is where two conventions meet: yaw is measured from +x (see
         // its initial value) and a quaternion's identity looks down -z.
@@ -1143,11 +1136,8 @@ int main() {
 
         // Light -- state, and only state
         //
-        // One directional light, circling in xz so the shadows sweep. y is fixed at
-        // 3.0: measured, not chosen -- at 0.5 and 1.4 the arcades cut the sun off
-        // before the courtyard and the scene reads as one flat dark mass. It no longer
-        // holds a second job: the degenerate up that used to depend on it is chosen
-        // inside ShadowView now.
+        // One directional light, circling in xz so the shadows sweep. y = 3.0 is
+        // measured: below it the arcades cut the sun off before the courtyard.
         const LightState light{
             glm::normalize(glm::vec3{std::cos(t) * 0.7f, 3.0f, std::sin(t) * 0.7f}),
             glm::vec3{1.0f, 0.95f, 0.9f},
@@ -1159,26 +1149,18 @@ int main() {
         // pass's frame the same way.
         FrameSlot& slot = renderer.slots[slotIndex];
 
-        // State, and the image it is drawn into. Nothing here is a matrix: what the
-        // camera is belongs to this loop, what it looks like to the GPU is made from
-        // it, and the two arguments are that line.
-        //
-        // viewPos comes back out of the state rather than being copied beside it --
-        // one camera, one place its position is written down.
+        // State, not a matrix. viewPos below comes back out of it rather than being
+        // copied beside it -- one camera, one place its position is written down.
         const CameraState camera{{eye, orientation}, kFovDegrees};
 
-        // Named and not positional, in all three. Every one of these blocks has two
-        // adjacent fields of the same type -- two mat4 here, two mat4 in the shadow,
-        // two vec4 in the light -- so writing them in the wrong order compiles, draws
-        // a wrong picture, and passes every check we have: reflection compares the
-        // layout, not which matrix went in which slot. C++20 requires designators to
-        // follow declaration order, so a transposition is a compile error instead.
+        // Named and not positional, in all three: each block has two adjacent fields
+        // of the same type, and reflection compares the layout rather than which matrix
+        // went in which slot. C++20 requires designators in declaration order, so a
+        // transposition is a compile error instead of a wrong picture.
         //
-        // The camera's projection is rebuilt here and the light's is not, and the
-        // difference is in what can move: this one answers to a target that resizes
-        // and a field of view the app could change, and ShadowProjectionFor takes
-        // nothing that changes at all. Held when nothing can move it, derived when
-        // something can.
+        // proj is rebuilt here and lightProj is not: this one answers to a target that
+        // resizes and a fov the app could change, and ShadowProjectionFor takes nothing
+        // that moves.
         renderer.cameras[slot.index].value =
             {.view = ViewFromPose(camera.pose),
              .proj = ProjectionFor(camera.fovDegrees, sceneTargetDescs.color.extent),
@@ -1208,10 +1190,6 @@ int main() {
         if (begun == FrameResult::Fatal) { break; }
 
         if (begun == FrameResult::Skip) { continue; }
-
-        // Past the acquire, a failure breaks rather than continues: the image is
-        // taken, imageAvailable is signalled and the fence is about to be reset, and
-        // skipping the submit leaves both with nobody to wait on them.
 
         // The panel, after the acquire because it reports the image this frame got.
         // Nothing here touches the GPU -- it only fills a draw list that
