@@ -42,11 +42,20 @@ struct PipelineSources {
     const TextureDesc* gDepth = nullptr;
     const TextureDesc* sceneResolve = nullptr;
 
-    // The sets more than one program here has to speak, declared by whoever calls this.
-    // Each program is refused if it does not, rather than given a layout of its own that
-    // nothing else fits. A program sharing nothing passes none.
-    const RequiredSet* required = nullptr;
-    uint32_t requiredCount = 0;
+    // What the caller holds these programs to, and the two halves answer different
+    // questions.
+    //
+    // surfaceSets is what a set is made of, and only the programs that draw a surface
+    // are held to it -- a program that reads no material would be refused for a set it
+    // does not use.
+    //
+    // blocks is what one uniform block looks like inside, and **every program is held
+    // to it**: a block is the same block wherever it is bound, and shadow.vert binds
+    // one of these at a different slot than scene.frag does.
+    const RequiredSet* surfaceSets = nullptr;
+    uint32_t surfaceSetCount = 0;
+    const RequiredBlock* blocks = nullptr;
+    uint32_t blockCount = 0;
 };
 
 // Six programs and eight pipelines. Two of the extra pipelines are wireframe variants

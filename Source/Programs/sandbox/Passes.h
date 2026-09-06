@@ -112,25 +112,10 @@ struct MaterialParams {
     float pad{};   // std140 rounds the block to 32
 };
 
-// Contract: the members come from MaterialParams above, by offsetof and sizeof.
-//           Moving a field there moves this, and a shader that did not move with it
-//           is refused -- which is what the shaders' "field order and std140 padding
-//           match MaterialParams" comments used to say and nothing checked.
-//
-// pad is not declared. It exists so std140 rounds the block to 32, and no shader reads
-// it; a member a stage does not name is not compared.
+// What the set is made of. What the block inside binding 2 looks like is a separate
+// requirement -- SharedBlocks() below -- because the same block appears at other
+// bindings in other programs and a slot cannot reach those.
 inline RequiredSet MaterialSet() noexcept {
-    static const RequiredMember kParams[] = {
-        {"baseColorFactor", offsetof(MaterialParams, baseColorFactor),
-                            sizeof(MaterialParams::baseColorFactor)},
-        {"alphaCutoff",     offsetof(MaterialParams, alphaCutoff),
-                            sizeof(MaterialParams::alphaCutoff)},
-        {"metallic",        offsetof(MaterialParams, metallic),
-                            sizeof(MaterialParams::metallic)},
-        {"roughness",       offsetof(MaterialParams, roughness),
-                            sizeof(MaterialParams::roughness)},
-    };
-
     RequiredSet set;
     set.set = kMaterialSet;
     set.bindingCount = 4;
@@ -140,8 +125,6 @@ inline RequiredSet MaterialSet() noexcept {
     set.names[1] = "normalMap";
     set.types[2] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     set.names[2] = "mtl";
-    set.members[2] = kParams;
-    set.memberCounts[2] = static_cast<uint32_t>(std::size(kParams));
     set.types[3] = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     set.names[3] = "metallicRoughnessMap";
     return set;
@@ -421,12 +404,12 @@ struct FrameShadow {
 //
 // Contract: field order matches the View block in scene.frag.
 struct ViewOptionsUniform {
-    float normalMap;
-    float baseColor;
-    float specular;
-    float alphaMask;
-    float shadow;
-    float metallicRoughness;
+    float useNormalMap;
+    float useBaseColor;
+    float useSpecular;
+    float useAlphaMask;
+    float useShadow;
+    float useMetallicRoughness;
 
     // 0 shows the lit result, 1..4 show one of the geometry pass's images instead.
     // Read by lighting.frag alone -- scene.frag declares the six above and stops,
@@ -438,6 +421,82 @@ struct ViewOptionsUniform {
 
     float pad;   // std140 rounds the block up to a second vec4
 };
+
+
+// Every uniform block this renderer owns, by the name a shader gives it
+// ============================================================================
+//
+// **Renderer owns the contract. Shader implements it. Reflection validates it.** These
+// five structs are the contract; the shaders declare the part each stage reads; the
+// offsets below come from offsetof and sizeof, so moving a field moves the requirement
+// with it and a shader that did not move is refused at startup.
+//
+// This is what the "field order and std140 padding match X" comments in the shaders
+// used to say, and until 09-06 nothing checked them.
+//
+// **Keyed by name and not by a slot**, because the same block sits at different
+// bindings in different programs -- shadow is binding 0 in shadow.vert and binding 2
+// in scene.frag. A requirement written against a slot would reach one of them.
+//
+// Padding is left out. No shader declares it, and a member no stage reads is compared
+// by nobody.
+//
+// Contract: the names are the instance names in GLSL -- camera, light, shadow, view,
+//           mtl -- not the block type names.
+inline ProgramRequirements SharedBlocks() noexcept {
+    static const RequiredMember kCamera[] = {
+        {"view",     offsetof(CameraUniform, view),     sizeof(CameraUniform::view)},
+        {"proj",     offsetof(CameraUniform, proj),     sizeof(CameraUniform::proj)},
+        {"viewPos",  offsetof(CameraUniform, viewPos),  sizeof(CameraUniform::viewPos)},
+    };
+    static const RequiredMember kLight[] = {
+        {"direction", offsetof(LightUniform, direction), sizeof(LightUniform::direction)},
+        {"color",     offsetof(LightUniform, color),     sizeof(LightUniform::color)},
+    };
+    static const RequiredMember kShadow[] = {
+        {"lightView", offsetof(ShadowUniform, lightView), sizeof(ShadowUniform::lightView)},
+        {"lightProj", offsetof(ShadowUniform, lightProj), sizeof(ShadowUniform::lightProj)},
+    };
+    static const RequiredMember kView[] = {
+        {"useNormalMap",  offsetof(ViewOptionsUniform, useNormalMap),
+                          sizeof(ViewOptionsUniform::useNormalMap)},
+        {"useBaseColor",  offsetof(ViewOptionsUniform, useBaseColor),
+                          sizeof(ViewOptionsUniform::useBaseColor)},
+        {"useSpecular",   offsetof(ViewOptionsUniform, useSpecular),
+                          sizeof(ViewOptionsUniform::useSpecular)},
+        {"useAlphaMask",  offsetof(ViewOptionsUniform, useAlphaMask),
+                          sizeof(ViewOptionsUniform::useAlphaMask)},
+        {"useShadow",     offsetof(ViewOptionsUniform, useShadow),
+                          sizeof(ViewOptionsUniform::useShadow)},
+        {"useMetallicRoughness", offsetof(ViewOptionsUniform, useMetallicRoughness),
+                          sizeof(ViewOptionsUniform::useMetallicRoughness)},
+        {"channel",       offsetof(ViewOptionsUniform, channel),
+                          sizeof(ViewOptionsUniform::channel)},
+    };
+    static const RequiredMember kMaterial[] = {
+        {"baseColorFactor", offsetof(MaterialParams, baseColorFactor),
+                            sizeof(MaterialParams::baseColorFactor)},
+        {"alphaCutoff",     offsetof(MaterialParams, alphaCutoff),
+                            sizeof(MaterialParams::alphaCutoff)},
+        {"metallic",        offsetof(MaterialParams, metallic),
+                            sizeof(MaterialParams::metallic)},
+        {"roughness",       offsetof(MaterialParams, roughness),
+                            sizeof(MaterialParams::roughness)},
+    };
+
+    static const RequiredBlock kBlocks[] = {
+        {"camera", kCamera,   static_cast<uint32_t>(std::size(kCamera))},
+        {"light",  kLight,    static_cast<uint32_t>(std::size(kLight))},
+        {"shadow", kShadow,   static_cast<uint32_t>(std::size(kShadow))},
+        {"view",   kView,     static_cast<uint32_t>(std::size(kView))},
+        {"mtl",    kMaterial, static_cast<uint32_t>(std::size(kMaterial))},
+    };
+
+    ProgramRequirements out;
+    out.blocks = kBlocks;
+    out.blockCount = static_cast<uint32_t>(std::size(kBlocks));
+    return out;
+}
 
 // The panel's answers as one per frame in flight, the way the camera and the light
 // are. The fourth of exactly the same kind, and the last to get here: it lived inside

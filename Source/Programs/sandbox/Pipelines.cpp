@@ -161,26 +161,36 @@ bool CreatePipelines(const VulkanDevice& dev, const PipelineSources& sources,
     // shadow writes depth, lighting reads images, post copies one and gui draws a
     // panel. None of them reads a material, and requiring one of them to would be
     // requiring a set they do not use -- lighting's set 1 is its g-buffer.
+    // The blocks go to every program, the material set only to the two that draw a
+    // surface. shadow, lighting, post and gui each own their set 0 and are held to
+    // nothing about it -- but shadow and lighting still declare shared blocks in it,
+    // and those are checked.
+    ProgramRequirements anyProgram;
+    anyProgram.blocks = sources.blocks;
+    anyProgram.blockCount = sources.blockCount;
+
+    ProgramRequirements surfaceProgram = anyProgram;
+    surfaceProgram.sets = sources.surfaceSets;
+    surfaceProgram.setCount = sources.surfaceSetCount;
+
     if (!CreateShaderProgram(dev, shadowStages,
                              static_cast<uint32_t>(std::size(shadowStages)),
-                             nullptr, 0, &out->shadowProgram)
+                             anyProgram, &out->shadowProgram)
             || !CreateShaderProgram(dev, sceneStages,
                                     static_cast<uint32_t>(std::size(sceneStages)),
-                                    sources.required, sources.requiredCount,
-                                    &out->sceneProgram)
+                                    surfaceProgram, &out->sceneProgram)
             || !CreateShaderProgram(dev, geometryStages,
                                     static_cast<uint32_t>(std::size(geometryStages)),
-                                    sources.required, sources.requiredCount,
-                                    &out->geometryProgram)
+                                    surfaceProgram, &out->geometryProgram)
             || !CreateShaderProgram(dev, lightingStages,
                                     static_cast<uint32_t>(std::size(lightingStages)),
-                                    nullptr, 0, &out->lightingProgram)
+                                    anyProgram, &out->lightingProgram)
             || !CreateShaderProgram(dev, postStages,
                                     static_cast<uint32_t>(std::size(postStages)),
-                                    nullptr, 0, &out->postProgram)
+                                    anyProgram, &out->postProgram)
             || !CreateShaderProgram(dev, guiStages,
                                     static_cast<uint32_t>(std::size(guiStages)),
-                                    nullptr, 0, &out->guiProgram)) {
+                                    anyProgram, &out->guiProgram)) {
         return false;
     }
 

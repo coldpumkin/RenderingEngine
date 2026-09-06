@@ -650,12 +650,18 @@ int main() {
     // what keeps everything after the middle the same on both paths.
     pipelineSources.sceneResolve = &sceneTargetDescs.resolve;
 
-    // What a material is, from Passes.h. The scene program is held to it, and a second
-    // program that draws surfaces will be held to the same one -- which is what lets
-    // one set of material sets fit both.
-    const RequiredSet sharedSets[] = {MaterialSet()};
-    pipelineSources.required = sharedSets;
-    pipelineSources.requiredCount = static_cast<uint32_t>(std::size(sharedSets));
+    // What a material is, from Passes.h. Both programs that draw a surface are held to
+    // it, which is what lets one set of material sets fit both.
+    const RequiredSet surfaceSets[] = {MaterialSet()};
+    pipelineSources.surfaceSets = surfaceSets;
+    pipelineSources.surfaceSetCount = static_cast<uint32_t>(std::size(surfaceSets));
+
+    // And what each shared uniform block looks like inside, which every program is held
+    // to. Written from the structs by offsetof, so this is the same declaration the
+    // frame is uploaded from rather than a second copy of it.
+    const ProgramRequirements blocks = SharedBlocks();
+    pipelineSources.blocks = blocks.blocks;
+    pipelineSources.blockCount = blocks.blockCount;
     if (!CreatePipelines(dev, pipelineSources, &renderer.pipelines)) { return 1; }
 
     // Scene -- the mesh and the draw list, from one file

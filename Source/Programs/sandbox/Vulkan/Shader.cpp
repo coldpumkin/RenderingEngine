@@ -502,17 +502,40 @@ static bool CheckRequiredSet(const ShaderProgram& program, const RequiredSet& wa
             return false;
         }
     }
+    return true;
+}
 
-    // The members, per stage. A binding the declaration says nothing about is left
-    // alone -- an image has no members, and a block whose contents are not shared is
-    // the program's own business.
-    for (uint32_t b = 0; b < want.bindingCount; ++b) {
-        if (want.members[b] == nullptr) { continue; }
-        for (uint32_t i = 0; i < program.stageCount; ++i) {
-            if (!CheckBlockMembers(program.stages[i].path, want.set, b,
-                                   program.stages[i].interface.sets[want.set],
-                                   want.members[b], want.memberCounts[b])) {
-                return false;
+// Output: false when any stage reads a declared block laid out differently
+//
+// Every binding of every set of every stage, matched by name against the declarations.
+// A binding whose name is not declared is passed over -- a program's own block is its
+// own business, and this only holds the shared ones.
+//
+// Per stage rather than over the union, because each stage's declaration stands on its
+// own: two stages may take different parts of one block and both be right.
+static bool CheckRequiredBlocks(const ShaderProgram& program,
+                                const RequiredBlock* want, uint32_t wantCount) noexcept {
+    for (uint32_t i = 0; i < program.stageCount; ++i) {
+        const ProgramStage& stage = program.stages[i];
+        for (uint32_t set = 0; set < kMaxSets; ++set) {
+            const SetInterface& declared = stage.interface.sets[set];
+            for (uint32_t b = 0; b < kMaxBindingsPerSet; ++b) {
+                if (declared.memberCounts[b] == 0) { continue; }
+
+                const RequiredBlock* match = nullptr;
+                for (uint32_t w = 0; w < wantCount; ++w) {
+                    if (want[w].name != nullptr
+                            && std::strcmp(want[w].name, declared.bindingNames[b]) == 0) {
+                        match = &want[w];
+                        break;
+                    }
+                }
+                if (match == nullptr) { continue; }
+
+                if (!CheckBlockMembers(stage.path, set, b, declared,
+                                       match->members, match->memberCount)) {
+                    return false;
+                }
             }
         }
     }
@@ -521,7 +544,7 @@ static bool CheckRequiredSet(const ShaderProgram& program, const RequiredSet& wa
 
 bool CreateShaderProgram(const VulkanDevice& dev,
                          const char* const paths[], uint32_t count,
-                         const RequiredSet* required, uint32_t requiredCount,
+                         const ProgramRequirements& required,
                          ShaderProgram* out) noexcept {
     out->dev = &dev;   // set first: the destructor runs even if this fails halfway
 
@@ -592,8 +615,11 @@ bool CreateShaderProgram(const VulkanDevice& dev,
 
     // Before the layouts, so a program that does not speak a shared set is refused
     // rather than given a layout nothing else fits.
-    for (uint32_t i = 0; i < requiredCount; ++i) {
-        if (!CheckRequiredSet(*out, required[i])) { return false; }
+    for (uint32_t i = 0; i < required.setCount; ++i) {
+        if (!CheckRequiredSet(*out, required.sets[i])) { return false; }
+    }
+    if (!CheckRequiredBlocks(*out, required.blocks, required.blockCount)) {
+        return false;
     }
 
     for (uint32_t set = 0; set < kMaxSets; ++set) {

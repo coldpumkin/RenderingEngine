@@ -160,16 +160,37 @@ struct RequiredSet {
     uint32_t bindingCount = 0;
     VkDescriptorType types[kMaxBindingsPerSet]{};
     const char* names[kMaxBindingsPerSet]{};   // nullptr in a slot skips the name check
+};
 
-    // The members of a uniform buffer binding. nullptr means the block's contents are
-    // not part of the contract -- the binding is still checked for type and name.
-    //
-    // **A stage is held to a subset**: every member it declares has to appear here at
-    // the same offset and size, and one it declares that is not here is refused. That
-    // is the direction the whole boundary runs -- the renderer states the block and a
-    // stage takes the part it reads.
-    const RequiredMember* members[kMaxBindingsPerSet]{};
-    uint32_t memberCounts[kMaxBindingsPerSet]{};
+// A uniform block the renderer owns, wherever a shader declares one.
+//
+// **Keyed by the name, not by a set and binding.** The same block sits at different
+// slots in different programs -- ShadowUniform is binding 0 in shadow.vert and binding
+// 2 in scene.frag -- so a requirement written against a slot could not reach both.
+// What has to agree is the layout; where it is bound is each program's own business.
+//
+// That is the difference between this and RequiredSet beside it: a set requirement is
+// about what a set is made of, and this is about what one block looks like inside.
+// A program can be held to both, one, or neither.
+//
+// **A stage is held to a subset.** Every member it declares has to appear here at the
+// same offset and size, and one it declares that is not here is refused -- that being
+// the direction the whole boundary runs. A member no stage reads is compared by
+// nobody, which is why padding can sit in the struct and in no shader.
+struct RequiredBlock {
+    const char* name = nullptr;   // the instance name a shader gives it, e.g. "camera"
+    const RequiredMember* members = nullptr;
+    uint32_t memberCount = 0;
+};
+
+// What a caller holds a program to. Both halves are optional -- a program sharing
+// nothing passes an empty one -- and they answer different questions, so a program
+// may be held to blocks without being held to any set.
+struct ProgramRequirements {
+    const RequiredSet* sets = nullptr;
+    uint32_t setCount = 0;
+    const RequiredBlock* blocks = nullptr;
+    uint32_t blockCount = 0;
 };
 
 struct ShaderInterface {
@@ -338,5 +359,5 @@ struct ShaderProgram {
 // Contract: the paths must outlive this -- they are kept for logging.
 bool CreateShaderProgram(const VulkanDevice& dev,
                          const char* const paths[], uint32_t count,
-                         const RequiredSet* required, uint32_t requiredCount,
+                         const ProgramRequirements& required,
                          ShaderProgram* out) noexcept;
