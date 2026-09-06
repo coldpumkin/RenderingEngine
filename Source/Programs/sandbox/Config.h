@@ -2,6 +2,8 @@
 
 #include <cstdint>
 
+#include <volk.h>   // VkFormat, for the render chain's colour below
+
 // Config - compile-time knobs. kDesired* are requests the driver may lower, the rest
 // are ours outright. No Vulkan header, so main assembles the extent.
 //
@@ -67,6 +69,12 @@ constexpr float kShadowDistance = 22.0f;
 // ChooseRenderTargetFormats lowers it to what color and depth both support. No 1x
 // path: there the resolve attachment is illegal, and it would never run here anyway.
 constexpr uint32_t kDesiredSampleCount = 4;
+
+// What every target in the render chain is made of, and not the swapchain's: the two
+// hold the same value today and part the day post tone-maps, which wants a float.
+// R8G8B8A8 because WriteBmp reads red first; SRGB so blending and the resolve run in
+// linear space.
+constexpr VkFormat kRenderColorFormat = VK_FORMAT_R8G8B8A8_SRGB;
 
 // The window opens at this size and the user resizes from there. Unlike kRender*,
 // which never follows the window.

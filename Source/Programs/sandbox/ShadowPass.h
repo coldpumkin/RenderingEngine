@@ -25,7 +25,7 @@
 // decision here rather than an argument main forgot to pass.
 //
 // SAMPLED because the scene pass reads it -- the second of the two edges.
-TextureDesc MakeShadowTarget(VkExtent2D extent, const TargetCapabilities& caps) noexcept;
+TextureDesc MakeShadowTarget(const TargetCapabilities& caps) noexcept;
 
 // The first pass here with no colour attachment. Its product is a depth image the
 // scene pass samples, which makes it also the first thing depth does outside the

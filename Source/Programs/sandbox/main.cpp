@@ -580,29 +580,17 @@ int main() {
     // Received -- the one of the four we do not write ourselves.
     const TextureDesc swapchainTarget = SwapchainTargetDesc(window);
 
-    // Chosen. kRenderColorFormat is the render chain's, not the swapchain's: they hold
-    // the same value today and part the day post tone-maps, which wants a float
-    // format. R8G8B8A8 because WriteBmp reads red first; SRGB so blending and the
-    // resolve run in linear space. How big is a policy, and Config.h holds it.
-    constexpr VkFormat   kRenderColorFormat = VK_FORMAT_R8G8B8A8_SRGB;
-    constexpr VkExtent2D kShadowExtent{kShadowResolution, kShadowResolution};
-
-    // Answered -- the two a caller cannot decide. Not a check on the colour: whether a
-    // format can do what an image asks is CreateImage2D's question, put to every image
-    // from its own usage.
+    // Answered -- the two a caller cannot decide. Asked with our policy, which is why
+    // the call is the renderer's and not the Vulkan layer's.
     TargetCapabilities caps;
-    if (!QueryTargetCapabilities(inst, selection.gpu, DepthTargetUsage(),
-                                 kDesiredSampleCount, &caps)) { return 1; }
+    if (!RenderTargetCapabilities(inst, selection.gpu, &caps)) { return 1; }
 
-    SceneTargetDescs sceneTargetDescs =
-        MakeSceneTargets(RenderExtentFor(window.surfaceExtent), kRenderColorFormat, caps);
+    // The two that answer to the render size, from one extent so they cannot disagree.
+    SceneTargetDescs sceneTargetDescs;
+    GBufferTargetDescs gbufferDescs;
+    DescribeSizedTargets(window.surfaceExtent, caps, &sceneTargetDescs, &gbufferDescs);
 
-    // The deferred path's four, at the same size and from the same colour choice. One
-    // sample, unlike the scene's -- a g-buffer cannot be resolved before it is lit, so
-    // MakeGBufferTargets does not ask caps for a count.
-    GBufferTargetDescs gbufferDescs =
-        MakeGBufferTargets(RenderExtentFor(window.surfaceExtent), kRenderColorFormat, caps);
-    const TextureDesc shadowTarget = MakeShadowTarget(kShadowExtent, caps);
+    const TextureDesc shadowTarget = MakeShadowTarget(caps);
 
     // Device -- and past it, everything that needs one
     // ========================================================================
@@ -1064,8 +1052,8 @@ int main() {
             // Described again at the new size, by the same call that described them
             // the first time. Only the extent differs, so the pipelines stand and the
             // scene pass's pointers still name the right objects.
-            sceneTargetDescs = MakeSceneTargets(wanted, kRenderColorFormat, caps);
-            gbufferDescs = MakeGBufferTargets(wanted, kRenderColorFormat, caps);
+            DescribeSizedTargets(window.surfaceExtent, caps,
+                                 &sceneTargetDescs, &gbufferDescs);
 
             bool remade = true;
             for (uint32_t i = 0; i < kFramesInFlight && remade; ++i) {

@@ -129,6 +129,19 @@ glm::mat4 ShadowProjectionFor(const TextureDesc& map) noexcept {
                       -kShadowRadius, kShadowRadius, 0.1f, kShadowDistance * 2.0f);
 }
 
+bool RenderTargetCapabilities(const VulkanInstance& inst, VkPhysicalDevice gpu,
+                              TargetCapabilities* out) noexcept {
+    return QueryTargetCapabilities(inst, gpu, DepthTargetUsage(), kDesiredSampleCount,
+                                   out);
+}
+
+void DescribeSizedTargets(VkExtent2D windowExtent, const TargetCapabilities& caps,
+                          SceneTargetDescs* scene, GBufferTargetDescs* gbuffer) noexcept {
+    const VkExtent2D extent = RenderExtentFor(windowExtent);
+    *scene = MakeSceneTargets(extent, kRenderColorFormat, caps);
+    *gbuffer = MakeGBufferTargets(extent, kRenderColorFormat, caps);
+}
+
 VkExtent2D RenderExtentFor(VkExtent2D windowExtent) noexcept {
     // The policy decides whether to look at the argument at all. Following the window
     // is what an editor does; a fixed size is what a client usually ships, and the
@@ -220,7 +233,7 @@ VkImageUsageFlags DepthTargetUsage() noexcept {
     // them changes what it asks for.
     return MakeSceneTargets(VkExtent2D{}, VK_FORMAT_UNDEFINED,
                             TargetCapabilities{}).depth.usage
-         | MakeShadowTarget(VkExtent2D{}, TargetCapabilities{}).usage;
+         | MakeShadowTarget(TargetCapabilities{}).usage;
 }
 
 void SetDrawTransform(DrawItem* item, const Transform& transform) noexcept {

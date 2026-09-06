@@ -5,7 +5,10 @@
 
 #include <iterator>   // std::size
 
-TextureDesc MakeShadowTarget(VkExtent2D extent, const TargetCapabilities& caps) noexcept {
+TextureDesc MakeShadowTarget(const TargetCapabilities& caps) noexcept {
+    // Square, and that is the technique's choice rather than a caller's.
+    const VkExtent2D extent{kShadowResolution, kShadowResolution};
+
     // caps.samples goes unread on purpose -- see the header.
     return TextureDesc{extent, caps.depthFormat, VK_SAMPLE_COUNT_1_BIT,
                        VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT

@@ -64,6 +64,11 @@ struct LightingPass;
 struct PostProcessPass;
 struct Gui;
 
+// Their headers are not included here for the same reason a pass's is not. Out
+// parameters need no more than this.
+struct SceneTargetDescs;
+struct GBufferTargetDescs;
+
 
 
 // Which set is which
@@ -258,17 +263,10 @@ bool CreateMaterials(const VulkanDevice& dev,
 // proj[1][1] *= -1, and the normal rules all read the same y.
 constexpr glm::vec3 kWorldUp{0.0f, 1.0f, 0.0f};
 
-// Rigid: rotation and translation, and deliberately no scale
+// Rigid: rotation and translation, and no scale
 //
-// **Scale is not a field this forgot.** Rotation and translation preserve distances
-// and angles, which is what makes the inverse below a conjugate and a negation. Give
-// this a scale and that inverse stops being the inverse -- quietly, because the
-// function reads two fields and would go on reading two. A wrong answer, not a
-// missing feature, which is why the two are separate types rather than one with a
-// field somebody has to remember not to set.
-//
-// A camera holds one of these. So does the light's viewpoint, in effect: ShadowView
-// places an eye and looks at a point, and never scales anything.
+// Contract: no scale, or ViewFromPose returns a wrong matrix rather than an
+//           incomplete one -- its inverse is a rigid transform's and no other's.
 struct Pose {
     glm::vec3 position{};
 
@@ -287,15 +285,7 @@ struct Pose {
 // it. Only the first half goes away here.
 glm::mat4 ViewFromPose(const Pose& pose) noexcept;
 
-// Where something is, which way it is turned, and how big it is
-//
-// The three glTF stores on a node and the three Unreal's FTransform holds, in that
-// order for that reason -- a loader reading nodes hands over exactly this.
-//
-// Scale is the whole of the difference from a Pose and the difference is not
-// cosmetic. With a non-uniform scale a normal stops transforming like a position and
-// needs the inverse transpose instead; the two rules were built side by side and
-// disagreed on 38.74% of pixels. SetDrawTransform is where that split lives.
+// The three glTF stores on a node, in that order. An object's; a camera holds a Pose.
 struct Transform {
     glm::vec3 position{};
     glm::quat orientation{1.0f, 0.0f, 0.0f, 0.0f};
@@ -317,21 +307,9 @@ glm::mat4 ModelFromTransform(const Transform& transform) noexcept;
 //   here          where it is, which way it is turned, how wide it sees
 //   the renderer  what shape the picture is, and what range becomes depth
 struct CameraState {
-    // A Pose and not a Transform, for two reasons that hold separately.
-    //
-    // The first is correctness: ViewFromPose inverts a rigid transform by conjugating
-    // and negating, so a scale would make its answer wrong rather than incomplete.
-    //
-    // The second is that a camera has nothing to say with a scale. Scale view space
-    // uniformly by k and the perspective divide cancels it -- clip.x/clip.w is
-    // x/(k*z) over 1/k, which is where it started -- so the picture does not move at
-    // all. What does change is depth, because near and far are compared against a
-    // z that scaled: that is a clipping range, and the projection already takes two
-    // planes for it. A non-uniform scale would squash the image anisotropically,
-    // which is a lens this is not modelling. And what is usually called zoom is the
-    // angle of the frustum, which is the field below.
-    //
-    // So every effect a scale here could have is already a projection parameter.
+    // A Pose: a camera has nothing to say with a scale. A uniform one cancels in the
+    // perspective divide and moves no pixel; what it would change is what gets
+    // clipped, and near, far and the field below already say that.
     Pose pose{};
 
     // The one projection input that is not the renderer's. "How wide do I want to
@@ -365,15 +343,8 @@ struct CameraState {
 // something wants to move them (a zoom, a precision fix) they join CameraState.
 glm::mat4 ProjectionFor(float fovDegrees, const TextureDesc& target) noexcept;
 
-// **There is no Camera type holding these two beside the state they came from.** One
-// existed for a while: it kept the desc it was made from, so something could ask what
-// shape of target a projection answered to. Nothing ever asked. Counted across all
-// three things that turn state into matrices -- camera, light, object -- the readers
-// of such a record are zero, and the camera's had already stopped being able to answer
-// its own question once the target became an argument rather than a field.
-//
-// So a caller holds the state, calls the two, and writes the block. The light does the
-// same two lines below, and the two now read alike.
+// No Camera type holding the two matrices beside the state: a caller holds the state,
+// calls the two functions and writes the block. The light reads the same way below.
 
 // The light's state, as whatever moves it holds it
 //
@@ -411,21 +382,26 @@ glm::mat4 ShadowView(const glm::vec3& direction, const glm::vec3& sceneCenter) n
 // states and the reason both of these read a TextureDesc rather than an extent.
 glm::mat4 ShadowProjectionFor(const TextureDesc& map) noexcept;
 
-// Output: how big to render, which is a policy and not the window's business
-//
-// **Three extents exist in this program and only this one is a choice.** A surface
-// extent is what the platform answers; a swapchain's must equal it. Both are facts we
-// are told. This is the one we decide, and all three are VkExtent2D, which is what
-// made them easy to confuse.
-//
-// Takes an extent rather than a Window because that is the whole of what it needs: a
-// policy that reaches into a window type knows more than its question.
-//
-// The two chains that read the result -- the scene's targets and the g-buffer's --
-// have to agree on it, and nothing says so except main handing both the same value.
-// That agreement is a pass-to-pass dependency, which this program has no way to write
-// down yet; moving this function does not change that.
+// Output: how big to render -- the one of this program's three extents we choose. A
+//         surface extent is what the platform answers and a swapchain's must equal
+//         it; all three are VkExtent2D and only this one is ours.
 VkExtent2D RenderExtentFor(VkExtent2D windowExtent) noexcept;
+
+// Output: what the device can give a render target, asked with our policy
+//
+// A wrapper over the Vulkan-level query, and the wrapper is the point: the usage and
+// the sample count it asks about are this layer's and the layer below should not read
+// a policy of ours.
+bool RenderTargetCapabilities(const VulkanInstance& inst, VkPhysicalDevice gpu,
+                              TargetCapabilities* out) noexcept;
+
+// Output: the two desc families that answer to the render size
+//
+// One call and one extent for both. They have to agree -- the two chains end in the
+// same post pass -- and before this the agreement was main passing one variable twice,
+// at startup and again on resize.
+void DescribeSizedTargets(VkExtent2D windowExtent, const TargetCapabilities& caps,
+                          SceneTargetDescs* scene, GBufferTargetDescs* gbuffer) noexcept;
 
 // Two matrices and not their product
 // ----------------------------------------------------------------------------
@@ -447,16 +423,9 @@ struct CameraUniform {
     glm::mat4 view;
     glm::mat4 proj;
 
-    // A point, so w is 1
-    //
-    // **The fourth component is not padding here.** A vec4 that a matrix may multiply
-    // carries which of two things it is: 1 makes a point and translation reaches it,
-    // 0 makes a direction and translation does not. Nothing multiplies this one today
-    // -- both shaders read .xyz -- so writing 0 changed no pixel, and the day a stage
-    // writes view * viewPos it would have been a silently wrong answer.
-    //
-    // The rule is CPU-side: what is written here has to mean what the GPU will take it
-    // to mean. It held a specular exponent once, which is why it was called unused.
+    // w = 1 because this is a point: a matrix that multiplies it must reach it with
+    // its translation. Nothing multiplies it today, so the value is a contract rather
+    // than an effect.
     glm::vec4 viewPos;      // xyz = camera position, w = 1
 };
 
@@ -502,12 +471,9 @@ struct ShadowUniform {
 
 // Contract: field order and types match the shader's Light block.
 struct LightUniform {
-    // w = 0 for the reason CameraUniform::viewPos is 1: this one is a direction, and a
-    // direction is what translation must not reach.
+    // w = 0: a direction, which translation must not reach. Below, w is a payload
+    // instead -- the two meanings share the slot and only these lines separate them.
     glm::vec4 direction;   // xyz = surface toward the light, w = 0
-
-    // Here w is a payload and not a homogeneous coordinate -- the two meanings share a
-    // slot and only the comment separates them.
     glm::vec4 color;       // rgb = colour, a = ambient
 };
 
