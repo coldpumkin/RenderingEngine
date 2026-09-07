@@ -144,10 +144,7 @@ void RecordShadowPass(const FrameSlot& slot, const ShadowPass& shadow,
     // an image is what knows when it stopped writing, and this keeps the scene pass
     // from having to name a pass it only reads through a descriptor.
     //
-    // The three values passed are this pass's own -- where it stopped writing, and the
-    // layout it wrote in. Nothing about the reader is named here.
-    RecordSampledTransition(vk, cmd, frame.depth->image.handle, VK_IMAGE_ASPECT_DEPTH_BIT,
-                            VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-                            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                            VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
+    // The role is all this says. Where a depth attachment stops being written and what
+    // layout it is left in follow from it, in one place rather than here.
+    RecordSampledHandover(vk, cmd, *frame.depth, AttachmentRole::Depth);
 }

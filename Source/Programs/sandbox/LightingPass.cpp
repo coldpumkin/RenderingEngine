@@ -130,23 +130,13 @@ void RecordLightingPass(const FrameSlot& slot, const LightingPass& lighting) noe
 
     // The four images this pass reads, moved from what the geometry pass left them as
     // to what a sampler needs. The reader issues them, the way the post pass does for
-    // the resolve: the three values passed are the writer's and had to be told.
-    //
-    // The three colours share a stage and the depth does not -- a depth attachment is
-    // written by the late fragment tests, not by colour output -- which is the whole
-    // reason this is four calls and not a loop over four images.
+    // the resolve -- and it no longer states the writer's three values to do it. The
+    // role it names is the one thing it knows and the one thing they follow from.
     const Texture* const colour[] = {&source.albedo, &source.normal, &source.material};
     for (uint32_t i = 0; i < std::size(colour); ++i) {
-        RecordSampledTransition(vk, cmd, colour[i]->image.handle,
-                                VK_IMAGE_ASPECT_COLOR_BIT,
-                                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        RecordSampledHandover(vk, cmd, *colour[i], AttachmentRole::Color);
     }
-    RecordSampledTransition(vk, cmd, source.depth.image.handle, VK_IMAGE_ASPECT_DEPTH_BIT,
-                            VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-                            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                            VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
+    RecordSampledHandover(vk, cmd, source.depth, AttachmentRole::Depth);
 
     // The shadow map needs none: the shadow pass published it at its own end, which is
     // the other of the two patterns and the one a writer can use when it knows every

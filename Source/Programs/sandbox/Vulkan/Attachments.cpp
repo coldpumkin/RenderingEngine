@@ -215,6 +215,19 @@ static bool HasStencilAspect(VkFormat format) noexcept {
     }
 }
 
+void RecordSampledHandover(const VolkDeviceTable& vk, VkCommandBuffer cmd,
+                           const Texture& produced, AttachmentRole role) noexcept {
+    const bool isColour = role == AttachmentRole::Color;
+    RecordSampledTransition(vk, cmd, produced.image.handle,
+                            FormatAspects(produced.desc.format),
+                            isColour ? VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT
+                                     : VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                            isColour ? VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT
+                                     : VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                            isColour ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+                                     : VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
+}
+
 bool ValidatePassDesc(const RenderPassDesc& desc) noexcept {
     uint32_t count = 0;
     while (count < kMaxAttachments && desc.attachments[count].resource != nullptr) {
@@ -433,6 +446,20 @@ bool BeginPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
                     static_cast<int>(wantInto.format));
                 return false;
             }
+
+            // Where it has to be before EndRendering averages into it. Its old
+            // contents are dead because a resolve covers the whole render area -- which
+            // is this declaration's own fact, not the colour attachment's loadOp. The
+            // pass that owned this used to say so in a comment and issue it by hand,
+            // because until resolve.target was declared the right field to read it from
+            // did not exist.
+            RecordLayoutTransition(vk, cmd, into->image.handle,
+                                   FormatAspects(into->desc.format),
+                                   waitedStage, 0,
+                                   VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                   VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                                   VK_IMAGE_LAYOUT_UNDEFINED,
+                                   VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
             info.resolveMode = use.resolve.mode;
             info.resolveImageView = into->view.handle;

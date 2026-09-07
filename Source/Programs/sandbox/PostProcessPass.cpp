@@ -117,13 +117,11 @@ void RecordPostProcessPass(const FrameSlot& slot, const PostProcessPass& post,
     // The image this pass reads. Written as an attachment by the pass before, read as
     // a texture here -- and the layout must equal the one recorded into the set.
     //
-    // The three values passed are the scene pass's, not this one's: a reader cannot
-    // work out where its input stopped being written. That they are spelled out here
-    // is what a reader transitioning someone else's product costs.
-    RecordSampledTransition(vk, cmd, source.image.handle, VK_IMAGE_ASPECT_COLOR_BIT,
-                            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    // Which of the two middles wrote it does not matter and is not asked: both draw
+    // into it as a colour attachment, and that role is what the source half follows
+    // from. This used to spell out the writer's three values, which is a reader stating
+    // facts about a pass it does not name.
+    RecordSampledHandover(vk, cmd, source, AttachmentRole::Color);
 
     // The image this pass draws into. Window sized, unlike the scene pass -- the
     // sampler's LINEAR filter scales.

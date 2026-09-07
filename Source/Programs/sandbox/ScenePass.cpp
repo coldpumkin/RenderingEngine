@@ -205,18 +205,6 @@ void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
     const SceneTargets& targets = *frame.targets;
     const VkExtent2D extent = targets.color.desc.extent;   // render resolution, not window size
 
-    // The resolve is not derived, and the reason is worth the four lines. It is a
-    // second image the colour attachment names, written at EndRendering rather than by
-    // any draw, and what makes UNDEFINED right for it is resolveMode covering the whole
-    // render area -- not loadOp, which is the colour image's story. Deriving it from
-    // the attachment would be getting the right answer from the wrong field.
-    RecordLayoutTransition(vk, cmd, targets.resolve.image.handle, VK_IMAGE_ASPECT_COLOR_BIT,
-                           VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
-                           VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                           VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                           VK_IMAGE_LAYOUT_UNDEFINED,
-                           VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-
     // The multisample colour, then the depth, in the order the desc declares them. The
     // resolve rides along beside the colour: vkCmdEndRendering does the averaging, so
     // there is no second pass and no vkCmdResolveImage. TOP_OF_PIPE because nothing

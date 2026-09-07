@@ -204,6 +204,26 @@ bool BeginPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
                const Texture* const views[], const Texture* const resolves[],
                VkRect2D area, VkPipelineStageFlags2 waitedStage) noexcept;
 
+// Effect: appends the barrier that hands an attachment on to a sampler
+//
+// **role is all the source half needs.** Where a pass stopped writing and what layout
+// it left behind follow from what it wrote the image as: a colour attachment finishes
+// at COLOR_ATTACHMENT_OUTPUT in COLOR_ATTACHMENT_OPTIMAL, a depth one at
+// LATE_FRAGMENT_TESTS in DEPTH_ATTACHMENT_OPTIMAL.
+//
+// Every reader used to spell those three out, which meant stating facts about a pass it
+// does not name -- PostProcessPass said so in a comment and called it the cost of a
+// reader transitioning someone else's product. It is not a cost any more: what a
+// producer leaves is one mapping in one place.
+//
+// The aspect is the barrier's own rule and not the view's: every aspect the format has
+// (VUID-VkImageMemoryBarrier2-image-03320).
+//
+// Contract: produced was written as an attachment of that role earlier in this command
+//           buffer. CheckPassOrder is what says an earlier pass produced it at all.
+void RecordSampledHandover(const VolkDeviceTable& vk, VkCommandBuffer cmd,
+                           const Texture& produced, AttachmentRole role) noexcept;
+
 // The comparison the pass creations make: the descs they were handed, projected, and
 // what their pipeline actually baked. Nobody else can see both ends.
 inline bool SameAttachmentFormats(const AttachmentFormats& a,
