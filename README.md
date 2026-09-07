@@ -64,7 +64,13 @@ the two paths are meant to compare is structure, so the edges differ and that is
   being added independently.
 - **glTF loading** with tangent generation where the asset has none (one primitive in
   Sponza; the generator was checked against the 102 that ship tangents, mean dot 0.9953).
+- **Mip chain and anisotropic filtering.** Built at upload, a linear blit per level,
+  because Vulkan has no glGenerateMipmap.
 - MSAA resolve, resize and minimize handling, VMA for allocation.
+
+![without mipmaps](docs/images/mips-off.jpg) ![with mipmaps](docs/images/mips-on.jpg)
+
+*The same distant arcade sampled at level 0 and through the chain.*
 
 ## Design notes
 
@@ -138,56 +144,26 @@ places carry a `Contract:` comment instead, and there are four of them.
 ![Panel](docs/images/panel.jpg)
 
 The panel groups its switches by the path a value takes to the GPU: which passes run,
-uniform contents, dynamic state commands, and the one switch that selects a different
-compiled pipeline. The right-hand window reads back the descriptor pool, the reflected
-shader interface and per-frame draw statistics.
+uniform contents, dynamic state commands, and the one that selects a different compiled
+pipeline. The right-hand window reads back the descriptor pool, the reflected shader
+interface and the frame's draw statistics.
 
-- **Mip chain and anisotropy.** Every loaded texture is built with a full chain, blit by
-  blit, and the sampler filters between levels with anisotropy at the device's limit.
-  Sampling a minified 1024² texture at level 0 speckles the distant stonework and misses
-  the texture cache on nearly every tap, so this is faster as well as steadier:
+GPU time per pass comes from timestamps the device writes, one query pool per frame in
+flight. Both stamps are taken at `ALL_COMMANDS`, so an interval covers one pass rather
+than the tail of the one before it. RX 6800S, 1280x720, three lights:
 
-  | | before | after |
-  |---|---|---|
-  | forward, scene pass | 3.431 ms | 2.077 ms |
-  | deferred, geometry pass | 2.569 ms | 0.849 ms |
-  | frame total, forward | 6.639 ms | 5.328 ms |
+| | shadow | point shadow | sky | middle | post | total |
+|---|---|---|---|---|---|---|
+| forward | 3.144 | 0.682 | 0.348 | scene 2.249 | 0.057 | 6.479 ms |
+| deferred | 2.848 | 0.682 | 0.322 | geometry 0.836 + lighting 0.758 | 0.059 | 5.505 ms |
 
-  ![without mipmaps](docs/images/mips-off.jpg) ![with mipmaps](docs/images/mips-on.jpg)
+`LAMBDA_CAPTURE=<path>.bmp` writes the second frame and exits. Time is fixed under
+capture, so the same binary hashes the same twice, and `Tools/capture.ps1` runs both
+paths against `Tools/capture.baseline`. Frustum culling was checked that way: it removes
+34 of the 103 draws from this viewpoint and both hashes stay byte-identical.
 
-  *The same distant arcade, sampled at level 0 and through the chain.*
-
-- **A point light lighting something.** Its cube shadow is the warm half of this frame:
-  the arch soffits and the wall behind the near column go dark when it is switched off,
-  3.2% of the frame by more than 12 levels.
-
-  ![point light and its cube shadow](docs/images/point-shadow.jpg)
-
-- **GPU time per pass.** Timestamps written by the device, one query pool per frame in
-  flight, read after that slot's fence. Both stamps are taken at `ALL_COMMANDS` so an
-  interval covers one pass rather than the tail of the one before it, and a pass that did
-  not run reads back as unavailable rather than as zero. On an RX 6800S at 1280x720 with
-  three lights:
-
-  | | shadow | point shadow | sky | middle | post | total |
-  |---|---|---|---|---|---|---|
-  | forward | 3.144 | 0.682 | 0.348 | scene 2.249 | 0.057 | 6.479 ms |
-  | deferred | 2.848 | 0.682 | 0.322 | geometry 0.836 + lighting 0.758 | 0.059 | 5.505 ms |
-
-  The point shadow figure is six faces for one light, drawing the whole list each time.
-
-- **Frustum culling.** Six planes taken from `proj * view`, tested against each
-  primitive's glTF bounds. It removes 34 of the 103 draws from this viewpoint and leaves
-  both capture hashes byte-identical, which is what says nothing visible was dropped. The
-  shadow pass keeps the full list, because geometry behind the camera still casts into
-  the picture.
-- **Image regression.** `LAMBDA_CAPTURE=<path>.bmp` writes the second frame's swapchain
-  image and exits. Time is fixed under capture, so the same binary hashes the same twice.
-  `Tools/capture.ps1` runs both paths and compares against `Tools/capture.baseline`.
-- **Validation and synchronization layers** are kept at zero messages, checked with four
-  resizes plus minimize and restore.
-- **Draw statistics:** 69 draws of 103 items after frustum culling, 25 material binds,
-  2 cull changes. Both bind counts are at their floor for this sort order.
+Validation and synchronization layers are kept at zero messages, checked with four
+resizes plus minimize and restore.
 
 ## Build
 
