@@ -542,10 +542,17 @@ int main() {
     // Display -- a window, and a GPU that can drive it
     // ========================================================================
 
+    // Set it to a path and one frame is written there and the program exits. Implies
+    // fixed time -- a capture of a moving light compares against nothing -- and read up
+    // here because it also decides whether a window is shown at all. What the capture
+    // itself does with it is at the bottom of the loop.
+    const char* const capturePath = std::getenv("LAMBDA_CAPTURE");
+
     // glfwInit is first only because windowSystem is declared first and so dies last.
     if (!InitWindowSystem(&windowSystem)) { return 1; }
     if (!CreateInstance(&inst)) { return 1; }
-    if (!OpenWindow(inst, kWindowWidth, kWindowHeight, "Lambda Engine", &window)) {
+    if (!OpenWindow(inst, kWindowWidth, kWindowHeight, "Lambda Engine",
+                    capturePath == nullptr, &window)) {
         return 1;
     }
 
@@ -1004,10 +1011,6 @@ int main() {
     // honest only because the list does not change between frames.
     DrawStats drawStats;
     bool loggedDrawStats = false;
-
-    // Set it to a path and the first frame is written there and the program exits.
-    // Implies fixed time -- a capture of a moving light compares against nothing.
-    const char* const capturePath = std::getenv("LAMBDA_CAPTURE");
 
     // The light is the only thing here that reads absolute time, so two runs never
     // draw the same picture unless this stops it. Environment variables rather than

@@ -45,12 +45,17 @@ static void OnFramebufferResized(GLFWwindow* handle, int /*w*/, int /*h*/) {
 // glfwSetWindowUserPointer has to be the one the caller will keep. Returned by value,
 // what gets registered is the address of a local.
 bool OpenWindow(const VulkanInstance& inst,
-                int width, int height, const char* title,
+                int width, int height, const char* title, bool visible,
                 Window* out) noexcept {
     out->inst = &inst;
 
     // GLFW creates an OpenGL context by default. We have no use for one.
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+
+    // A capture does not look at the window, so it does not open one to look at. The
+    // surface, the swapchain and present all work the same either way -- hidden is not
+    // minimized, so the extent stays what it was asked for and no frame is skipped.
+    glfwWindowHint(GLFW_VISIBLE, visible ? GLFW_TRUE : GLFW_FALSE);
 
     out->handle = glfwCreateWindow(width, height, title, nullptr, nullptr);
     if (out->handle == nullptr) {

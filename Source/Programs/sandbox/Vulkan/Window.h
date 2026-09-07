@@ -112,8 +112,10 @@ struct Window {
 //
 // An out parameter because the address given to glfwSetWindowUserPointer has to be the
 // one the caller keeps. Returned by value, what gets registered is a local's address.
+// visible false opens the window without showing it, which is what a capture wants:
+// nothing about presentation changes and nothing appears on a screen someone is using.
 bool OpenWindow(const VulkanInstance& inst,
-                int width, int height, const char* title,
+                int width, int height, const char* title, bool visible,
                 Window* out) noexcept;
 
 // SelectSurfaceFormat and QuerySurfaceExtent are declared in Swapchain.h, next to the
