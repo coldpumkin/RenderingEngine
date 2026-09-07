@@ -189,7 +189,7 @@ substitute.
 Source/Programs/sandbox/
   Vulkan/            API resources, one .h/.cpp pair per concept
                      Core, Instance, Device, Window, Swapchain, Commands, Frame,
-                     Image, Attachments, Texture, Descriptors, Barrier,
+                     Image, Attachments, Texture, Descriptors, Barrier, Timing,
                      Pipeline, Shader, Buffer, Mesh, VertexLayout
   Passes.h/.cpp      what the passes share, and the order of a frame
   ShadowPass         depth only, from where the light is
@@ -199,6 +199,8 @@ Source/Programs/sandbox/
   PostProcessPass    the result of either middle onto the swapchain image
   Sky.h/.cpp         the four environment bakes and the pass that draws the sky
   Gui.h/.cpp         the panel (Dear ImGui)
+  Gltf.h/.cpp        an asset file, as the arrays a frame is built from
+  Bmp.h/.cpp         a captured frame, as a file
   Pipelines.h/.cpp   eleven shader programs, fourteen pipelines
   Renderer.h         everything that needs a VkDevice to exist
   main.cpp           window, input, frame loop

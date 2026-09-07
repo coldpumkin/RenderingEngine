@@ -48,6 +48,9 @@ add_executable(sandbox
     Vulkan/Commands.h    Vulkan/Commands.cpp    # command pools, one per queue family
     Vulkan/Frame.h       Vulkan/Frame.cpp       # frame slot, frame target, opening and closing
     Vulkan/Timing.h      Vulkan/Timing.cpp      # GPU timestamps, one query pool per frame
+
+    Gltf.h               Gltf.cpp               # an asset file, as the arrays a frame needs
+    Bmp.h                Bmp.cpp                # a captured frame, as a file
     Vulkan/Shader.h      Vulkan/Shader.cpp      # reading .spv, and reflecting on it
     Vulkan/Pipeline.h    Vulkan/Pipeline.cpp
     Vulkan/VertexLayout.h                       # what a vertex buffer hands the vertex stage
