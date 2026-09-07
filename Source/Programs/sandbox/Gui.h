@@ -233,6 +233,7 @@ struct GuiFrameInfo {
     // the textures below are not the pass they belong to: this header names Vulkan
     // types and nothing of ours above it.
     uint32_t recordedDraws = 0;
+    uint32_t culledDraws = 0;
     uint32_t materialBinds = 0;
     uint32_t cullChanges = 0;
 

@@ -137,13 +137,18 @@ uniform contents, dynamic state commands, and the one switch that selects a diff
 compiled pipeline. The right-hand window reads back the descriptor pool, the reflected
 shader interface and per-frame draw statistics.
 
+- **Frustum culling.** Six planes taken from `proj * view`, tested against each
+  primitive's glTF bounds. It removes 34 of the 103 draws from this viewpoint and leaves
+  both capture hashes byte-identical, which is what says nothing visible was dropped. The
+  shadow pass keeps the full list, because geometry behind the camera still casts into
+  the picture.
 - **Image regression.** `LAMBDA_CAPTURE=<path>.bmp` writes the second frame's swapchain
   image and exits. Time is fixed under capture, so the same binary hashes the same twice.
   `Tools/capture.ps1` runs both paths and compares against `Tools/capture.baseline`.
 - **Validation and synchronization layers** are kept at zero messages, checked with four
   resizes plus minimize and restore.
-- **Draw statistics:** 103 draws, 25 material binds, 2 cull changes. Both bind counts are
-  at their floor for this sort order.
+- **Draw statistics:** 69 draws of 103 items after frustum culling, 25 material binds,
+  2 cull changes. Both bind counts are at their floor for this sort order.
 
 ## Build
 
@@ -198,7 +203,6 @@ it refer to one image by one name.
 
 ## Not implemented
 
-- Frustum culling. All 103 draws are submitted every frame.
 - GPU timing per pass.
 - Cube shadows for point lights.
 - One mesh, no instancing.

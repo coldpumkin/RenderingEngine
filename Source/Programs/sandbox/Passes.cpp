@@ -287,6 +287,70 @@ void SetDrawTransform(DrawItem* item, const Transform& transform) noexcept {
     item->normal[2] = glm::vec4{normal[2], 0.0f};
 }
 
+Frustum FrustumFrom(const glm::mat4& viewProj) noexcept {
+    // Rows of the matrix, which is what the planes are built from. GLM is column major,
+    // so a row is one component of each column.
+    const glm::vec4 rowX{viewProj[0][0], viewProj[1][0], viewProj[2][0], viewProj[3][0]};
+    const glm::vec4 rowY{viewProj[0][1], viewProj[1][1], viewProj[2][1], viewProj[3][1]};
+    const glm::vec4 rowZ{viewProj[0][2], viewProj[1][2], viewProj[2][2], viewProj[3][2]};
+    const glm::vec4 rowW{viewProj[0][3], viewProj[1][3], viewProj[2][3], viewProj[3][3]};
+
+    Frustum out;
+    out.planes[0] = rowW + rowX;   // left
+    out.planes[1] = rowW - rowX;   // right
+    out.planes[2] = rowW + rowY;   // bottom
+    out.planes[3] = rowW - rowY;   // top
+
+    // 0 <= z <= w here, not -w <= z <= w: GLM_FORCE_DEPTH_ZERO_TO_ONE is on the target,
+    // so the near plane is the z row itself.
+    out.planes[4] = rowZ;          // near
+    out.planes[5] = rowW - rowZ;   // far
+
+    // Normalized so the distance a plane reports is in world units. Nothing here reads
+    // that distance, but a plane of arbitrary length makes every later use wrong in a
+    // way that looks like a tuning problem.
+    for (glm::vec4& plane : out.planes) {
+        const float length = glm::length(glm::vec3{plane});
+        if (length > 0.0f) { plane /= length; }
+    }
+    return out;
+}
+
+bool IsVisible(const Frustum& frustum, const DrawItem& item) noexcept {
+    // An asset that stated no bounds is drawn. The alternative is treating an empty box
+    // as a point, which culls the whole primitive and looks like missing geometry.
+    if (item.boundsMin.x > item.boundsMax.x) { return true; }
+
+    // The object box, moved into world space as a box again. Transforming the centre and
+    // then taking the absolute value of the matrix against the half-extent is the
+    // standard shortcut: it is the same answer as transforming eight corners and taking
+    // their bounds, at a fraction of the work.
+    const glm::vec3 centre = (item.boundsMin + item.boundsMax) * 0.5f;
+    const glm::vec3 half   = (item.boundsMax - item.boundsMin) * 0.5f;
+
+    const glm::vec3 worldCentre = glm::vec3{item.model * glm::vec4{centre, 1.0f}};
+    const glm::mat3 basis = glm::mat3(item.model);
+    const glm::vec3 worldHalf{
+        glm::abs(basis[0].x) * half.x + glm::abs(basis[1].x) * half.y
+            + glm::abs(basis[2].x) * half.z,
+        glm::abs(basis[0].y) * half.x + glm::abs(basis[1].y) * half.y
+            + glm::abs(basis[2].y) * half.z,
+        glm::abs(basis[0].z) * half.x + glm::abs(basis[1].z) * half.y
+            + glm::abs(basis[2].z) * half.z};
+
+    for (const glm::vec4& plane : frustum.planes) {
+        const glm::vec3 normal{plane};
+
+        // The corner furthest along the plane's normal. If even that one is behind the
+        // plane, every corner is, and the box cannot be seen.
+        const float reach = glm::abs(normal.x) * worldHalf.x
+                          + glm::abs(normal.y) * worldHalf.y
+                          + glm::abs(normal.z) * worldHalf.z;
+        if (glm::dot(normal, worldCentre) + plane.w + reach < 0.0f) { return false; }
+    }
+    return true;
+}
+
 bool DeclareRead(const PassInput& input, const char* what, bool wantDepth,
                  RenderPassDesc* desc) noexcept {
     if (input.resource == nullptr) {
@@ -502,7 +566,8 @@ bool RecordFrame(const FrameSlot& slot,
                  const ScenePass& scene,
                  const GeometryPass& geometry, const LightingPass& lighting,
                  const PostProcessPass& post, Gui& gui, const Texture& target,
-                 const DrawList& draws, DrawStats* stats) noexcept {
+                 const DrawList& draws, const DrawList& shadowDraws,
+                 DrawStats* stats) noexcept {
     const VolkDeviceTable& vk = slot.dev->table;
     VkCommandBuffer cmd = slot.cmd;
     // The pool has RESET_COMMAND_BUFFER_BIT, so one buffer can rewind on its own.
@@ -556,7 +621,7 @@ bool RecordFrame(const FrameSlot& slot,
         }
     }
 
-    RecordShadowPass(slot, shadow, draws, shadowCasters);
+    RecordShadowPass(slot, shadow, shadowDraws, shadowCasters);
 
     // The one branch in a frame. Everything either side of it is the same call with
     // the same arguments, which is the point: what deferred changes is here and

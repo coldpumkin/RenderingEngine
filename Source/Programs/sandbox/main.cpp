@@ -475,6 +475,14 @@ static bool LoadGltf(const char* path,
             item.range = {static_cast<uint32_t>(firstIndex),
                           static_cast<uint32_t>(prim.indices->count)};
             item.vertexOffset = static_cast<int32_t>(first);
+
+            // glTF requires min and max on the POSITION accessor, so this is read
+            // rather than computed. An asset that omits them anyway leaves the item's
+            // empty box, which the culler reads as always visible.
+            if (pos->has_min && pos->has_max) {
+                item.boundsMin = glm::vec3{pos->min[0], pos->min[1], pos->min[2]};
+                item.boundsMax = glm::vec3{pos->max[0], pos->max[1], pos->max[2]};
+            }
             items->push_back(item);
         }
     }
@@ -1062,6 +1070,11 @@ int main() {
     uint32_t slotIndex = 0;       // which slot this frame borrows
     double lastTime = glfwGetTime();
 
+    // What the frustum leaves, refilled every frame. Declared here so the allocation
+    // happens once: clear() keeps the capacity and the list never grows past items.
+    std::vector<DrawItem> visibleItems;
+    visibleItems.reserve(items.size());
+
     // Where the scene is, for the shadow box to cover
     //
     // **A stand-in, and worth naming as one.** This is not a policy the renderer chose;
@@ -1327,6 +1340,7 @@ int main() {
         guiInfo.itemCount = static_cast<uint32_t>(items.size());
         guiInfo.materialCount = materialCount;
         guiInfo.recordedDraws = drawStats.draws;
+        guiInfo.culledDraws = drawStats.culled;
         guiInfo.materialBinds = drawStats.materialBinds;
         guiInfo.cullChanges = drawStats.cullChanges;
         guiInfo.descriptors = &renderer.descriptors;
@@ -1362,20 +1376,43 @@ int main() {
         // Reset rather than declared here: the counters add up, and the panel above
         // read last frame's values before this line overwrites them.
         drawStats = DrawStats{};
+
+        // What this camera can see, rebuilt every frame because the camera moves. The
+        // frustum comes from the same two matrices the vertex stage will multiply by,
+        // read back out of the block that was just written, so the test cannot drift
+        // from what is drawn.
+        //
+        // A filtered copy rather than a flag on the item: the recorder walks a list and
+        // binds a material where two neighbours differ, and a skipped item in the middle
+        // of that walk would still have to be examined. The vector keeps its capacity
+        // across frames, so this allocates once.
+        const CameraUniform& sent = renderer.cameras[slot.index].value;
+        const Frustum frustum = FrustumFrom(sent.proj * sent.view);
+        visibleItems.clear();
+        for (const DrawItem& item : items) {
+            if (IsVisible(frustum, item)) { visibleItems.push_back(item); }
+        }
+        drawStats.culled = static_cast<uint32_t>(items.size() - visibleItems.size());
+
+        const DrawList visibleList{visibleItems.data(),
+                                   static_cast<uint32_t>(visibleItems.size()),
+                                   renderer.materials.data(), materialCount};
+
         if (!RecordFrame(slot, renderer.shadowPass, shadowCasters,
                          renderer.skyForwardPass, renderer.skyDeferredPass,
                          renderer.scenePass,
                          renderer.geometryPass, renderer.lightingPass,
                          renderer.postPass, renderer.guiPass,
-                         *target.texture, drawList, &drawStats)) {
+                         *target.texture, visibleList, drawList, &drawStats)) {
             break;
         }
 
         // Once. The list does not change between frames, so neither do these -- and a
         // line per frame would bury the one number that matters.
         if (!loggedDrawStats) {
-            LOG("[draw] %u draws, %u material binds, %u cull changes\n",
-                drawStats.draws, drawStats.materialBinds, drawStats.cullChanges);
+            LOG("[draw] %u draws (%u culled), %u material binds, %u cull changes\n",
+                drawStats.draws, drawStats.culled, drawStats.materialBinds,
+                drawStats.cullChanges);
             loggedDrawStats = true;
         }
 

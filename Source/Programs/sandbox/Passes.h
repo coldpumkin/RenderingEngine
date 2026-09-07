@@ -875,6 +875,15 @@ struct DrawItem {
     // same way and changes with it, because both are read through this one index.
     uint32_t material = kNoMaterial;
 
+    // The object-space box this draw covers, from the glTF accessor's own min and max.
+    // Object space rather than world: the model matrix is right here, and a box that
+    // moved with it would be a second value to keep in step.
+    //
+    // An empty box (min > max) means the asset did not state one, and the culler treats
+    // that as always visible rather than as a point at the origin.
+    glm::vec3 boundsMin{1.0f};
+    glm::vec3 boundsMax{-1.0f};
+
     // Added to every index this draw reads, so a primitive's indices can stay
     // relative to its own vertices. glTF numbers each primitive from zero, and
     // Sponza has 192,496 vertices across 103 of them -- without this the indices
@@ -892,6 +901,41 @@ struct DrawItem {
 // answering to the previous transform -- invisible while every scale is uniform, and
 // silently wrong after that.
 void SetDrawTransform(DrawItem* item, const Transform& transform) noexcept;
+
+
+// What is in front of the camera
+// ============================================================================
+//
+// Six planes in world space, each stored as a normal and a distance in one vec4, with
+// the inside on the positive side. They come out of a viewProj because that matrix is
+// exactly the map from world space to the box the hardware clips against: each clip-space
+// inequality -w <= x <= w becomes one row combination, which is the Gribb-Hartmann
+// derivation.
+//
+// Taking viewProj rather than a camera means the same code culls for a light: the shadow
+// pass has its own pair of matrices and nothing here knows the difference.
+struct Frustum {
+    glm::vec4 planes[6];
+};
+
+// Output: the six planes of the volume this matrix maps to clip space
+//
+// Contract: the matrix is a projection times a view, both built for this renderer's
+//           conventions (GLM with GLM_FORCE_DEPTH_ZERO_TO_ONE, y flipped by the
+//           viewport). The near plane row is w + z rather than w - z because depth
+//           runs 0..1 here and not -1..1.
+Frustum FrustumFrom(const glm::mat4& viewProj) noexcept;
+
+// Output: false only when the item's box is wholly outside one plane
+//
+// The conservative half of the usual test. A box that straddles a plane counts as
+// visible, and a box outside two planes at once but inside each one alone is not
+// detected -- both errors draw something that could have been skipped, which costs time
+// and never costs correctness.
+//
+// An item with no bounds is always visible, so an asset that states none loses the
+// optimisation rather than the geometry.
+bool IsVisible(const Frustum& frustum, const DrawItem& item) noexcept;
 
 
 // What a pass is asked to draw
@@ -1008,6 +1052,10 @@ bool DeclareRead(const PassInput& input, const char* what, bool wantDepth,
 
 struct DrawStats {
     uint32_t draws = 0;
+
+    // How many items the frustum removed before recording. Counted where the removal
+    // happens, which is outside recording -- what a pass reports is what it was given.
+    uint32_t culled = 0;
     uint32_t materialBinds = 0;
     uint32_t cullChanges = 0;
 };
@@ -1064,6 +1112,11 @@ void UploadFrameValues(const FrameSlot& slot,
                        const FrameShadow* shadows, FrameViewOptions* views,
                        const Gui& gui) noexcept;
 
+// draws is what the camera can see; shadowDraws is everything that can cast. They are
+// two lists because they are culled against different volumes -- a wall behind the camera
+// still throws its shadow into the picture, so removing it from the shadow pass would
+// delete a shadow rather than save work.
+//
 // Effect: resets the slot's command buffer and records this frame's passes into it
 // Output: false means the buffer is invalid and must not be submitted
 //         stats, if given, is what the pass that walked the draw list cost. Every
@@ -1094,4 +1147,5 @@ bool RecordFrame(const FrameSlot& slot,
                  const ScenePass& scene,
                  const GeometryPass& geometry, const LightingPass& lighting,
                  const PostProcessPass& post, Gui& gui, const Texture& target,
-                 const DrawList& draws, DrawStats* stats = nullptr) noexcept;
+                 const DrawList& draws, const DrawList& shadowDraws,
+                 DrawStats* stats = nullptr) noexcept;

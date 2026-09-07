@@ -481,7 +481,8 @@ void BuildGui(Gui* gui, const GuiFrameInfo& info) noexcept {
 
         // Both numbers, because they answer to different things: the second is the
         // list we hold, the first is how much of it reached the command buffer.
-        ImGui::Text("draws  %u of %u items", info.recordedDraws, info.itemCount);
+        ImGui::Text("draws  %u of %u items   %u culled",
+                    info.recordedDraws, info.itemCount, info.culledDraws);
 
         // What the item order costs. Their floors are the two numbers on the line
         // above and below: binds cannot go under the number of distinct materials
