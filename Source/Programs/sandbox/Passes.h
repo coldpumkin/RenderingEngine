@@ -801,6 +801,26 @@ struct DrawList {
 // materials -- as soon as equal materials are adjacent. cullChanges reaches its floor
 // only if the order groups by cull first, which sorting on the material alone does not
 // do even though cull is a function of it.
+// One resource another pass produced, in the two forms a reader needs it
+//
+// **resource is the identity and frames[] is this frame's copy of it.** Every Texture
+// keeps its own copy of the desc it was made from, so &frames[0]->desc and
+// &frames[1]->desc are different addresses holding equal values -- an identity taken
+// from one of them would be a different identity every frame in flight. resource points
+// at the one main declared and made all of them from, which outlives a resize while the
+// images do not.
+//
+// A type of its own so that a read and a write cannot be swapped. Both were
+// const Texture* const[kFramesInFlight] until now, and the only thing telling
+// CreateLightingPass's source from its target was the parameter name.
+//
+// Contract: every frames[i] describes the same thing as *resource. DeclareRead checks
+//           it rather than assuming, because nothing else would notice.
+struct PassInput {
+    const TextureDesc* resource = nullptr;
+    const Texture* frames[kFramesInFlight]{};
+};
+
 struct DrawStats {
     uint32_t draws = 0;
     uint32_t materialBinds = 0;

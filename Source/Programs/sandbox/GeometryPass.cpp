@@ -59,6 +59,7 @@ bool ResizeGBufferTargets(const VulkanDevice& dev, const GBufferTargetDescs& des
 }
 
 bool CreateGeometryPass(const Descriptors& descriptors,
+                        const GBufferTargetDescs& descs,
                         const GBufferTargets* const targets[kFramesInFlight],
                         const Mesh& mesh,
                         const Pipeline& pipeline, const Pipeline& wirePipeline,
@@ -76,10 +77,10 @@ bool CreateGeometryPass(const Descriptors& descriptors,
 
     // The order is geometry.frag's output order, and the depth last. uses[i] is what
     // happens to targets[i], so the two arrays are read together.
-    out->pass.attachments[0].resource = &targets[0]->albedo.desc;
-    out->pass.attachments[1].resource = &targets[0]->normal.desc;
-    out->pass.attachments[2].resource = &targets[0]->material.desc;
-    out->pass.attachments[3].resource = &targets[0]->depth.desc;
+    out->pass.attachments[0].resource = &descs.albedo;
+    out->pass.attachments[1].resource = &descs.normal;
+    out->pass.attachments[2].resource = &descs.material;
+    out->pass.attachments[3].resource = &descs.depth;
 
     for (uint32_t i = 0; i < 3; ++i) {
         out->pass.attachments[i].load = VK_ATTACHMENT_LOAD_OP_CLEAR;

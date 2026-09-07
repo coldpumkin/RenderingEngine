@@ -13,7 +13,7 @@ void RefreshPostProcessPass(const Descriptors& descriptors,
 }
 
 bool CreatePostProcessPass(const Descriptors& descriptors,
-                           const Texture* const source[kFramesInFlight],
+                           const PassInput& source,
                            const TextureDesc& target,
                            const Pipeline& pipeline, PostProcessPass* out) noexcept {
     // The program is the pipeline's, not a second argument beside it. A pipeline
@@ -49,7 +49,7 @@ bool CreatePostProcessPass(const Descriptors& descriptors,
     // multisample image, which is the whole reason the scene pass resolves -- and this
     // used to be that one question alone, written here.
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
-        if (!CheckSampledInput(source[i]->desc, "post pass's source",
+        if (!CheckSampledInput(source.frames[i]->desc, "post pass's source",
                                false)) {
             return false;
         }
@@ -63,8 +63,8 @@ bool CreatePostProcessPass(const Descriptors& descriptors,
     // The pointer and the set that names it are written in the same step, so the two
     // cannot come to disagree about which image frame i reads.
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
-        out->source[i] = source[i];
-        const BindingValue values[] = {{&source[i]->view}};
+        out->source[i] = source.frames[i];
+        const BindingValue values[] = {{&source.frames[i]->view}};
         UpdateSet(descriptors, program.setLayouts[kFrameSet], out->sets[i], values, 1);
     }
     return true;

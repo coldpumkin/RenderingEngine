@@ -72,7 +72,7 @@ void RefreshPostProcessPass(const Descriptors& descriptors,
 // Contract: source[i] is created and outlives this pass. That it is 1-sample is
 //           checked here now: a multisample image cannot be bound to a sampler.
 bool CreatePostProcessPass(const Descriptors& descriptors,
-                           const Texture* const source[kFramesInFlight],
+                           const PassInput& source,
                            const TextureDesc& target,
                            const Pipeline& pipeline, PostProcessPass* out) noexcept;
 

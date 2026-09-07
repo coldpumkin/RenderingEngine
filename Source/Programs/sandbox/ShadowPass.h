@@ -73,6 +73,7 @@ struct ShadowPass {
 //           Each set names the buffer of the same index; each map is drawn into by
 //           the frame of the same index.
 bool CreateShadowPass(const Descriptors& descriptors,
+                      const TextureDesc& mapDesc,
                       const Texture* const maps[kFramesInFlight],
                       const Mesh& mesh,
                       const Pipeline& pipeline, const FrameShadow* shadows,

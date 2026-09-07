@@ -72,10 +72,12 @@ void RefreshLightingPass(const Descriptors& descriptors, LightingPass* lighting)
 // Contract: views holds kFramesInFlight entries and outlives this pass. Binding 4
 //           names its buffer, which carries which g-buffer image to show.
 bool CreateLightingPass(const Descriptors& descriptors,
+                        const GBufferTargetDescs& sourceDescs,
                         const GBufferTargets* const source[kFramesInFlight],
+                        const TextureDesc& targetDesc,
                         const Texture* const target[kFramesInFlight],
                         const Pipeline& pipeline,
-                        const Texture* const shadowMaps[kFramesInFlight],
+                        const PassInput& shadowMap,
                         const FrameCamera* cameras, const FrameLight* lights,
                         const FrameShadow* shadows,
                         const FrameViewOptions* views, LightingPass* out) noexcept;

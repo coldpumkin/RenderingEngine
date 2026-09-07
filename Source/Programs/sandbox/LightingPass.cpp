@@ -27,10 +27,12 @@ void RefreshLightingPass(const Descriptors& descriptors, LightingPass* lighting)
 }
 
 bool CreateLightingPass(const Descriptors& descriptors,
+                        const GBufferTargetDescs& sourceDescs,
                         const GBufferTargets* const source[kFramesInFlight],
+                        const TextureDesc& targetDesc,
                         const Texture* const target[kFramesInFlight],
                         const Pipeline& pipeline,
-                        const Texture* const shadowMaps[kFramesInFlight],
+                        const PassInput& shadowMap,
                         const FrameCamera* cameras, const FrameLight* lights,
                         const FrameShadow* shadows,
                         const FrameViewOptions* views, LightingPass* out) noexcept {
@@ -42,7 +44,7 @@ bool CreateLightingPass(const Descriptors& descriptors,
 
     out->pipeline = &pipeline;
 
-    out->pass.attachments[0].resource = &target[0]->desc;
+    out->pass.attachments[0].resource = &targetDesc;
     out->pass.attachments[0].load = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     out->pass.attachments[0].store = VK_ATTACHMENT_STORE_OP_STORE;
 
@@ -97,7 +99,7 @@ bool CreateLightingPass(const Descriptors& descriptors,
             {nullptr, &cameras[i].buffer},
             {nullptr, &lights[i].buffer},
             {nullptr, &shadows[i].buffer},
-            {&shadowMaps[i]->view},
+            {&shadowMap.frames[i]->view},
             {nullptr, &views[i].buffer},
         };
         UpdateSet(descriptors, program.setLayouts[kFrameSet], out->frameSets[i],

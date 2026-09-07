@@ -65,10 +65,11 @@ bool ResizeSceneTargets(const VulkanDevice& dev, const SceneTargetDescs& descs,
 // Built without looking at the window, so this works while minimized - there may be
 // no swapchain yet, and nothing here depends on one.
 bool CreateScenePass(const Descriptors& descriptors,
+                     const SceneTargetDescs& descs,
                      const SceneTargets* const targets[kFramesInFlight],
                      const Mesh& mesh,
                      const Pipeline& pipeline, const Pipeline& wirePipeline,
-                     const Texture* const shadowMaps[kFramesInFlight],
+                     const PassInput& shadowMap,
                      const FrameCamera* cameras, const FrameLight* lights,
                      const FrameShadow* shadows,
                      const FrameViewOptions* views, ScenePass* out) noexcept {
@@ -84,7 +85,7 @@ bool CreateScenePass(const Descriptors& descriptors,
     out->mesh = &mesh;
     out->pipeline = &pipeline;
 
-    out->pass.attachments[0].resource = &targets[0]->color.desc;
+    out->pass.attachments[0].resource = &descs.color;
     out->pass.attachments[0].load = VK_ATTACHMENT_LOAD_OP_CLEAR;
     out->pass.attachments[0].store = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     out->pass.attachments[0].clear.color = VkClearColorValue{{0.0f, 0.0f, 0.0f, 1.0f}};
@@ -92,10 +93,9 @@ bool CreateScenePass(const Descriptors& descriptors,
     // Where the multisample colour is averaged into, said here rather than only handed
     // over at record time. It is the one image that leaves this pass -- both attachments
     // store DONT_CARE -- so it was the pass's only output with no declaration.
-    out->pass.attachments[0].resolve = {&targets[0]->resolve.desc,
-                                        VK_RESOLVE_MODE_AVERAGE_BIT};
+    out->pass.attachments[0].resolve = {&descs.resolve, VK_RESOLVE_MODE_AVERAGE_BIT};
     // Clear 1.0 = farthest, paired with the pipeline's compareOp LESS.
-    out->pass.attachments[1].resource = &targets[0]->depth.desc;
+    out->pass.attachments[1].resource = &descs.depth;
     out->pass.attachments[1].role = AttachmentRole::Depth;
     out->pass.attachments[1].load = VK_ATTACHMENT_LOAD_OP_CLEAR;
     out->pass.attachments[1].store = VK_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -147,8 +147,7 @@ bool CreateScenePass(const Descriptors& descriptors,
     // was named shadowMaps and that was the whole of what said it held shadow maps.
     // A colour image of the right shape would have gone in and drawn a wrong picture.
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
-        if (!CheckSampledInput(shadowMaps[i]->desc, "shadow map",
-                               true)) {
+        if (!CheckSampledInput(shadowMap.frames[i]->desc, "shadow map", true)) {
             return false;
         }
     }
@@ -184,7 +183,7 @@ bool CreateScenePass(const Descriptors& descriptors,
             {nullptr, &cameras[i].buffer},
             {nullptr, &lights[i].buffer},
             {nullptr, &shadows[i].buffer},
-            {&shadowMaps[i]->view},
+            {&shadowMap.frames[i]->view},
             {nullptr, &views[i].buffer},
         };
         UpdateSet(descriptors, program.setLayouts[kFrameSet], frame.set,

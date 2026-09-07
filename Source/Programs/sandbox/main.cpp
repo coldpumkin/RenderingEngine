@@ -892,13 +892,18 @@ int main() {
     // The shadow map, made here from the desc written at the top and handed to both
     // passes that touch it -- the one that draws it and the one that samples it. The
     // edge between them is this array, not a walk into whichever pass owned the image.
+    // The desc is the identity and the images are this frame's copy of it. Not
+    // &shadowMaps[0]->desc, which is one frame's copy and would make the identity
+    // different every frame -- shadowTarget is what all of them were made from.
     const Texture* shadowMaps[kFramesInFlight]{};
+    PassInput shadowMapInput{&shadowTarget, {}};
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
         if (!CreateTexture(dev, shadowTarget, &renderer.shadowMaps[i])) { return 1; }
         shadowMaps[i] = &renderer.shadowMaps[i];
+        shadowMapInput.frames[i] = &renderer.shadowMaps[i];
     }
 
-    if (!CreateShadowPass(renderer.descriptors, shadowMaps,
+    if (!CreateShadowPass(renderer.descriptors, shadowTarget, shadowMaps,
                           renderer.mesh,
                           renderer.pipelines.shadow, renderer.shadows,
                           &renderer.shadowPass)) { return 1; }
@@ -907,6 +912,11 @@ int main() {
     // and no pass in the middle of any of them.
     const SceneTargets* sceneTargets[kFramesInFlight]{};
     const Texture* sceneColor[kFramesInFlight]{};
+
+    // What leaves the middle, whichever of the two paths drew it. The scene pass
+    // resolves into this and the lighting pass draws into it, so the identity is one
+    // desc and both of them name it.
+    PassInput sceneColorInput{&sceneTargetDescs.resolve, {}};
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
         if (!CreateSceneTargets(dev, sceneTargetDescs, &renderer.sceneTargets[i])) {
             return 1;
@@ -915,15 +925,16 @@ int main() {
 
         // resolve and not color: a multisample image cannot be sampled.
         sceneColor[i] = &renderer.sceneTargets[i].resolve;
+        sceneColorInput.frames[i] = &renderer.sceneTargets[i].resolve;
     }
 
-    if (!CreateScenePass(renderer.descriptors, sceneTargets,
+    if (!CreateScenePass(renderer.descriptors, sceneTargetDescs, sceneTargets,
                          renderer.mesh, renderer.pipelines.scene,
                          renderer.pipelines.sceneWire,
-                         shadowMaps, renderer.cameras, renderer.lights,
+                         shadowMapInput, renderer.cameras, renderer.lights,
                          renderer.shadows, renderer.viewOptions,
                          &renderer.scenePass)) { return 1; }
-    if (!CreatePostProcessPass(renderer.descriptors, sceneColor, swapchainTarget,
+    if (!CreatePostProcessPass(renderer.descriptors, sceneColorInput, swapchainTarget,
                                renderer.pipelines.post,
                                &renderer.postPass)) {
         return 1;
@@ -940,7 +951,7 @@ int main() {
         gbuffers[i] = &renderer.gbuffers[i];
     }
 
-    if (!CreateGeometryPass(renderer.descriptors, gbuffers,
+    if (!CreateGeometryPass(renderer.descriptors, gbufferDescs, gbuffers,
                             renderer.mesh, renderer.pipelines.geometry,
                             renderer.pipelines.geometryWire,
                             renderer.cameras, renderer.viewOptions,
@@ -948,9 +959,10 @@ int main() {
 
     // sceneColor is the scene pass's resolve, and this pass draws into it rather than
     // reading it. Only one of the two ever writes it in a frame.
-    if (!CreateLightingPass(renderer.descriptors, gbuffers, sceneColor,
+    if (!CreateLightingPass(renderer.descriptors, gbufferDescs, gbuffers,
+                            sceneTargetDescs.resolve, sceneColor,
                             renderer.pipelines.lighting,
-                            shadowMaps, renderer.cameras, renderer.lights,
+                            shadowMapInput, renderer.cameras, renderer.lights,
                             renderer.shadows, renderer.viewOptions,
                             &renderer.lightingPass)) { return 1; }
 

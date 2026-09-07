@@ -16,6 +16,7 @@ TextureDesc MakeShadowTarget(const TargetCapabilities& caps) noexcept {
 }
 
 bool CreateShadowPass(const Descriptors& descriptors,
+                      const TextureDesc& mapDesc,
                       const Texture* const maps[kFramesInFlight],
                       const Mesh& mesh,
                       const Pipeline& pipeline, const FrameShadow* shadows,
@@ -32,7 +33,7 @@ bool CreateShadowPass(const Descriptors& descriptors,
     out->mesh = &mesh;
     out->pipeline = &pipeline;
 
-    out->pass.attachments[0].resource = &maps[0]->desc;
+    out->pass.attachments[0].resource = &mapDesc;
     out->pass.attachments[0].role = AttachmentRole::Depth;
     out->pass.attachments[0].load = VK_ATTACHMENT_LOAD_OP_CLEAR;
     out->pass.attachments[0].store = VK_ATTACHMENT_STORE_OP_STORE;

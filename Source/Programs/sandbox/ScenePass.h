@@ -193,10 +193,11 @@ struct ScenePass {
 //           pass. shadows is the same array the shadow pass was given, which is what
 //           makes the matrix in binding 2 the one that drew the map in binding 3.
 bool CreateScenePass(const Descriptors& descriptors,
+                     const SceneTargetDescs& descs,
                      const SceneTargets* const targets[kFramesInFlight],
                      const Mesh& mesh,
                      const Pipeline& pipeline, const Pipeline& wirePipeline,
-                     const Texture* const shadowMaps[kFramesInFlight],
+                     const PassInput& shadowMap,
                      const FrameCamera* cameras, const FrameLight* lights,
                      const FrameShadow* shadows,
                      const FrameViewOptions* views, ScenePass* out) noexcept;

@@ -102,6 +102,7 @@ struct GeometryPass {
 // Contract: views holds kFramesInFlight entries and outlives this pass. Binding 4 of
 //           each set names its buffer.
 bool CreateGeometryPass(const Descriptors& descriptors,
+                        const GBufferTargetDescs& descs,
                         const GBufferTargets* const targets[kFramesInFlight],
                         const Mesh& mesh,
                         const Pipeline& pipeline, const Pipeline& wirePipeline,
