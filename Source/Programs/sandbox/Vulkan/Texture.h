@@ -25,14 +25,6 @@
 
 struct Commands;
 
-// What one texture is. usage is the only field a caller really chooses -- the rest
-// comes from AttachmentFormats or from the file the pixels came out of.
-struct TextureDesc {
-    VkExtent2D extent{};
-    VkFormat format = VK_FORMAT_UNDEFINED;
-    VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
-    VkImageUsageFlags usage = 0;
-};
 
 struct Texture {
     TextureDesc desc;

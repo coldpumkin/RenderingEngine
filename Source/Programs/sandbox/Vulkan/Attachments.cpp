@@ -392,8 +392,7 @@ bool BeginPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
         // still tellable apart only by where they sit.
         const TextureDesc& want = *use.resource;
         const TextureDesc& got = views[i]->desc;
-        if (got.format != want.format || got.samples != want.samples
-                || got.usage != want.usage) {
+        if (!SameTextureDesc(got, want)) {
             LOG("[vk] attachment %u was handed an image the pass did not declare "
                 "(format %d/%d, samples %d/%d)\n", i,
                 static_cast<int>(got.format), static_cast<int>(want.format),
@@ -459,8 +458,7 @@ bool BeginPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
             // what the pass declared against what this frame handed over.
             const TextureDesc& wantInto = *use.resolve.target;
             const TextureDesc& gotInto = into->desc;
-            if (gotInto.format != wantInto.format || gotInto.samples != wantInto.samples
-                    || gotInto.usage != wantInto.usage) {
+            if (!SameTextureDesc(gotInto, wantInto)) {
                 LOG("[vk] attachment %u was handed a resolve image the pass did not"
                     " declare (format %d/%d)\n", i, static_cast<int>(gotInto.format),
                     static_cast<int>(wantInto.format));

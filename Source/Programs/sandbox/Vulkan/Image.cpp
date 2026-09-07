@@ -48,12 +48,10 @@ VkFormatFeatureFlags RequiredFormatFeatures(VkImageUsageFlags usage) noexcept {
     return features;
 }
 
-bool CreateImage2D(const VulkanDevice& dev,
-                   VkExtent2D extent,
-                   VkFormat format,
-                   VkSampleCountFlagBits samples,
-                   VkImageUsageFlags usage,
-                   Image* out) noexcept {
+bool CreateImage(const VulkanDevice& dev, const TextureDesc& desc, Image* out) noexcept {
+    const VkExtent2D extent = desc.extent;
+    const VkFormat format = desc.format;
+    const VkImageUsageFlags usage = desc.usage;
     out->dev = &dev;   // set first: the destructor runs even if the create below fails
 
     // Every image, against what it declares -- not one format asked about once on
@@ -69,12 +67,17 @@ bool CreateImage2D(const VulkanDevice& dev,
     }
 
     VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+
+    // A cube is six 2D layers plus a flag that lets a view address them by direction.
+    // Both follow from the kind, so neither is a field of its own.
     info.imageType = VK_IMAGE_TYPE_2D;
+    info.flags = desc.kind == TextureKind::Cube
+               ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0;
     info.format = format;
     info.extent = VkExtent3D{extent.width, extent.height, 1};
-    info.mipLevels = 1;
-    info.arrayLayers = 1;
-    info.samples = samples;
+    info.mipLevels = desc.mipLevels;
+    info.arrayLayers = LayersOf(desc.kind);
+    info.samples = desc.samples;
     info.tiling = VK_IMAGE_TILING_OPTIMAL;
     info.usage = usage;
     info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;

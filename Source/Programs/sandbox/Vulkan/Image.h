@@ -110,6 +110,61 @@ struct ImageView {
 // resolve's TRANSFER_SRC, and demanded SAMPLED of a multisample colour image that
 // cannot have it.
 VkFormatFeatureFlags RequiredFormatFeatures(VkImageUsageFlags usage) noexcept;
+// What one texture is. usage is the only field a caller really chooses -- the rest
+// comes from AttachmentFormats or from the file the pixels came out of.
+// What kind of thing this is, which is what the layer count and the view type follow
+// from rather than being written beside it
+//
+// A cube is six layers addressed by a direction, and saying so here makes a cube of
+// five faces unwriteable. Nothing here is 3D or an array yet; both are one more value
+// and a depth field on the day something wants them.
+enum class TextureKind { Texture2D, Cube };
+
+struct TextureDesc {
+    VkExtent2D extent{};
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
+    VkImageUsageFlags usage = 0;
+
+    TextureKind kind = TextureKind::Texture2D;
+
+    // 1 is a texture with no mip chain, which is every one of ours so far. IBL's
+    // prefilter is the first thing that wants more, and it draws into them one at a
+    // time -- which is what ImageViewDesc::baseMip has been waiting for.
+    uint32_t mipLevels = 1;
+};
+
+// Output: how many array layers a texture of this kind has
+inline uint32_t LayersOf(TextureKind kind) noexcept {
+    return kind == TextureKind::Cube ? 6u : 1u;
+}
+
+// Output: whether two descs describe the same kind of image
+//
+// Every field but the extent, which is deliberate and was measured: a resize changes it
+// on the image while the declaration a pass was created with is not re-derived, so
+// comparing it refuses a frame that is perfectly correct. main's swapchainTarget is
+// built once before the loop and keeps the size the window had then -- nothing reads
+// that extent, and this is why nothing may.
+//
+// Size is checked, by coverage rather than by equality: BeginPass asks that every
+// attachment reaches the render area (VUID-VkRenderingInfo-pNext-06079), which is what
+// the spec asks and allows an attachment larger than what is drawn.
+//
+// Written out at the two places that ask "is this the resource that was declared" --
+// BeginPass and DeclareRead -- and each grew a field behind the other until it was
+// worth one call.
+inline bool SameTextureDesc(const TextureDesc& a, const TextureDesc& b) noexcept {
+    return a.format == b.format && a.samples == b.samples && a.usage == b.usage
+        && a.kind == b.kind && a.mipLevels == b.mipLevels;
+}
+
+// Output: the view type that reaches the whole of a texture of this kind
+inline VkImageViewType ViewTypeOf(TextureKind kind) noexcept {
+    return kind == TextureKind::Cube ? VK_IMAGE_VIEW_TYPE_CUBE
+                                     : VK_IMAGE_VIEW_TYPE_2D;
+}
+
 
 // Input:  samples is the MSAA sample count (1_BIT means no MSAA)
 //         usage is what this image is for (attachment / sampled / copy destination)
@@ -122,12 +177,7 @@ VkFormatFeatureFlags RequiredFormatFeatures(VkImageUsageFlags usage) noexcept;
 //
 // No default for samples: 1_BIT as one would compile at a call site that meant to
 // make a multisample image. There are three callers, so being explicit is cheap.
-bool CreateImage2D(const VulkanDevice& dev,
-                   VkExtent2D extent,
-                   VkFormat format,
-                   VkSampleCountFlagBits samples,
-                   VkImageUsageFlags usage,
-                   Image* out) noexcept;
+bool CreateImage(const VulkanDevice& dev, const TextureDesc& desc, Image* out) noexcept;
 
 // Output: which aspect a format is read through -- COLOR or DEPTH
 //
@@ -146,6 +196,7 @@ bool CreateImage2D(const VulkanDevice& dev,
 // a view sampled from one must name exactly one
 // (VUID-VkDescriptorImageInfo-imageView-01976). One answer cannot serve both.
 VkImageAspectFlags FormatAspects(VkFormat format) noexcept;
+
 
 // Output: whether this format is a depth one rather than a colour one
 //

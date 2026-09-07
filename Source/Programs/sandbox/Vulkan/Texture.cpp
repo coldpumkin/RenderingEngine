@@ -25,15 +25,17 @@ bool CreateTexture(const VulkanDevice& dev, const TextureDesc& desc,
     // needs a second, 1-sample Texture beside it, and the pass that owns both makes
     // it -- SAMPLED on a multisample image would be a validation error, not a hint
     // to create anything here.
-    if (!CreateImage2D(dev, desc.extent, desc.format, desc.samples, desc.usage,
-                       &out->image)) {
+    if (!CreateImage(dev, desc, &out->image)) {
         return false;
     }
 
-    // {}: the whole image, the way it already is. Anything that wants less makes its
-    // own view from out->image.handle.
+    // The whole image, the way it already is -- every mip and every layer, addressed
+    // the way the kind says. Anything that wants less, like a prefilter drawing into
+    // one mip, makes its own view from out->image.handle.
+    ImageViewDesc viewDesc;
+    viewDesc.type = ViewTypeOf(desc.kind);
     return CreateImageView(dev, out->image.handle, desc.format, desc.samples, desc.usage,
-                           {}, &out->view);
+                           viewDesc, &out->view);
 }
 
 void ResetTexture(Texture* texture) noexcept {

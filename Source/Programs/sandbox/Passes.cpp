@@ -266,8 +266,7 @@ bool DeclareRead(const PassInput& input, const char* what, bool wantDepth,
             return false;
         }
         const TextureDesc& got = input.frames[i]->desc;
-        if (got.format != input.resource->format || got.samples != input.resource->samples
-                || got.usage != input.resource->usage) {
+        if (!SameTextureDesc(got, *input.resource)) {
             LOG("[vk] the %s's frame %u describes something else than the resource it"
                 " is declared as (format %d/%d)\n", what, i,
                 static_cast<int>(got.format), static_cast<int>(input.resource->format));
