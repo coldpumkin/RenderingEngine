@@ -133,7 +133,11 @@ void UpdateSet(const Descriptors& descriptors, const DescriptorLayout& layout,
                VkDescriptorSet set,
                const BindingValue* values, uint32_t count) noexcept {
     const VulkanDevice& dev = *descriptors.dev;
-    if (count != layout.bindingCount || set == VK_NULL_HANDLE) {
+    // Fewer than the layout wants is a hole nobody filled. More is the normal case for
+    // a shared set: the caller states the whole of it and this program declared only
+    // the front of it, exactly as a vertex stage reads two of four attributes. The
+    // extra values are not looked at.
+    if (count < layout.bindingCount || set == VK_NULL_HANDLE) {
         LOG("[vk] layout wants %u bindings, given %u\n", layout.bindingCount, count);
         return;
     }

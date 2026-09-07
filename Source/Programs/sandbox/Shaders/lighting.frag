@@ -168,10 +168,11 @@ void main() {
     }
 
     // Nothing was drawn here: the depth test left the clear value, which is farthest.
-    // The background is the ambient alone rather than a lit surface that is not there.
+    // The sky pass already put a picture in this pixel, so this one keeps out of it --
+    // discard rather than a colour, which is why the attachment loads instead of being
+    // written over.
     if (depth >= 1.0) {
-        outColor = vec4(light.color.a * light.color.rgb, 1.0);
-        return;
+        discard;
     }
 
     const vec3 albedo = texture(gAlbedo, uv).rgb;

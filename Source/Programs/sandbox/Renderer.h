@@ -80,6 +80,7 @@
 #include "LightingPass.h"
 #include "PostProcessPass.h"
 #include "ScenePass.h"
+#include "Sky.h"
 #include "ShadowPass.h"   // both held by value below, so the definitions have to be here
 #include "Vulkan/Descriptors.h"
 #include "Vulkan/Frame.h"
@@ -167,6 +168,12 @@ struct Renderer {
     // Before the passes, so it outlives both: their sets name its view.
     Texture shadowMaps[kFramesInFlight];
 
+    // One, not one per frame in flight: it is baked once and read from then on, which
+    // is what makes it an input the frame is handed rather than something the frame
+    // makes. Nothing writes it after startup, so nothing can be half-written when a
+    // frame reads it.
+    Texture skyCube;
+
     // The scene's three, for the same reason and one step further: these are remade
     // on every resize, and a resize is main's to run now rather than something a pass
     // does to itself.
@@ -178,6 +185,10 @@ struct Renderer {
     GBufferTargets gbuffers[kFramesInFlight];
 
     ShadowPass shadowPass;
+    // One per path, because the two fill different images at different sample counts.
+    SkyPass skyForwardPass;
+    SkyPass skyDeferredPass;
+
     ScenePass scenePass;
 
     // The other middle. Both are created, both hold their sets, and RecordFrame picks

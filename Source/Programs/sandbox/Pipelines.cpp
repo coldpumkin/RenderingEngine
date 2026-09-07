@@ -104,6 +104,30 @@ GraphicsPipelineDesc LightingDesc(const ShaderProgram& program,
     return desc;
 }
 
+// One face of the sky cube. No blending, no depth, no culling -- one triangle covering
+// a face, and nothing behind it to combine with.
+GraphicsPipelineDesc SkyBakeDesc(const ShaderProgram& program,
+                                 const PipelineSources& sources) noexcept {
+    GraphicsPipelineDesc desc;
+    desc.program = &program;
+    const TextureDesc* const colour[] = {sources.skyFace};
+    desc.formats = AttachmentFormatsFor(colour, 1, nullptr);
+    desc.blend[0] = NoBlend();
+    return desc;
+}
+
+// The sky into whatever the middle of a path fills. Two of these, and target is the one
+// argument that differs -- the sample count comes with it.
+GraphicsPipelineDesc SkyDesc(const ShaderProgram& program,
+                             const TextureDesc* target) noexcept {
+    GraphicsPipelineDesc desc;
+    desc.program = &program;
+    const TextureDesc* const colour[] = {target};
+    desc.formats = AttachmentFormatsFor(colour, 1, nullptr);
+    desc.blend[0] = NoBlend();
+    return desc;
+}
+
 GraphicsPipelineDesc PostDesc(const ShaderProgram& program,
                               const PipelineSources& sources) noexcept {
     GraphicsPipelineDesc desc;
@@ -152,6 +176,9 @@ bool CreatePipelines(const VulkanDevice& dev, const PipelineSources& sources,
     // which is what that name was written for.
     const char* const lightingStages[] = {"Shaders/fullscreen.vert.spv",
                                           "Shaders/lighting.frag.spv"};
+    const char* const skyBakeStages[] = {"Shaders/fullscreen.vert.spv",
+                                         "Shaders/skybake.frag.spv"};
+    const char* const skyStages[] = {"Shaders/fullscreen.vert.spv", "Shaders/sky.frag.spv"};
     const char* const postStages[] = {"Shaders/fullscreen.vert.spv", "Shaders/post.frag.spv"};
     const char* const guiStages[] = {"Shaders/gui.vert.spv", "Shaders/gui.frag.spv"};
 
@@ -198,6 +225,12 @@ bool CreatePipelines(const VulkanDevice& dev, const PipelineSources& sources,
             || !CreateShaderProgram(dev, lightingStages,
                                     static_cast<uint32_t>(std::size(lightingStages)),
                                     anyProgram, &out->lightingProgram)
+            || !CreateShaderProgram(dev, skyBakeStages,
+                                    static_cast<uint32_t>(std::size(skyBakeStages)),
+                                    anyProgram, &out->skyBakeProgram)
+            || !CreateShaderProgram(dev, skyStages,
+                                    static_cast<uint32_t>(std::size(skyStages)),
+                                    anyProgram, &out->skyProgram)
             || !CreateShaderProgram(dev, postStages,
                                     static_cast<uint32_t>(std::size(postStages)),
                                     anyProgram, &out->postProgram)
@@ -219,6 +252,12 @@ bool CreatePipelines(const VulkanDevice& dev, const PipelineSources& sources,
                                   &out->geometryWire)
         && CreateGraphicsPipeline(dev, LightingDesc(out->lightingProgram, sources),
                                   &out->lighting)
+        && CreateGraphicsPipeline(dev, SkyBakeDesc(out->skyBakeProgram, sources),
+                                  &out->skyBake)
+        && CreateGraphicsPipeline(dev, SkyDesc(out->skyProgram, sources.sceneColor),
+                                  &out->skyForward)
+        && CreateGraphicsPipeline(dev, SkyDesc(out->skyProgram, sources.sceneResolve),
+                                  &out->skyDeferred)
         && CreateGraphicsPipeline(dev, PostDesc(out->postProgram, sources),
                                   &out->post)
         && CreateGraphicsPipeline(dev, GuiDesc(out->guiProgram, sources),

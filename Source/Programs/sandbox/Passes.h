@@ -58,6 +58,7 @@ struct Mesh;
 // included, so the arrow points one way -- RecordFrame is handed each of them and
 // orders them, and none of them knows the others.
 struct ShadowPass;
+struct SkyPass;
 struct ScenePass;
 struct GeometryPass;
 struct LightingPass;
@@ -842,6 +843,16 @@ struct FrameSetSources {
     const FrameShadow* shadows = nullptr;         // binding 2
     PassInput shadowMap;                          // binding 3
     const FrameViewOptions* views = nullptr;      // binding 4
+
+    // The environment. One texture and not a PassInput, and the reason is not that no
+    // pass makes it -- one does, six faces of it at startup -- but that it is not made
+    // again. What decides whether a resource is an edge in this graph is how often it
+    // is remade against the span the graph covers, which is one frame. A sky rebaked
+    // for a time of day would be the same image and would be an edge.
+    //
+    // So it sits with the material textures and the mesh: an input the frame is handed,
+    // not something the frame produces.
+    const Texture* skyCube = nullptr;              // binding 5
 };
 
 // Effect: writes this frame's set 0, and declares in desc the pass outputs this
@@ -946,7 +957,9 @@ void UploadFrameValues(const FrameSlot& slot,
 // Contract: UploadFrameValues has run for this slot. What is recorded here reads
 //           those buffers, and nothing in the command stream would say they are stale.
 bool RecordFrame(const FrameSlot& slot,
-                 const ShadowPass& shadow, const ScenePass& scene,
+                 const ShadowPass& shadow,
+                 const SkyPass& skyForward, const SkyPass& skyDeferred,
+                 const ScenePass& scene,
                  const GeometryPass& geometry, const LightingPass& lighting,
                  const PostProcessPass& post, Gui& gui, const Texture& target,
                  const DrawList& draws, DrawStats* stats = nullptr) noexcept;

@@ -4,6 +4,7 @@
 #include "GeometryPass.h"
 #include "LightingPass.h"
 #include "ShadowPass.h"
+#include "Sky.h"
 #include "PostProcessPass.h"
 #include "ScenePass.h"
 #include "Vulkan/Barrier.h"
@@ -305,6 +306,7 @@ bool FillFrameSet(const Descriptors& descriptors, const ShaderProgram& program,
         {nullptr, &sources.shadows[frame].buffer},
         {&sources.shadowMap.frames[frame]->view},
         {nullptr, &sources.views[frame].buffer},
+        {&sources.skyCube->view},
     };
     UpdateSet(descriptors, layout, set, values, static_cast<uint32_t>(std::size(values)));
 
@@ -448,7 +450,9 @@ static bool CheckPassOrder(const RenderPassDesc* const passes[],
 }
 
 bool RecordFrame(const FrameSlot& slot,
-                 const ShadowPass& shadow, const ScenePass& scene,
+                 const ShadowPass& shadow,
+                 const SkyPass& skyForward, const SkyPass& skyDeferred,
+                 const ScenePass& scene,
                  const GeometryPass& geometry, const LightingPass& lighting,
                  const PostProcessPass& post, Gui& gui, const Texture& target,
                  const DrawList& draws, DrawStats* stats) noexcept {
@@ -484,9 +488,10 @@ bool RecordFrame(const FrameSlot& slot,
     // against what the passes declared.
     const bool deferred = GuiDeferred(gui);
     const RenderPassDesc* const forwardChain[] = {
-        &shadow.pass, &scene.pass, &post.pass, &gui.pass};
+        &shadow.pass, &skyForward.pass, &scene.pass, &post.pass, &gui.pass};
     const RenderPassDesc* const deferredChain[] = {
-        &shadow.pass, &geometry.pass, &lighting.pass, &post.pass, &gui.pass};
+        &shadow.pass, &skyDeferred.pass, &geometry.pass, &lighting.pass,
+        &post.pass, &gui.pass};
 
     static bool checkedForward = false;
     static bool checkedDeferred = false;
@@ -510,9 +515,11 @@ bool RecordFrame(const FrameSlot& slot,
     // the same arguments, which is the point: what deferred changes is here and
     // nowhere else in this function.
     if (deferred) {
+        RecordSkyPass(slot, skyDeferred);
         RecordGeometryPass(slot, geometry, draws, raster, stats);
         RecordLightingPass(slot, lighting);
     } else {
+        RecordSkyPass(slot, skyForward);
         RecordScenePass(slot, scene, draws, raster, stats);
     }
 

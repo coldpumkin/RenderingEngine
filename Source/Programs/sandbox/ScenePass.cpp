@@ -83,9 +83,10 @@ bool CreateScenePass(const Descriptors& descriptors,
     out->pipeline = &pipeline;
 
     out->pass.attachments[0].resource = &descs.color;
-    out->pass.attachments[0].load = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    // LOAD and not CLEAR: the sky pass fills this first, and clearing would throw it
+    // away. What is behind the geometry is a picture now rather than a colour.
+    out->pass.attachments[0].load = VK_ATTACHMENT_LOAD_OP_LOAD;
     out->pass.attachments[0].store = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    out->pass.attachments[0].clear.color = VkClearColorValue{{0.0f, 0.0f, 0.0f, 1.0f}};
 
     // Where the multisample colour is averaged into, said here rather than only handed
     // over at record time. It is the one image that leaves this pass -- both attachments

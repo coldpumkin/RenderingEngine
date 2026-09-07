@@ -599,6 +599,11 @@ int main() {
 
     const TextureDesc shadowTarget = MakeShadowTarget(caps);
 
+    // One cube, and the 2D slice one of its faces is. The second is what the bake's
+    // pipeline is compiled against -- a face is what that pass draws into.
+    const TextureDesc skyTarget = MakeSkyTarget();
+    const TextureDesc skyFaceTarget = SliceDesc(skyTarget);
+
     // Device -- and past it, everything that needs one
     // ========================================================================
 
@@ -625,6 +630,7 @@ int main() {
     pipelineSources.meshLayout = VertexInput();
     pipelineSources.guiLayout = GuiVertexInput();
     pipelineSources.shadowDepth = &shadowTarget;
+    pipelineSources.skyFace = &skyFaceTarget;
     pipelineSources.sceneColor = &sceneTargetDescs.color;
     pipelineSources.sceneDepth = &sceneTargetDescs.depth;
     pipelineSources.swapchain = &swapchainTarget;
@@ -812,6 +818,7 @@ int main() {
         {&renderer.pipelines.geometryProgram.setLayouts[kFrameSet], kFramesInFlight},
         {&renderer.pipelines.lightingProgram.setLayouts[kFrameSet], kFramesInFlight},
         {&renderer.pipelines.lightingProgram.setLayouts[kMaterialSet], kFramesInFlight},
+        {&renderer.pipelines.skyProgram.setLayouts[kFrameSet], 2 * kFramesInFlight},
         {&renderer.pipelines.postProgram.setLayouts[kFrameSet], kFramesInFlight},
         // One, and counted by neither of the other two reasons: there is one font.
         {&renderer.pipelines.guiProgram.setLayouts[0], 1},
@@ -902,6 +909,12 @@ int main() {
     // The desc is the identity and the images are this frame's copy of it. Not
     // &shadowMaps[0]->desc, which is one frame's copy and would make the identity
     // different every frame -- shadowTarget is what all of them were made from.
+    // Made and filled before anything that reads it, and never touched again.
+    if (!CreateTexture(dev, skyTarget, &renderer.skyCube)) { return 1; }
+    if (!BakeSkyCube(dev, commands, renderer.pipelines.skyBake, &renderer.skyCube)) {
+        return 1;
+    }
+
     const Texture* shadowMaps[kFramesInFlight]{};
     PassInput shadowMapInput{&shadowTarget, {}};
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
@@ -920,6 +933,11 @@ int main() {
     const SceneTargets* sceneTargets[kFramesInFlight]{};
     const Texture* sceneColor[kFramesInFlight]{};
 
+    // The multisample one, which is what the forward path's sky draws into -- the
+    // deferred path's sky draws into the resolve instead, and that is the only
+    // difference between the two sky passes.
+    const Texture* sceneColorMs[kFramesInFlight]{};
+
     // What leaves the middle, whichever of the two paths drew it. The scene pass
     // resolves into this and the lighting pass draws into it, so the identity is one
     // desc and both of them name it.
@@ -933,18 +951,24 @@ int main() {
         // resolve and not color: a multisample image cannot be sampled.
         sceneColor[i] = &renderer.sceneTargets[i].resolve;
         sceneColorInput.frames[i] = &renderer.sceneTargets[i].resolve;
+        sceneColorMs[i] = &renderer.sceneTargets[i].color;
     }
 
     // What set 0 holds, said once. Each program takes the subset it declared, so the
     // geometry pass gets the same value and reflection leaves the three it does not
     // read as holes.
     const FrameSetSources frameSet{renderer.cameras, renderer.lights, renderer.shadows,
-                                   shadowMapInput, renderer.viewOptions};
+                                   shadowMapInput, renderer.viewOptions,
+                                   &renderer.skyCube};
 
     if (!CreateScenePass(renderer.descriptors, sceneTargetDescs, sceneTargets,
                          renderer.mesh, renderer.pipelines.scene,
                          renderer.pipelines.sceneWire,
                          frameSet, &renderer.scenePass)) { return 1; }
+    if (!CreateSkyPass(renderer.descriptors, sceneTargetDescs.color, sceneColorMs,
+                       renderer.pipelines.skyForward, frameSet,
+                       &renderer.skyForwardPass)) { return 1; }
+
     if (!CreatePostProcessPass(renderer.descriptors, sceneColorInput, swapchainTarget,
                                renderer.pipelines.post,
                                &renderer.postPass)) {
@@ -973,6 +997,10 @@ int main() {
                             sceneTargetDescs.resolve, sceneColor,
                             renderer.pipelines.lighting,
                             frameSet, &renderer.lightingPass)) { return 1; }
+
+    if (!CreateSkyPass(renderer.descriptors, sceneTargetDescs.resolve, sceneColor,
+                       renderer.pipelines.skyDeferred, frameSet,
+                       &renderer.skyDeferredPass)) { return 1; }
 
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
         if (!CreateFrameSlot(dev, commands, i, &renderer.slots[i])) { return 1; }
@@ -1029,7 +1057,7 @@ int main() {
     // Inside the atrium, looking along it.
     glm::vec3 eye{-7.0f, 5.5f, 0.0f};
     float yaw = 0.0f;             // 0 looks down +x, per the forward expression below
-    float pitch = -12.0f;         // the atrium floor, from the height of its gallery
+    float pitch = 4.0f;           // a little of the open roof, so a capture covers the sky         // the atrium floor, from the height of its gallery
 
     while (glfwWindowShouldClose(window.handle) == 0) {
         glfwPollEvents();
@@ -1251,7 +1279,9 @@ int main() {
         // Reset rather than declared here: the counters add up, and the panel above
         // read last frame's values before this line overwrites them.
         drawStats = DrawStats{};
-        if (!RecordFrame(slot, renderer.shadowPass, renderer.scenePass,
+        if (!RecordFrame(slot, renderer.shadowPass,
+                         renderer.skyForwardPass, renderer.skyDeferredPass,
+                         renderer.scenePass,
                          renderer.geometryPass, renderer.lightingPass,
                          renderer.postPass, renderer.guiPass,
                          *target.texture, drawList, &drawStats)) {

@@ -43,7 +43,9 @@ bool CreateLightingPass(const Descriptors& descriptors,
     out->pipeline = &pipeline;
 
     out->pass.attachments[0].resource = &targetDesc;
-    out->pass.attachments[0].load = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    // LOAD and not DONT_CARE: the sky pass fills this first and lighting.frag discards
+    // where there is no geometry, so what was there has to survive.
+    out->pass.attachments[0].load = VK_ATTACHMENT_LOAD_OP_LOAD;
     out->pass.attachments[0].store = VK_ATTACHMENT_STORE_OP_STORE;
 
     // Everything the declaration can be wrong about on its own, asked once here. What
