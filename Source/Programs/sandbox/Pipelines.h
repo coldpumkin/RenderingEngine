@@ -48,6 +48,10 @@ struct PipelineSources {
     const TextureDesc* sceneResolve = nullptr;
 
     // What a face of the sky cube is, which is the 2D slice the bake draws into.
+    // Either of the two bloom images -- they are the same shape, and a pipeline is
+    // compiled against a format rather than against an image.
+    const TextureDesc* bloomTarget = nullptr;
+
     const TextureDesc* skyFace = nullptr;
     const TextureDesc* irradianceFace = nullptr;
     const TextureDesc* prefilterFace = nullptr;
@@ -99,6 +103,8 @@ struct Pipelines {
     ShaderProgram prefilterProgram;
     ShaderProgram brdfLutProgram;
     ShaderProgram skyProgram;
+    ShaderProgram bloomExtractProgram;
+    ShaderProgram bloomBlurProgram;
     ShaderProgram postProgram;
     ShaderProgram guiProgram;
 
@@ -119,6 +125,8 @@ struct Pipelines {
     Pipeline brdfLutBake;
     Pipeline skyForward;
     Pipeline skyDeferred;
+    Pipeline bloomExtract;
+    Pipeline bloomBlur;
     Pipeline post;
     Pipeline gui;
 };

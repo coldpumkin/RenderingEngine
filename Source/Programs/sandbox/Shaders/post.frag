@@ -17,17 +17,43 @@
 // wrote: no name says so, and CreatePostProcessPass reaches it by walking a path.
 layout(set = 0, binding = 0) uniform sampler2D sceneColor;
 
+// What the bloom pass left in its first image: the part of the picture that was above
+// the display's range, spread out. Half size, so the sampler's own filtering widens it
+// once more on the way back.
+layout(set = 0, binding = 1) uniform sampler2D bloom;
+
 layout(location = 0) in vec2 uv;
 layout(location = 0) out vec4 outColor;
 
+// Output: the same picture with its range brought into 0..1
+//
+// The scene chain is a float, so what arrives here is radiance and the sky's sun is two
+// hundred times a lit wall. A clamp would turn every bright thing into the same white;
+// this curve compresses the top instead, so a highlight keeps some of its shape.
+//
+// Narkowicz's fit of the ACES tone curve. Five constants and no branch, which is why it
+// is the one most real-time renderers reach for.
+// How much of the spread light comes back. Not 1: the extract already kept only what
+// was over the range, so adding all of it back would put the same energy in twice.
+const float kBloomStrength = 0.35;
+
+vec3 Tonemap(vec3 x) {
+    const float a = 2.51;
+    const float b = 0.03;
+    const float c = 2.43;
+    const float d = 0.59;
+    const float e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
+
 void main() {
-    // Passed through for now. **This is where post-processing goes** -- tone mapping,
-    // colour grading and vignette are all edits to this one line.
-    //
-    // Being a pass-through is also what keeps the two ends apart. Nothing here encodes:
-    // the swapchain's sRGB format does that on write, which is why SelectSurfaceFormat
-    // refuses a surface without one. Tone-map here and the source has to hold values
-    // outside [0,1] -- a float format -- and what is written starts answering to the
-    // swapchain's.
-    outColor = texture(sceneColor, uv);
+    // Nothing here encodes. The swapchain's sRGB format does that on write, which is
+    // why SelectSurfaceFormat refuses a surface without one -- so what this writes is
+    // still linear, only compressed into the range the display can hold.
+    // Added before the curve rather than after it. Bloom is light that was there and
+    // spread; adding it to an already compressed image would brighten what is dark
+    // instead of widening what is bright.
+    const vec3 lit = texture(sceneColor, uv).rgb
+                   + texture(bloom, uv).rgb * kBloomStrength;
+    outColor = vec4(Tonemap(lit), 1.0);
 }

@@ -50,6 +50,7 @@ add_executable(sandbox
     Vulkan/Timing.h      Vulkan/Timing.cpp      # GPU timestamps, one query pool per frame
 
     PointShadowPass.h    PointShadowPass.cpp    # a point light's shadow, six faces of a cube
+    BloomPass.h          BloomPass.cpp          # what is brighter than the display, spread
 
     Gltf.h               Gltf.cpp               # an asset file, as the arrays a frame needs
     Bmp.h                Bmp.cpp                # a captured frame, as a file
@@ -119,6 +120,7 @@ set(SHADER_BUILD_DIR "${CMAKE_CURRENT_BINARY_DIR}/Shaders")
 set(SPV_FILES "")
 
 foreach(SHADER shadow.vert pointshadow.vert pointshadow.frag
+               bloom_extract.frag bloom_blur.frag
                scene.vert scene.frag fullscreen.vert post.frag gui.vert gui.frag
                geometry.frag lighting.frag skybake.frag sky.frag irradiance.frag
                prefilter.frag brdflut.frag)

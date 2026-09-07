@@ -78,6 +78,7 @@
 #include "Pipelines.h"
 #include "GeometryPass.h"
 #include "LightingPass.h"
+#include "BloomPass.h"
 #include "PointShadowPass.h"
 #include "PostProcessPass.h"
 #include "ScenePass.h"
@@ -192,6 +193,11 @@ struct Renderer {
     // does to itself.
     SceneTargets sceneTargets[kFramesInFlight];
 
+    // The bloom pass's two half-size images, remade on the same resize as the scene's
+    // because their size follows from it.
+    Texture bloomA[kFramesInFlight];
+    Texture bloomB[kFramesInFlight];
+
     // The deferred path's four, remade on the same resize and by the same rule. Both
     // chains exist at once: the panel switches which one a frame records, and a switch
     // that had to rebuild anything would not be a switch.
@@ -211,6 +217,7 @@ struct Renderer {
     GeometryPass geometryPass;
     LightingPass lightingPass;
 
+    BloomPass bloomPass;
     PostProcessPass postPass;
     Gui guiPass;
 

@@ -75,11 +75,19 @@ constexpr float kShadowDistance = 22.0f;
 // path: there the resolve attachment is illegal, and it would never run here anyway.
 constexpr uint32_t kDesiredSampleCount = 4;
 
-// What every target in the render chain is made of, and not the swapchain's: the two
-// hold the same value today and part the day post tone-maps, which wants a float.
-// R8G8B8A8 because WriteBmp reads red first; SRGB so blending and the resolve run in
-// linear space.
-constexpr VkFormat kRenderColorFormat = VK_FORMAT_R8G8B8A8_SRGB;
+// What the scene chain is made of. **A float, and that is what lets post tone-map**:
+// an 8-bit target clamps at 1.0, so the sun the sky is baked with -- 220 times the
+// brightness of a lit wall -- reaches the post pass as plain white and nothing after it
+// can tell a bright thing from an overexposed one.
+//
+// The swapchain stays sRGB and does the encoding on write, so nothing here encodes.
+constexpr VkFormat kRenderColorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+
+// The G-buffer's albedo, which is not the same question. It stores a surface colour,
+// which is 0..1 by definition, and 8 bits of sRGB is what a colour wants -- the extra
+// range a float buys would go unused and cost twice the bandwidth on the widest image
+// in the deferred path.
+constexpr VkFormat kGBufferAlbedoFormat = VK_FORMAT_R8G8B8A8_SRGB;
 
 // The window opens at this size and the user resizes from there. Unlike kRender*,
 // which never follows the window.

@@ -4,16 +4,17 @@
 
 void RefreshPostProcessPass(const Descriptors& descriptors,
                             PostProcessPass* post) noexcept {
+    const DescriptorLayout& layout = post->pipeline->program->setLayouts[kFrameSet];
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
-        const BindingValue values[] = {{&post->source[i]->view}};
-        UpdateSet(descriptors, post->pipeline->program->setLayouts[kFrameSet],
-                  post->sets[i],
-                  values, 1);
+        const BindingValue values[] = {{&post->source[i]->view},
+                                       {&post->bloom[i]->view}};
+        UpdateSet(descriptors, layout, post->sets[i], values, 2);
     }
 }
 
 bool CreatePostProcessPass(const Descriptors& descriptors,
                            const PassInput& source,
+                           const PassInput& bloom,
                            const TextureDesc& target,
                            const Pipeline& pipeline, PostProcessPass* out) noexcept {
     // The program is the pipeline's, not a second argument beside it. A pipeline
@@ -48,7 +49,8 @@ bool CreatePostProcessPass(const Descriptors& descriptors,
     // What it reads. A sampler cannot take a multisample image, which is the whole
     // reason the scene pass resolves -- and the resource this names is the one both
     // middles write, which is why nothing here knows which of them ran.
-    if (!DeclareRead(source, "post pass's source", false, &out->pass)) {
+    if (!DeclareRead(source, "post pass's source", false, &out->pass)
+            || !DeclareRead(bloom, "post pass's bloom", false, &out->pass)) {
         return false;
     }
 
@@ -61,9 +63,9 @@ bool CreatePostProcessPass(const Descriptors& descriptors,
     // cannot come to disagree about which image frame i reads.
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
         out->source[i] = source.frames[i];
-        const BindingValue values[] = {{&source.frames[i]->view}};
-        UpdateSet(descriptors, program.setLayouts[kFrameSet], out->sets[i], values, 1);
+        out->bloom[i] = bloom.frames[i];
     }
+    RefreshPostProcessPass(descriptors, out);
     return true;
 }
 
@@ -114,15 +116,10 @@ void RecordPostProcessPass(const FrameSlot& slot, const PostProcessPass& post,
     const Texture& dest = target;
     const VkExtent2D destExtent = dest.desc.extent;
 
-    // The image this pass reads. Written as an attachment by the pass before, read as
-    // a texture here -- and the layout must equal the one recorded into the set.
-    //
-    // Which of the two middles wrote it does not matter and is not asked: both draw
-    // into it as a colour attachment, and that role is what the source half follows
-    // from. This used to spell out the writer's three values, which is a reader stating
-    // facts about a pass it does not name.
-    RecordSampledHandover(vk, cmd, source, AttachmentRole::Color,
-                          WholeImage(VK_IMAGE_ASPECT_COLOR_BIT));
+    // No handover here. The bloom pass reads this image first and leaves it readable,
+    // which is what a chain of readers comes to: the first one moves it and the rest
+    // find it where they need it.
+
 
     // The image this pass draws into. Window sized, unlike the scene pass -- the
     // sampler's LINEAR filter scales.

@@ -60,6 +60,7 @@ struct Mesh;
 // orders them, and none of them knows the others.
 struct ShadowPass;
 struct PointShadowPass;
+struct BloomPass;
 struct SkyPass;
 struct ScenePass;
 struct GeometryPass;
@@ -869,6 +870,11 @@ inline ProgramRequirements SharedBlocks() noexcept {
     static const RequiredMember kPush[] = {
         {"model",  offsetof(PushConstants, model),  sizeof(PushConstants::model)},
 
+        // The bloom blur's axis, at offset 0 where a draw's model matrix sits. Two
+        // members at one offset for the reason light and normal are: no program
+        // declares both, and what is compared is the name.
+        {"blurStep", 0,                             2 * sizeof(float)},
+
         // The shadow stage's, and it sits where the scene's normal matrix does -- the
         // two never appear in one program, so one offset serves both. Declared here
         // rather than in a second list because a push block is one block per stage and
@@ -1200,7 +1206,7 @@ void UploadFrameValues(const FrameSlot& slot,
 // unwritten pair of a pass that did not run reads as unavailable, which the panel shows
 // as a dash.
 enum class TimedPass : uint32_t {
-    Shadow, PointShadow, Sky, Scene, Geometry, Lighting, Post, Gui, Count
+    Shadow, PointShadow, Sky, Scene, Geometry, Lighting, Bloom, Post, Gui, Count
 };
 
 inline constexpr uint32_t kTimedPassCount = static_cast<uint32_t>(TimedPass::Count);
@@ -1256,6 +1262,7 @@ bool RecordFrame(const FrameSlot& slot,
                  const SkyPass& skyForward, const SkyPass& skyDeferred,
                  const ScenePass& scene,
                  const GeometryPass& geometry, const LightingPass& lighting,
+                 const BloomPass& bloom,
                  const PostProcessPass& post, Gui& gui, const Texture& target,
                  const DrawList& draws, const DrawList& shadowDraws,
                  const GpuTimer& timer, DrawStats* stats = nullptr) noexcept;

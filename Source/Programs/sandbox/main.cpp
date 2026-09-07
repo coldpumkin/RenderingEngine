@@ -229,6 +229,12 @@ int main() {
     // A point light's shadow is a cube, so its target is one cube per light slot and the
     // depth the six faces are drawn with. Described here for the reason every other
     // target is: a pipeline is compiled against a face of them before any image exists.
+    // The bloom pass's two images, half the render size. Two descs and not one because
+    // an edge in the frame graph is two passes pointing at the same one, so sharing a
+    // desc between A and B would make the order true by construction.
+    TextureDesc bloomADesc = MakeBloomTarget(sceneTargetDescs.color.extent);
+    TextureDesc bloomBDesc = bloomADesc;
+
     const TextureDesc pointShadowTarget = MakePointShadowTarget();
     const TextureDesc pointShadowDepth = MakePointShadowDepth(caps);
     const TextureDesc pointShadowFace = SliceDesc(pointShadowTarget);
@@ -280,6 +286,7 @@ int main() {
     pipelineSources.guiLayout = GuiVertexInput();
     pipelineSources.shadowDepth = &shadowTarget;
     pipelineSources.pointShadowFace = &pointShadowFace;
+    pipelineSources.bloomTarget = &bloomADesc;
     pipelineSources.pointShadowDepth = &pointShadowDepthFace;
     pipelineSources.skyFace = &skyFaceTarget;
     pipelineSources.irradianceFace = &irradianceFaceTarget;
@@ -476,6 +483,10 @@ int main() {
         {&renderer->pipelines.irradianceProgram.setLayouts[kFrameSet], 1},
         {&renderer->pipelines.prefilterProgram.setLayouts[kFrameSet], 1},
         {&renderer->pipelines.skyProgram.setLayouts[kFrameSet], 2 * kFramesInFlight},
+        {&renderer->pipelines.bloomExtractProgram.setLayouts[kFrameSet],
+         kFramesInFlight},
+        {&renderer->pipelines.bloomBlurProgram.setLayouts[kFrameSet],
+         kFramesInFlight * 2},
         {&renderer->pipelines.postProgram.setLayouts[kFrameSet], kFramesInFlight},
         // One, and counted by neither of the other two reasons: there is one font.
         {&renderer->pipelines.guiProgram.setLayouts[0], 1},
@@ -674,7 +685,29 @@ int main() {
                        renderer->pipelines.skyForward, frameSet,
                        &renderer->skyForwardPass)) { return 1; }
 
-    if (!CreatePostProcessPass(renderer->descriptors, sceneColorInput, swapchainTarget,
+    // The bloom pass, between the middle and post. Its two images are made here for the
+    // reason every other target is: a resize remakes them and two passes name them.
+    const Texture* bloomA[kFramesInFlight]{};
+    const Texture* bloomB[kFramesInFlight]{};
+    PassInput bloomInput{&bloomADesc, {}};
+    for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+        if (!CreateTexture(dev, bloomADesc, &renderer->bloomA[i])
+                || !CreateTexture(dev, bloomBDesc, &renderer->bloomB[i])) {
+            return 1;
+        }
+        bloomA[i] = &renderer->bloomA[i];
+        bloomB[i] = &renderer->bloomB[i];
+        bloomInput.frames[i] = &renderer->bloomA[i];
+    }
+
+    if (!CreateBloomPass(renderer->descriptors, sceneColorInput,
+                         bloomADesc, bloomA, bloomBDesc, bloomB,
+                         renderer->pipelines.bloomExtract,
+                         renderer->pipelines.bloomBlur,
+                         &renderer->bloomPass)) { return 1; }
+
+    if (!CreatePostProcessPass(renderer->descriptors, sceneColorInput, bloomInput,
+                               swapchainTarget,
                                renderer->pipelines.post,
                                &renderer->postPass)) {
         return 1;
@@ -804,12 +837,23 @@ int main() {
             DescribeSizedTargets(window.surfaceExtent, caps,
                                  &sceneTargetDescs, &gbufferDescs);
 
+            // The bloom images follow the render size, so they are described again
+            // from it rather than kept in step by hand.
+            bloomADesc = MakeBloomTarget(sceneTargetDescs.color.extent);
+            bloomBDesc = bloomADesc;
+
             bool remade = true;
             for (uint32_t i = 0; i < kFramesInFlight && remade; ++i) {
                 remade = ResizeSceneTargets(dev, sceneTargetDescs,
                                             &renderer->sceneTargets[i])
                       && ResizeGBufferTargets(dev, gbufferDescs,
                                               &renderer->gbuffers[i]);
+                if (!remade) { break; }
+
+                ResetTexture(&renderer->bloomA[i]);
+                ResetTexture(&renderer->bloomB[i]);
+                remade = CreateTexture(dev, bloomADesc, &renderer->bloomA[i])
+                      && CreateTexture(dev, bloomBDesc, &renderer->bloomB[i]);
             }
             if (!remade) { break; }
 
@@ -817,6 +861,7 @@ int main() {
             // reads the resolve, and the lighting pass's second set names all four
             // g-buffer views. The lighting pass's first set survives -- it names
             // buffers and the shadow map, and a resize touches neither.
+            RefreshBloomPass(renderer->descriptors, &renderer->bloomPass);
             RefreshPostProcessPass(renderer->descriptors, &renderer->postPass);
             RefreshLightingPass(renderer->descriptors, &renderer->lightingPass);
             LOG("[render] targets now %ux%u\n", wanted.width, wanted.height);
@@ -1113,7 +1158,7 @@ int main() {
                          renderer->skyForwardPass, renderer->skyDeferredPass,
                          renderer->scenePass,
                          renderer->geometryPass, renderer->lightingPass,
-                         renderer->postPass, renderer->guiPass,
+                         renderer->bloomPass, renderer->postPass, renderer->guiPass,
                          *target.texture, visibleList, drawList,
                          renderer->timers[slot.index], &drawStats)) {
             break;

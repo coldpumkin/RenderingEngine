@@ -50,6 +50,18 @@ GraphicsPipelineDesc PointShadowDesc(const ShaderProgram& program,
     return desc;
 }
 
+GraphicsPipelineDesc BloomDesc(const ShaderProgram& program,
+                              const PipelineSources& sources) noexcept {
+    GraphicsPipelineDesc desc;
+    desc.program = &program;
+
+    // No vertex buffer: fullscreen.vert builds its three points from gl_VertexIndex.
+    const TextureDesc* const colour[] = {sources.bloomTarget};
+    desc.formats = AttachmentFormatsFor(colour, 1, nullptr);
+    desc.blend[0] = NoBlend();
+    return desc;
+}
+
 GraphicsPipelineDesc SceneDesc(const ShaderProgram& program,
                                const PipelineSources& sources) noexcept {
     GraphicsPipelineDesc desc;
@@ -249,6 +261,10 @@ bool CreatePipelines(const VulkanDevice& dev, const PipelineSources& sources,
     const char* const brdfLutStages[] = {"Shaders/fullscreen.vert.spv",
                                          "Shaders/brdflut.frag.spv"};
     const char* const skyStages[] = {"Shaders/fullscreen.vert.spv", "Shaders/sky.frag.spv"};
+    const char* const bloomExtractStages[] = {"Shaders/fullscreen.vert.spv",
+                                              "Shaders/bloom_extract.frag.spv"};
+    const char* const bloomBlurStages[] = {"Shaders/fullscreen.vert.spv",
+                                           "Shaders/bloom_blur.frag.spv"};
     const char* const postStages[] = {"Shaders/fullscreen.vert.spv", "Shaders/post.frag.spv"};
     const char* const guiStages[] = {"Shaders/gui.vert.spv", "Shaders/gui.frag.spv"};
 
@@ -313,6 +329,12 @@ bool CreatePipelines(const VulkanDevice& dev, const PipelineSources& sources,
             || !CreateShaderProgram(dev, skyStages,
                                     static_cast<uint32_t>(std::size(skyStages)),
                                     anyProgram, &out->skyProgram)
+            || !CreateShaderProgram(dev, bloomExtractStages,
+                                    static_cast<uint32_t>(std::size(bloomExtractStages)),
+                                    anyProgram, &out->bloomExtractProgram)
+            || !CreateShaderProgram(dev, bloomBlurStages,
+                                    static_cast<uint32_t>(std::size(bloomBlurStages)),
+                                    anyProgram, &out->bloomBlurProgram)
             || !CreateShaderProgram(dev, postStages,
                                     static_cast<uint32_t>(std::size(postStages)),
                                     anyProgram, &out->postProgram)
@@ -348,6 +370,10 @@ bool CreatePipelines(const VulkanDevice& dev, const PipelineSources& sources,
                                   &out->skyForward)
         && CreateGraphicsPipeline(dev, SkyDesc(out->skyProgram, sources.sceneResolve),
                                   &out->skyDeferred)
+        && CreateGraphicsPipeline(dev, BloomDesc(out->bloomExtractProgram, sources),
+                                  &out->bloomExtract)
+        && CreateGraphicsPipeline(dev, BloomDesc(out->bloomBlurProgram, sources),
+                                  &out->bloomBlur)
         && CreateGraphicsPipeline(dev, PostDesc(out->postProgram, sources),
                                   &out->post)
         && CreateGraphicsPipeline(dev, GuiDesc(out->guiProgram, sources),

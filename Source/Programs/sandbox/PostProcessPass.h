@@ -43,6 +43,10 @@ struct PostProcessPass {
     // One per frame in flight. Non-owning: the scene pass owns these images.
     const Texture* source[kFramesInFlight]{};
 
+    // And what the bloom pass left, which this adds before tone mapping. Borrowed the
+    // same way and refreshed on the same event.
+    const Texture* bloom[kFramesInFlight]{};
+
     // What it writes, described the way the other passes' targets are. Non-owning, and
     // **the format is the part that keeps**: the extent belongs to whichever image
     // arrives, which is why RecordFrame reads it off that image and not off here.
@@ -73,6 +77,7 @@ void RefreshPostProcessPass(const Descriptors& descriptors,
 //           checked here now: a multisample image cannot be bound to a sampler.
 bool CreatePostProcessPass(const Descriptors& descriptors,
                            const PassInput& source,
+                           const PassInput& bloom,
                            const TextureDesc& target,
                            const Pipeline& pipeline, PostProcessPass* out) noexcept;
 

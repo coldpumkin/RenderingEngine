@@ -66,6 +66,12 @@ the two paths are meant to compare is structure, so the edges differ and that is
   Sponza; the generator was checked against the 102 that ship tangents, mean dot 0.9953).
 - **Mip chain and anisotropic filtering.** Built at upload, a linear blit per level,
   because Vulkan has no glGenerateMipmap.
+- **A float scene chain, tone mapping and bloom.** The three are one change: an 8-bit
+  target clamps at 1.0, so nothing downstream could tell a bright thing from an
+  overexposed one. Bloom is three draws over two half-size images, extract and then one
+  blur along each axis.
+
+![bloom around the sun](docs/images/bloom.jpg)
 - MSAA resolve, resize and minimize handling, VMA for allocation.
 
 ![without mipmaps](docs/images/mips-off.jpg) ![with mipmaps](docs/images/mips-on.jpg)
@@ -152,10 +158,10 @@ GPU time per pass comes from timestamps the device writes, one query pool per fr
 flight. Both stamps are taken at `ALL_COMMANDS`, so an interval covers one pass rather
 than the tail of the one before it. RX 6800S, 1280x720, three lights:
 
-| | shadow | point shadow | sky | middle | post | total |
-|---|---|---|---|---|---|---|
-| forward | 3.144 | 0.682 | 0.348 | scene 2.249 | 0.057 | 6.479 ms |
-| deferred | 2.848 | 0.682 | 0.322 | geometry 0.836 + lighting 0.758 | 0.059 | 5.505 ms |
+| | shadow | point shadow | sky | middle | bloom | post | total |
+|---|---|---|---|---|---|---|---|
+| forward | 2.983 | 0.681 | 0.347 | scene 2.676 | 0.103 | 0.069 | 6.861 ms |
+| deferred | 2.978 | 0.682 | 0.322 | geometry 0.836 + lighting 0.760 | 0.105 | 0.070 | 5.753 ms |
 
 `LAMBDA_CAPTURE=<path>.bmp` writes the second frame and exits. Time is fixed under
 capture, so the same binary hashes the same twice, and `Tools/capture.ps1` runs both

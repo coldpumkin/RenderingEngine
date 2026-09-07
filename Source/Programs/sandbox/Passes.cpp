@@ -3,6 +3,7 @@
 #include "Gui.h"
 #include "GeometryPass.h"
 #include "LightingPass.h"
+#include "BloomPass.h"
 #include "PointShadowPass.h"
 #include "ShadowPass.h"
 #include "Sky.h"
@@ -195,7 +196,7 @@ void DescribeSizedTargets(VkExtent2D windowExtent, const TargetCapabilities& cap
                           SceneTargetDescs* scene, GBufferTargetDescs* gbuffer) noexcept {
     const VkExtent2D extent = RenderExtentFor(windowExtent);
     *scene = MakeSceneTargets(extent, kRenderColorFormat, caps);
-    *gbuffer = MakeGBufferTargets(extent, kRenderColorFormat, caps);
+    *gbuffer = MakeGBufferTargets(extent, kGBufferAlbedoFormat, caps);
 }
 
 VkExtent2D RenderExtentFor(VkExtent2D windowExtent) noexcept {
@@ -655,6 +656,7 @@ const char* TimedPassName(TimedPass pass) noexcept {
         case TimedPass::Scene:    return "scene";
         case TimedPass::Geometry: return "geometry";
         case TimedPass::Lighting: return "lighting";
+        case TimedPass::Bloom:    return "bloom";
         case TimedPass::Post:     return "post";
         case TimedPass::Gui:      return "gui";
         default:                  return "?";
@@ -687,6 +689,7 @@ bool RecordFrame(const FrameSlot& slot,
                  const SkyPass& skyForward, const SkyPass& skyDeferred,
                  const ScenePass& scene,
                  const GeometryPass& geometry, const LightingPass& lighting,
+                 const BloomPass& bloom,
                  const PostProcessPass& post, Gui& gui, const Texture& target,
                  const DrawList& draws, const DrawList& shadowDraws,
                  const GpuTimer& timer, DrawStats* stats) noexcept {
@@ -726,11 +729,12 @@ bool RecordFrame(const FrameSlot& slot,
     // against what the passes declared.
     const bool deferred = GuiDeferred(gui);
     const RenderPassDesc* const forwardChain[] = {
-        &shadow.pass, &pointShadow.pass, &skyForward.pass, &scene.pass, &post.pass,
-        &gui.pass};
+        &shadow.pass, &pointShadow.pass, &skyForward.pass, &scene.pass,
+        &bloom.extract, &bloom.blurH, &bloom.blurV, &post.pass, &gui.pass};
     const RenderPassDesc* const deferredChain[] = {
         &shadow.pass, &pointShadow.pass, &skyDeferred.pass, &geometry.pass,
-        &lighting.pass, &post.pass, &gui.pass};
+        &lighting.pass, &bloom.extract, &bloom.blurH, &bloom.blurV, &post.pass,
+        &gui.pass};
 
     static bool checkedForward = false;
     static bool checkedDeferred = false;
@@ -796,6 +800,10 @@ bool RecordFrame(const FrameSlot& slot,
         RecordScenePass(slot, scene, draws, raster, stats);
         timeEnd(TimedPass::Scene);
     }
+
+    timeBegin(TimedPass::Bloom);
+    RecordBloomPass(slot, bloom);
+    timeEnd(TimedPass::Bloom);
 
     timeBegin(TimedPass::Post);
     RecordPostProcessPass(slot, post, target);
