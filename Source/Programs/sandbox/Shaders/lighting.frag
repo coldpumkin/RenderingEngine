@@ -65,7 +65,7 @@ struct LightEntry {
     // xyz = surface toward the light, w = 0 a direction, 1 a position. The homogeneous
     // meaning of w, which is also the only thing that separates the kinds here.
     vec4 direction;
-    vec4 color;        // rgb = colour, a unused
+    vec4 color;        // rgb = colour, a = 1 if this light has a shadow map
     vec4 position;     // xyz where it is, w how far it carries
     vec4 cone;         // x inner cosine, y outer -- opened all the way for a point
 };
@@ -112,12 +112,18 @@ vec4 LightAt(LightEntry entry, vec3 worldPos) {
 
 // The same light as a viewpoint. Binding 2 is the buffer the shadow pass was handed,
 // so this matrix is the one that drew the map in binding 3.
-layout(set = 0, binding = 2) uniform Shadow {
+// Contract: matches ShadowUniform in Passes.h, kMaxLights included.
+struct ShadowEntry {
     mat4 lightView;
     mat4 lightProj;
+};
+
+layout(set = 0, binding = 2) uniform Shadow {
+    ShadowEntry lights[4];
 } shadow;
 
-layout(set = 0, binding = 3) uniform sampler2D shadowMap;
+// One layer per light, sampled with the same index the matrices are read with.
+layout(set = 0, binding = 3) uniform sampler2DArray shadowMaps;
 layout(set = 0, binding = 6) uniform samplerCube irradianceCube;
 
 layout(set = 0, binding = 7) uniform samplerCube prefilteredCube;
@@ -210,8 +216,9 @@ vec3 WorldFromDepth(vec2 screenUv, float depth) {
 //
 // ndotl steers the bias. A surface edge-on to the light spans many depths inside one
 // shadow texel and needs more slack than one facing it.
-float ShadowFactor(vec3 worldPos, float ndotl) {
-    const vec4 clip = shadow.lightProj * (shadow.lightView * vec4(worldPos, 1.0));
+float ShadowFactor(int light, vec3 worldPos, float ndotl) {
+    const ShadowEntry entry = shadow.lights[light];
+    const vec4 clip = entry.lightProj * (entry.lightView * vec4(worldPos, 1.0));
     const vec3 ndc = clip.xyz / clip.w;
 
     // Contract: this maps ndc to uv the way the shadow pipeline's viewport lays the map
@@ -226,7 +233,7 @@ float ShadowFactor(vec3 worldPos, float ndotl) {
     }
 
     const float bias = max(0.0025 * (1.0 - ndotl), 0.0004);
-    return texture(shadowMap, uvShadow).r + bias < ndc.z ? 0.0 : 1.0;
+    return texture(shadowMaps, vec3(uvShadow, float(light))).r + bias < ndc.z ? 0.0 : 1.0;
 }
 
 void main() {
@@ -297,8 +304,9 @@ void main() {
         const float specular = view.useSpecular > 0.5
                              ? highlight * step(0.0001, lambert) : 0.0;
 
-        const float lit = (i == 0 && view.useShadow > 0.5)
-                        ? ShadowFactor(worldPos, lambert) : 1.0;
+        // Only the lights a map was drawn for.
+        const float lit = (light.lights[i].color.a > 0.5 && view.useShadow > 0.5)
+                        ? ShadowFactor(i, worldPos, lambert) : 1.0;
 
         direct += light.lights[i].color.rgb * lambert * lit * diffuseColor
                 + light.lights[i].color.rgb * specular * lit * specularColor;

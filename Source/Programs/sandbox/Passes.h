@@ -398,6 +398,11 @@ struct LightState {
 
     glm::vec3 color{1.0f};
 
+    // Whether a shadow map was drawn for this one. **Not derived from the kind**: a
+    // point light cannot have a 2D map, but a spot that the frame ran out of layers for
+    // also has none, and only whoever drew them knows which.
+    bool castsShadow = false;
+
     // Not per light. What the sky sends is one fact about the scene, and a second light
     // does not add a second sky.
     float ambient = 0.0f;
@@ -506,18 +511,38 @@ struct CameraUniform {
 
 // Contract: field order and types match the shader's Shadow block, and both stages
 //           that read it declare both fields.
-struct ShadowUniform {
-    // The same world from the light's side, which is what turns a depth in the shadow
-    // map into a comparison with this fragment. The shadow pass draws the map with
-    // these and the scene pass compares against them, which is why one buffer rather
-    // than two: they cannot disagree about values there is one of.
-    //
-    // Split for the reason the camera's are, and here the two halves are further
-    // apart: lightView turns with the clock every frame, lightProj is a box built once
-    // out of kShadowRadius and the map's shape. Their product hid a per-frame value
-    // and a constant behind one name.
+// Where one light's shadow map was drawn from
+//
+// The same world from the light's side, which is what turns a depth in the map into a
+// comparison with this fragment. The shadow pass draws with these and the shading pass
+// compares against them, which is why one buffer rather than two: they cannot disagree
+// about values there is one of.
+//
+// Split for the reason the camera's are. The two halves move at different rates -- a
+// spot's view follows wherever it is while its projection only answers to its cone --
+// and their product would hide that behind one name.
+struct ShadowEntry {
     glm::mat4 lightView;
     glm::mat4 lightProj;
+};
+
+struct ShadowUniform {
+    // One per light, in the same order the lights are. A shader shading light i reads
+    // matrices i and samples layer i of the map, and nothing translates between the
+    // three -- the index is the same index.
+    //
+    // A light with no map leaves its pair unread rather than marked. Which lights cast
+    // is decided where the maps are drawn, and a value here saying so would be a second
+    // place that could disagree.
+    ShadowEntry lights[kMaxLights];
+};
+
+// Which light a shadow pass is drawing the map for
+//
+// Contract: matches Which in shadow.vert. One map is drawn per casting light and this
+//           is the only thing that differs between those draws.
+struct ShadowWhich {
+    int32_t light = 0;
 };
 
 // Contract: field order and types match the shader's Light block.
@@ -540,7 +565,9 @@ struct LightEntry {
     // shader reads whether translation reaches it out of the same number.
     glm::vec4 direction;
 
-    glm::vec4 color;       // rgb = colour, a unused
+    // rgb = colour, a = 1 when a shadow map was drawn for this light. The slot was
+    // spare and the fact is per light, which is what decides where it goes.
+    glm::vec4 color;
     glm::vec4 position;    // xyz = where it is, w = how far its light carries
     glm::vec4 cone;        // x = inner cosine, y = outer, zw unused
 };
@@ -733,8 +760,7 @@ inline ProgramRequirements SharedBlocks() noexcept {
         {"ambient", offsetof(LightUniform, ambient), sizeof(LightUniform::ambient)},
     };
     static const RequiredMember kShadow[] = {
-        {"lightView", offsetof(ShadowUniform, lightView), sizeof(ShadowUniform::lightView)},
-        {"lightProj", offsetof(ShadowUniform, lightProj), sizeof(ShadowUniform::lightProj)},
+        {"lights", offsetof(ShadowUniform, lights), sizeof(ShadowUniform::lights)},
     };
     static const RequiredMember kView[] = {
         {"useNormalMap",  offsetof(ViewOptionsUniform, useNormalMap),
@@ -777,6 +803,12 @@ inline ProgramRequirements SharedBlocks() noexcept {
     // take alpha at the offset the two in front of it leave.
     static const RequiredMember kPush[] = {
         {"model",  offsetof(PushConstants, model),  sizeof(PushConstants::model)},
+
+        // The shadow stage's, and it sits where the scene's normal matrix does -- the
+        // two never appear in one program, so one offset serves both. Declared here
+        // rather than in a second list because a push block is one block per stage and
+        // this is what says which members a stage may read.
+        {"light",  sizeof(glm::mat4),                 sizeof(int32_t)},
         {"normal", offsetof(PushConstants, normal), sizeof(PushConstants::normal)},
         {"alpha",  offsetof(PushConstants, alpha),  sizeof(PushConstants::alpha)},
     };
@@ -1057,7 +1089,7 @@ void UploadFrameValues(const FrameSlot& slot,
 // Contract: UploadFrameValues has run for this slot. What is recorded here reads
 //           those buffers, and nothing in the command stream would say they are stale.
 bool RecordFrame(const FrameSlot& slot,
-                 const ShadowPass& shadow,
+                 const ShadowPass& shadow, uint32_t shadowCasters,
                  const SkyPass& skyForward, const SkyPass& skyDeferred,
                  const ScenePass& scene,
                  const GeometryPass& geometry, const LightingPass& lighting,

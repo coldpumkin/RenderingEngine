@@ -76,7 +76,7 @@ bool CreateImage(const VulkanDevice& dev, const TextureDesc& desc, Image* out) n
     info.format = format;
     info.extent = VkExtent3D{extent.width, extent.height, 1};
     info.mipLevels = desc.mipLevels;
-    info.arrayLayers = LayersOf(desc.kind);
+    info.arrayLayers = LayersOf(desc);
     info.samples = desc.samples;
     info.tiling = VK_IMAGE_TILING_OPTIMAL;
     info.usage = usage;

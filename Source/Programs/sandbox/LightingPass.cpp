@@ -136,9 +136,11 @@ void RecordLightingPass(const FrameSlot& slot, const LightingPass& lighting) noe
     // role it names is the one thing it knows and the one thing they follow from.
     const Texture* const colour[] = {&source.albedo, &source.normal, &source.material};
     for (uint32_t i = 0; i < std::size(colour); ++i) {
-        RecordSampledHandover(vk, cmd, *colour[i], AttachmentRole::Color);
+        RecordSampledHandover(vk, cmd, *colour[i], AttachmentRole::Color,
+                              WholeImage(VK_IMAGE_ASPECT_COLOR_BIT));
     }
-    RecordSampledHandover(vk, cmd, source.depth, AttachmentRole::Depth);
+    RecordSampledHandover(vk, cmd, source.depth, AttachmentRole::Depth,
+                          WholeImage(VK_IMAGE_ASPECT_DEPTH_BIT));
 
     // The shadow map needs none: the shadow pass published it at its own end, which is
     // the other of the two patterns and the one a writer can use when it knows every

@@ -121,7 +121,8 @@ void RecordPostProcessPass(const FrameSlot& slot, const PostProcessPass& post,
     // into it as a colour attachment, and that role is what the source half follows
     // from. This used to spell out the writer's three values, which is a reader stating
     // facts about a pass it does not name.
-    RecordSampledHandover(vk, cmd, source, AttachmentRole::Color);
+    RecordSampledHandover(vk, cmd, source, AttachmentRole::Color,
+                          WholeImage(VK_IMAGE_ASPECT_COLOR_BIT));
 
     // The image this pass draws into. Window sized, unlike the scene pass -- the
     // sampler's LINEAR filter scales.

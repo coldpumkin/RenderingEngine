@@ -51,7 +51,7 @@ struct LightEntry {
     // xyz = surface toward the light, w = 0 a direction, 1 a position. The homogeneous
     // meaning of w, which is also the only thing that separates the kinds here.
     vec4 direction;
-    vec4 color;        // rgb = colour, a unused
+    vec4 color;        // rgb = colour, a = 1 if this light has a shadow map
     vec4 position;     // xyz where it is, w how far it carries
     vec4 cone;         // x inner cosine, y outer -- opened all the way for a point
 };
@@ -107,12 +107,18 @@ vec4 LightAt(LightEntry entry, vec3 worldPos) {
 //
 // A plain sampler2D, so the comparison happens here. A comparison sampler would do it
 // in hardware with free 2x2 filtering, which is what a soft edge would ask for.
-layout(set = 0, binding = 2) uniform Shadow {
+// Contract: matches ShadowUniform in Passes.h, kMaxLights included.
+struct ShadowEntry {
     mat4 lightView;
     mat4 lightProj;
+};
+
+layout(set = 0, binding = 2) uniform Shadow {
+    ShadowEntry lights[4];
 } shadow;
 
-layout(set = 0, binding = 3) uniform sampler2D shadowMap;
+// One layer per light, sampled with the same index the matrices are read with.
+layout(set = 0, binding = 3) uniform sampler2DArray shadowMaps;
 
 // What the sky sends a matte surface facing a direction. Replaces a constant ambient:
 // a colour that was the same everywhere could not tell a surface looking up from one
@@ -203,11 +209,13 @@ layout(location = 0) out vec4 outColor;
 // ndotl steers the bias. A surface edge-on to the light spans many depths inside one
 // shadow texel and needs more slack than one facing it; without that the choice is
 // between acne on the flat surfaces and a gap under every object.
-float ShadowFactor(vec3 worldPos, float ndotl) {
-    const vec4 clip = shadow.lightProj * (shadow.lightView * vec4(worldPos, 1.0));
+float ShadowFactor(int light, vec3 worldPos, float ndotl) {
+    const ShadowEntry entry = shadow.lights[light];
+    const vec4 clip = entry.lightProj * (entry.lightView * vec4(worldPos, 1.0));
 
-    // The light is directional, so its projection is orthographic and w is 1. Divided
-    // anyway: this is the line a spot light would change, and it should be visible.
+    // A spot's projection is a perspective and w is not 1, a directional light's is an
+    // orthographic and it is. Divided either way, which is what lets one function serve
+    // both -- the line that used to say a spot would change it.
     const vec3 ndc = clip.xyz / clip.w;
 
     // Contract: this maps ndc to uv the way the shadow pipeline's viewport lays the map
@@ -215,15 +223,15 @@ float ShadowFactor(vec3 worldPos, float ndotl) {
     //           shadows land mirrored; nothing reports it, both sides being legal alone.
     const vec2 uv = ndc.xy * 0.5 + 0.5;
 
-    // Outside the map is not "in shadow": the light's ortho box covers the scene we
-    // chose, and past it there is no depth to compare against. The sampler wraps, so
-    // without this the far end of the atrium would be shaded by the near end.
+    // Outside the map is not "in shadow": what the map covers is the box or the cone
+    // that was chosen, and past it there is no depth to compare against. The sampler
+    // wraps, so without this the far end of the atrium would be shaded by the near end.
     if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || ndc.z > 1.0) {
         return 1.0;
     }
 
     const float bias = max(0.0025 * (1.0 - ndotl), 0.0004);
-    return texture(shadowMap, uv).r + bias < ndc.z ? 0.0 : 1.0;
+    return texture(shadowMaps, vec3(uv, float(light))).r + bias < ndc.z ? 0.0 : 1.0;
 }
 
 void main() {
@@ -313,8 +321,11 @@ void main() {
 
         // Only the first light has a map. Skipped where the surface already faces
         // away -- unlit either way, and the bias is meaningless at a grazing angle.
-        const float shade = (i == 0 && view.useShadow > 0.5 && lambert > 0.0)
-                          ? ShadowFactor(fragWorldPos, lambert) : 1.0;
+        // Only the lights a map was drawn for. color.a says which, because the pass
+        // that drew them is the only thing that knows.
+        const float shade = (light.lights[i].color.a > 0.5 && view.useShadow > 0.5
+                             && lambert > 0.0)
+                          ? ShadowFactor(i, fragWorldPos, lambert) : 1.0;
 
         // Diffuse takes the surface colour, specular takes the light's: a highlight is
         // the light itself reflected, not the paint.

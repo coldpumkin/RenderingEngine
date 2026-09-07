@@ -1232,22 +1232,32 @@ int main() {
         lights[0].direction = kSunDirection;
         lights[0].color = glm::vec3{1.0f, 0.95f, 0.9f};
 
-        lights[1].kind = LightKind::Point;
-        lights[1].position = kSceneCenter + glm::vec3{-5.0f, 2.2f, 0.0f};
-        lights[1].color = glm::vec3{9.0f, 3.6f, 1.2f};   // a warm lamp, in radiance
-        lights[1].range = 14.0f;
+        lights[1].kind = LightKind::Spot;
+        lights[1].position = kSceneCenter + glm::vec3{5.0f, 7.5f, 0.0f};
+        lights[1].direction = glm::vec3{0.0f, 1.0f, 0.0f};   // pointing down
+        lights[1].color = glm::vec3{6.0f, 7.0f, 12.0f};      // a cool one
+        lights[1].innerCos = 0.94f;
+        lights[1].outerCos = 0.80f;
+        lights[1].range = 20.0f;
 
-        lights[2].kind = LightKind::Spot;
-        lights[2].position = kSceneCenter + glm::vec3{5.0f, 7.5f, 0.0f};
-        lights[2].direction = glm::vec3{0.0f, 1.0f, 0.0f};   // pointing down
-        lights[2].color = glm::vec3{6.0f, 7.0f, 12.0f};      // a cool one
-        lights[2].innerCos = 0.94f;
-        lights[2].outerCos = 0.80f;
-        lights[2].range = 20.0f;
+        // Last, because it casts no shadow and the casters are a prefix.
+        lights[2].kind = LightKind::Point;
+        lights[2].position = kSceneCenter + glm::vec3{-5.0f, 2.2f, 0.0f};
+        lights[2].color = glm::vec3{9.0f, 3.6f, 1.2f};   // a warm lamp, in radiance
+        lights[2].range = 14.0f;
 
-        // The first is what the shadow map is drawn from, and ShadowView and
-        // ShadowProjectionFor both branch on its kind.
-        const LightState& light = lights[0];
+        // Which lights get a map, and it is a prefix rather than a set: the ones that
+        // can cast are put first so "how many" is the whole answer. A point light
+        // cannot -- its map would be a cube and six passes, not a layer -- so it is
+        // last and the count stops before it.
+        //
+        // Ordered here, in the one place that knows what the scene's lights are.
+        uint32_t shadowCasters = 0;
+        for (uint32_t i = 0; i < std::size(lights); ++i) {
+            if (lights[i].kind == LightKind::Point) { break; }
+            lights[i].castsShadow = true;
+            shadowCasters = i + 1;
+        }
         // Fill this frame's share of the pass
         //
         // Assignment only, so it belongs up here: what reaches the GPU, and when, is
@@ -1284,9 +1294,14 @@ int main() {
         // Both from the light itself now, because both answers differ by its kind: a
         // spot looks from where it is with a perspective, a directional light from a
         // point invented far enough back with an orthographic box.
-        renderer.shadows[slot.index].value =
-            {.lightView = ShadowView(light, kSceneCenter),
-             .lightProj = ShadowProjectionFor(light, shadowTarget.extent)};
+        // One pair per light, in the same order, so index i is index i everywhere.
+        // The ones with no map are written anyway and never read -- writing them costs
+        // a memcpy and skipping them would need a second thing saying which.
+        for (uint32_t i = 0; i < std::size(lights); ++i) {
+            renderer.shadows[slot.index].value.lights[i] =
+                {ShadowView(lights[i], kSceneCenter),
+                 ShadowProjectionFor(lights[i], shadowTarget.extent)};
+        }
 
         // Draw it
         // --------------------------------------------------------------------
@@ -1347,7 +1362,7 @@ int main() {
         // Reset rather than declared here: the counters add up, and the panel above
         // read last frame's values before this line overwrites them.
         drawStats = DrawStats{};
-        if (!RecordFrame(slot, renderer.shadowPass,
+        if (!RecordFrame(slot, renderer.shadowPass, shadowCasters,
                          renderer.skyForwardPass, renderer.skyDeferredPass,
                          renderer.scenePass,
                          renderer.geometryPass, renderer.lightingPass,

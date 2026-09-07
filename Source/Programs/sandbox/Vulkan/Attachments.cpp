@@ -216,10 +216,10 @@ static bool HasStencilAspect(VkFormat format) noexcept {
 }
 
 void RecordSampledHandover(const VolkDeviceTable& vk, VkCommandBuffer cmd,
-                           const Texture& produced, AttachmentRole role) noexcept {
+                           const Texture& produced, AttachmentRole role,
+                           const VkImageSubresourceRange& range) noexcept {
     const bool isColour = role == AttachmentRole::Color;
-    RecordSampledTransition(vk, cmd, produced.image.handle,
-                            WholeImage(FormatAspects(produced.desc.format)),
+    RecordSampledTransition(vk, cmd, produced.image.handle, range,
                             isColour ? VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT
                                      : VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
                             isColour ? VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT

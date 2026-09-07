@@ -109,7 +109,7 @@ LightEntry EntryFor(const LightState& light) noexcept {
     const bool positioned = light.kind != LightKind::Directional;
 
     entry.direction = glm::vec4{light.direction, positioned ? 1.0f : 0.0f};
-    entry.color = glm::vec4{light.color, 0.0f};
+    entry.color = glm::vec4{light.color, light.castsShadow ? 1.0f : 0.0f};
     entry.position = glm::vec4{light.position, light.range};
 
     // A point light accepts every direction, and that is a cone of -1 rather than a
@@ -436,7 +436,8 @@ static bool CheckPassOrder(const RenderPassDesc* const passes[],
         for (uint32_t i = 0; i < kMaxAttachments
                              && pass.attachments[i].resource != nullptr; ++i) {
             const Attachment& a = pass.attachments[i];
-            if (a.load == VK_ATTACHMENT_LOAD_OP_LOAD && !wasProduced(a.resource)) {
+            const TextureDesc* loaded = a.whole != nullptr ? a.whole : a.resource;
+            if (a.load == VK_ATTACHMENT_LOAD_OP_LOAD && !wasProduced(loaded)) {
                 LOG("[render] pass %u loads attachment %u, which no earlier pass"
                     " produced\n", p, i);
                 ok = false;
@@ -446,7 +447,12 @@ static bool CheckPassOrder(const RenderPassDesc* const passes[],
         for (uint32_t i = 0; i < kMaxAttachments
                              && pass.attachments[i].resource != nullptr; ++i) {
             const Attachment& a = pass.attachments[i];
-            if (a.store == VK_ATTACHMENT_STORE_OP_STORE) { produce(a.resource); }
+            // What a later pass could read, which for a slice is the thing it is a
+            // slice of: nothing samples one layer of a shadow array, it samples the
+            // array and picks the layer.
+            if (a.store == VK_ATTACHMENT_STORE_OP_STORE) {
+                produce(a.whole != nullptr ? a.whole : a.resource);
+            }
             produce(a.resolve.target);
         }
     }
@@ -458,10 +464,11 @@ static bool CheckPassOrder(const RenderPassDesc* const passes[],
         for (uint32_t i = 0; i < kMaxAttachments
                              && pass.attachments[i].resource != nullptr; ++i) {
             const Attachment& a = pass.attachments[i];
+            const TextureDesc* stored = a.whole != nullptr ? a.whole : a.resource;
             const TextureDesc* out = a.resolve.target != nullptr
                                    ? a.resolve.target
                                    : (a.store == VK_ATTACHMENT_STORE_OP_STORE
-                                          ? a.resource : nullptr);
+                                          ? stored : nullptr);
             if (out == nullptr) { continue; }
 
             bool read = false;
@@ -490,7 +497,7 @@ static bool CheckPassOrder(const RenderPassDesc* const passes[],
 }
 
 bool RecordFrame(const FrameSlot& slot,
-                 const ShadowPass& shadow,
+                 const ShadowPass& shadow, uint32_t shadowCasters,
                  const SkyPass& skyForward, const SkyPass& skyDeferred,
                  const ScenePass& scene,
                  const GeometryPass& geometry, const LightingPass& lighting,
@@ -549,7 +556,7 @@ bool RecordFrame(const FrameSlot& slot,
         }
     }
 
-    RecordShadowPass(slot, shadow, draws);
+    RecordShadowPass(slot, shadow, draws, shadowCasters);
 
     // The one branch in a frame. Everything either side of it is the same call with
     // the same arguments, which is the point: what deferred changes is here and

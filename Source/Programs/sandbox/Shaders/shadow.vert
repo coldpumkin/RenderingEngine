@@ -32,18 +32,31 @@ layout(location = 0) in vec3 inPosition;
 // anything, and two layouts naming one buffer is what a descriptor already is.
 //
 // Contract: matches ShadowUniform in Passes.h.
-layout(set = 0, binding = 0) uniform Shadow {
+// Contract: matches ShadowUniform in Passes.h, kMaxLights included.
+struct ShadowEntry {
     mat4 lightView;
     mat4 lightProj;
+};
+
+layout(set = 0, binding = 0) uniform Shadow {
+    ShadowEntry lights[4];
 } shadow;
 
 // Contract: the first field of PushConstants in Passes.h. A stage may declare part of
 //           a block, but the offsets of what it declares have to match -- which is why
 //           model is first in both this file and scene.vert.
+// One block, because a stage may have only one -- but two rates inside it, and the two
+// are written by separate vkCmdPushConstants calls: the model matrix once per draw at
+// offset 0, and which map this is once per pass at offset 64.
+//
+// Contract: model matches the first member of PushConstants in Passes.h, light matches
+//           ShadowWhich at offset 64.
 layout(push_constant) uniform Push {
     mat4 model;
+    int light;
 } pc;
 
 void main() {
-    gl_Position = shadow.lightProj * (shadow.lightView * (pc.model * vec4(inPosition, 1.0)));
+    const ShadowEntry entry = shadow.lights[pc.light];
+    gl_Position = entry.lightProj * (entry.lightView * (pc.model * vec4(inPosition, 1.0)));
 }

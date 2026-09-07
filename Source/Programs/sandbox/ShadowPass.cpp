@@ -10,9 +10,16 @@ TextureDesc MakeShadowTarget(const TargetCapabilities& caps) noexcept {
     const VkExtent2D extent{kShadowResolution, kShadowResolution};
 
     // caps.samples goes unread on purpose -- see the header.
-    return TextureDesc{extent, caps.depthFormat, VK_SAMPLE_COUNT_1_BIT,
-                       VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
-                           | VK_IMAGE_USAGE_SAMPLED_BIT};
+    TextureDesc desc{extent, caps.depthFormat, VK_SAMPLE_COUNT_1_BIT,
+                     VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
+                         | VK_IMAGE_USAGE_SAMPLED_BIT};
+
+    // One layer per light rather than one image per light: they are the same size and
+    // the same format, and a shader that shades light i wants to sample layer i without
+    // the binding changing. An array is what "the same thing, N of them" is.
+    desc.kind = TextureKind::Texture2DArray;
+    desc.arrayLayers = kMaxLights;
+    return desc;
 }
 
 bool CreateShadowPass(const Descriptors& descriptors,
@@ -33,7 +40,15 @@ bool CreateShadowPass(const Descriptors& descriptors,
     out->mesh = &mesh;
     out->pipeline = &pipeline;
 
-    out->pass.attachments[0].resource = &mapDesc;
+    // A pass draws into one layer, so what it declares is that layer -- a 2D map of the
+    // array's size. The array is what the shading passes sample and is not what this
+    // pass is about.
+    out->layerDesc = SliceDesc(mapDesc);
+    out->pass.attachments[0].resource = &out->layerDesc;
+
+    // And what that layer is a layer of, which is what a later pass samples: nothing
+    // reads one layer of a shadow array, it reads the array and picks.
+    out->pass.attachments[0].whole = &mapDesc;
     out->pass.attachments[0].role = AttachmentRole::Depth;
     out->pass.attachments[0].load = VK_ATTACHMENT_LOAD_OP_CLEAR;
     out->pass.attachments[0].store = VK_ATTACHMENT_STORE_OP_STORE;
@@ -63,6 +78,20 @@ bool CreateShadowPass(const Descriptors& descriptors,
             LOG("[vk] shadow map %u and its pipeline disagree about the formats\n", i);
             return false;
         }
+
+        // One view per layer, kept because a frame draws through them every time. The
+        // cube bakes make theirs and drop them, because those run once.
+        for (uint32_t light = 0; light < kMaxLights; ++light) {
+            ImageViewDesc viewDesc;
+            viewDesc.type = VK_IMAGE_VIEW_TYPE_2D;
+            viewDesc.baseLayer = light;
+            viewDesc.layerCount = 1;
+            if (!CreateImageView(*descriptors.dev, frame.depth->image.handle,
+                                 mapDesc.format, mapDesc.samples, mapDesc.usage,
+                                 viewDesc, &frame.layers[light])) {
+                return false;
+            }
+        }
     }
 
     VkDescriptorSet sets[kFramesInFlight]{};
@@ -87,64 +116,73 @@ bool CreateShadowPass(const Descriptors& descriptors,
 // One mesh for every item: the spans in items index into it. A second mesh means
 // another BindVertexBuffers, which is why the bind sits above the loop and not in it.
 void RecordShadowPass(const FrameSlot& slot, const ShadowPass& shadow,
-                      const DrawList& draws) noexcept {
+                      const DrawList& draws, uint32_t casters) noexcept {
     const VolkDeviceTable& vk = slot.dev->table;
     VkCommandBuffer cmd = slot.cmd;
     const ShadowPass::PerFrame& frame = shadow.frames[slot.index];
     const VkExtent2D extent = frame.depth->desc.extent;
+    const VkRect2D area{{0, 0}, extent};
 
-    // The one image this pass draws into, and everything that happens to it.
-    //
-    // loadOp CLEAR: the last frame's map is spent, and the image was left
-    // SHADER_READ_ONLY by the frame before -- discarding that is what CLEAR means here.
-    // storeOp STORE, unlike the scene pass's depth: this one is the product.
-    // One attachment and no colour, the way the pipeline was compiled -- from a
-    // fragment stage that declares no outputs. TOP_OF_PIPE because nothing outside this
-    // command buffer holds the map.
-    const AttachmentView views[] = {TargetOf(*frame.depth)};
-    if (!BeginPass(vk, cmd, shadow.pass, views, nullptr,
-                   VkRect2D{{0, 0}, extent}, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT)) {
-        return;
-    }
-
-    // The layout comes from the pipeline that is about to be bound, not from a program
-    // the pass holds. What a draw receives -- which sets, which push range -- is the
-    // pipeline's fact; a pass is a group of pipelines that agree about attachments,
-    // and Vulkan asks for nothing more than that of the group.
     const Pipeline& pipeline = *shadow.pipeline;
     const VkPipelineLayout layout = pipeline.program->layout;
-
-    // Its own raster state comes with it. What that state is and why is at
-    // MakeShadowPipeline, where the rest of what this pipeline is made of already is.
-    BindPipeline(vk, cmd, pipeline, VkRect2D{{0, 0}, extent});
-    vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                               layout, kFrameSet, 1, &frame.set,
-                               0, nullptr);
-
     const Mesh& mesh = *shadow.mesh;
     const VkDeviceSize offset = 0;
-    vk.vkCmdBindVertexBuffers(cmd, 0, 1, &mesh.vertices.handle, &offset);
-    vk.vkCmdBindIndexBuffer(cmd, mesh.indices.handle, 0, mesh.desc.indexType);
 
-    for (uint32_t i = 0; i < draws.itemCount; ++i) {
-        const DrawItem& item = draws.items[i];
-        if (item.material >= draws.materialCount) { continue; }
+    // One map per casting light. The whole of what having several costs here is this
+    // loop and the layer it draws into -- the pass, the pipeline and the draw list are
+    // the same every time round, and only which matrices the vertex stage reads change.
+    for (uint32_t light = 0; light < casters && light < kMaxLights; ++light) {
+        const AttachmentView views[] = {
+            {frame.depth->image.handle, &frame.layers[light], shadow.layerDesc}};
+        if (!BeginPass(vk, cmd, shadow.pass, views, nullptr, area,
+                       VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT)) {
+            return;
+        }
 
-        // The model matrix alone. shadow.vert declares the front of the same block the
-        // scene shaders declare all of, so the offset is shared and the size is not.
+        BindPipeline(vk, cmd, pipeline, area);
+        vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                   layout, kFrameSet, 1, &frame.set, 0, nullptr);
+        vk.vkCmdBindVertexBuffers(cmd, 0, 1, &mesh.vertices.handle, &offset);
+        vk.vkCmdBindIndexBuffer(cmd, mesh.indices.handle, 0, mesh.desc.indexType);
+
+        // Which of the maps this is, at offset 64 -- after the model matrix, because
+        // that one changes per draw and this one per pass.
+        const ShadowWhich which{static_cast<int32_t>(light)};
         vk.vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_VERTEX_BIT,
-                              0, sizeof(item.model), &item.model);
-        vk.vkCmdDrawIndexed(cmd, item.range.count, 1, item.range.firstIndex,
-                            item.vertexOffset, 0);
+                              sizeof(glm::mat4), sizeof(which), &which);
+
+        for (uint32_t i = 0; i < draws.itemCount; ++i) {
+            const DrawItem& item = draws.items[i];
+            if (item.material >= draws.materialCount) { continue; }
+            vk.vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_VERTEX_BIT,
+                                  0, sizeof(item.model), &item.model);
+            vk.vkCmdDrawIndexed(cmd, item.range.count, 1, item.range.firstIndex,
+                                item.vertexOffset, 0);
+        }
+        vk.vkCmdEndRendering(cmd);
+
+        // This layer, not the array. The ones no light drew were never moved out of
+        // UNDEFINED, and a handover naming them would claim they are in a layout they
+        // have never been in.
+        RecordSampledHandover(vk, cmd, *frame.depth, AttachmentRole::Depth,
+                              OneLayer(VK_IMAGE_ASPECT_DEPTH_BIT, light, 0));
     }
 
-    vk.vkCmdEndRendering(cmd);
-
-    // Handed over here rather than at the top of the scene pass. The pass that wrote
-    // an image is what knows when it stopped writing, and this keeps the scene pass
-    // from having to name a pass it only reads through a descriptor.
+    // And the layers nothing drew, moved for a reason that is not about their contents.
     //
-    // The role is all this says. Where a depth attachment stops being written and what
-    // layout it is left in follow from it, in one place rather than here.
-    RecordSampledHandover(vk, cmd, *frame.depth, AttachmentRole::Depth);
+    // **A descriptor binds a view and the view is the whole array**, so every layer it
+    // covers has to be in the layout the binding claims -- including the ones no light
+    // used and no shader reads. UNDEFINED as the old layout is what says their contents
+    // are worth nothing, which is true: nothing has ever been written there.
+    const uint32_t drawn = casters < kMaxLights ? casters : kMaxLights;
+    if (drawn < kMaxLights) {
+        const VkImageSubresourceRange rest{VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1,
+                                           drawn, kMaxLights - drawn};
+        RecordLayoutTransition(vk, cmd, frame.depth->image.handle, rest,
+                               VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                               VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                               VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                               VK_IMAGE_LAYOUT_UNDEFINED,
+                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    }
 }

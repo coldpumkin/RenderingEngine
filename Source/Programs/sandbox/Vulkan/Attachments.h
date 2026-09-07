@@ -57,6 +57,17 @@ struct ResolveUse {
 // for it is BeginPass's views[].
 struct Attachment {
     const TextureDesc* resource = nullptr;
+
+    // What this is a slice of, when it is one. nullptr means resource is the whole
+    // thing, which is every attachment that is not one layer of an array or one level
+    // of a chain.
+    //
+    // **Two identities, because a slice has two.** resource is what this pass draws
+    // into and what its declaration is checked against; whole is what a later pass
+    // reads, because nothing samples one layer of a shadow map array -- it samples the
+    // array and picks the layer. Without this the frame graph sees a producer and a
+    // consumer naming different things, which it did, correctly.
+    const TextureDesc* whole = nullptr;
     AttachmentRole role = AttachmentRole::Color;
     VkAttachmentLoadOp load = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     VkAttachmentStoreOp store = VK_ATTACHMENT_STORE_OP_STORE;
@@ -225,8 +236,12 @@ bool BeginPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
 //
 // Contract: produced was written as an attachment of that role earlier in this command
 //           buffer. CheckPassOrder is what says an earlier pass produced it at all.
+// range says how much of it was written. The whole image for something drawn in one
+// pass; one layer where a pass fills an array a layer at a time, because a layer nobody
+// drew is not in the layout this claims to be moving from.
 void RecordSampledHandover(const VolkDeviceTable& vk, VkCommandBuffer cmd,
-                           const Texture& produced, AttachmentRole role) noexcept;
+                           const Texture& produced, AttachmentRole role,
+                           const VkImageSubresourceRange& range) noexcept;
 
 // Effect: appends the barrier that hands an attachment on to a pass that loads it
 //

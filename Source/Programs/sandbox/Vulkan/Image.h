@@ -118,7 +118,7 @@ VkFormatFeatureFlags RequiredFormatFeatures(VkImageUsageFlags usage) noexcept;
 // A cube is six layers addressed by a direction, and saying so here makes a cube of
 // five faces unwriteable. Nothing here is 3D or an array yet; both are one more value
 // and a depth field on the day something wants them.
-enum class TextureKind { Texture2D, Cube };
+enum class TextureKind { Texture2D, Texture2DArray, Cube };
 
 struct TextureDesc {
     VkExtent2D extent{};
@@ -132,11 +132,25 @@ struct TextureDesc {
     // prefilter is the first thing that wants more, and it draws into them one at a
     // time -- which is what ImageViewDesc::baseMip has been waiting for.
     uint32_t mipLevels = 1;
+
+    // **Read only when the kind is Texture2DArray.** A cube is six by definition and a
+    // plain 2D is one, so for those two this is not a choice and saying it would make a
+    // cube of five faces writeable. An array's length is a choice, which is why the
+    // field exists at all and why it belongs to one kind.
+    uint32_t arrayLayers = 1;
 };
 
-// Output: how many array layers a texture of this kind has
-inline uint32_t LayersOf(TextureKind kind) noexcept {
-    return kind == TextureKind::Cube ? 6u : 1u;
+// Output: how many array layers this texture has
+//
+// Six for a cube because that is what a cube is, one for a plain 2D, and whatever was
+// asked for only where the number is a decision.
+inline uint32_t LayersOf(const TextureDesc& desc) noexcept {
+    switch (desc.kind) {
+        case TextureKind::Cube:           return 6u;
+        case TextureKind::Texture2DArray: return desc.arrayLayers > 0 ? desc.arrayLayers
+                                                                      : 1u;
+        default:                          return 1u;
+    }
 }
 
 // Output: the desc of one 2D slice of a texture -- one cube face, one array layer
@@ -148,6 +162,7 @@ inline TextureDesc SliceDesc(const TextureDesc& whole) noexcept {
     TextureDesc slice = whole;
     slice.kind = TextureKind::Texture2D;
     slice.mipLevels = 1;
+    slice.arrayLayers = 1;
     return slice;
 }
 
@@ -168,13 +183,17 @@ inline TextureDesc SliceDesc(const TextureDesc& whole) noexcept {
 // worth one call.
 inline bool SameTextureDesc(const TextureDesc& a, const TextureDesc& b) noexcept {
     return a.format == b.format && a.samples == b.samples && a.usage == b.usage
-        && a.kind == b.kind && a.mipLevels == b.mipLevels;
+        && a.kind == b.kind && a.mipLevels == b.mipLevels
+        && LayersOf(a) == LayersOf(b);
 }
 
 // Output: the view type that reaches the whole of a texture of this kind
 inline VkImageViewType ViewTypeOf(TextureKind kind) noexcept {
-    return kind == TextureKind::Cube ? VK_IMAGE_VIEW_TYPE_CUBE
-                                     : VK_IMAGE_VIEW_TYPE_2D;
+    switch (kind) {
+        case TextureKind::Cube:           return VK_IMAGE_VIEW_TYPE_CUBE;
+        case TextureKind::Texture2DArray: return VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+        default:                          return VK_IMAGE_VIEW_TYPE_2D;
+    }
 }
 
 

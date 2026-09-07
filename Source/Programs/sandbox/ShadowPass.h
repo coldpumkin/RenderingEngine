@@ -25,6 +25,11 @@
 // decision here rather than an argument main forgot to pass.
 //
 // SAMPLED because the scene pass reads it -- the second of the two edges.
+// How many of the frame's lights get a map
+//
+// All of them that can have one. A point light cannot: a 2D map is one direction and a
+// point light has every direction, which is a cube and six passes rather than a layer.
+// So the count is kMaxLights and RecordShadowPass draws the ones that can.
 TextureDesc MakeShadowTarget(const TargetCapabilities& caps) noexcept;
 
 // The first pass here with no colour attachment. Its product is a depth image the
@@ -34,6 +39,10 @@ TextureDesc MakeShadowTarget(const TargetCapabilities& caps) noexcept;
 // Its own set, but not its own viewpoint: the matrix it draws with is a FrameShadow,
 // handed in, and scene.frag reads that same buffer.
 struct ShadowPass {
+    // What one layer is: a 2D map of the array's size. Held rather than made on the
+    // spot because the pass declaration points at it and has to outlive the call.
+    TextureDesc layerDesc;
+
     const Mesh* mesh = nullptr;
 
     // No program: a pipeline records the one it was built from, and what a draw
@@ -48,6 +57,9 @@ struct ShadowPass {
     // Per frame in flight for the reason the scene's attachments are: the GPU still
     // reads the previous frame's map while the next is drawn.
     struct PerFrame {
+        // One view per layer, because a pass draws into one map at a time. The whole
+        // array is what the shading passes sample; these are what this one writes.
+        ImageView layers[kMaxLights];
         // **Borrowed.** main makes it and hands the same array to this pass and to the
         // scene pass, so the one image has one name that both can say.
         //
@@ -86,6 +98,10 @@ bool CreateShadowPass(const Descriptors& descriptors,
 // with is in the set, and every draw here reads it.
 //
 // Depth is the whole product, so nothing binds a material or sets a cull mode.
+// Effect: draws one map per casting light, into that light's layer of the array
+//
+// casters is how many of the frame's lights have one, which the caller knows because it
+// is the caller that decided. A point light is not among them: its map would be a cube.
 void RecordShadowPass(const FrameSlot& slot, const ShadowPass& shadow,
-                      const DrawList& draws) noexcept;
+                      const DrawList& draws, uint32_t casters) noexcept;
 

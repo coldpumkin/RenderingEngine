@@ -97,7 +97,8 @@ bool BakeIrradianceCube(const VulkanDevice& dev, const Commands& commands,
     if (!BakeCubeFaces(dev, cmd, pipeline, set, glm::vec3{0.0f}, irradiance)) {
         return false;
     }
-    RecordSampledHandover(dev.table, cmd, *irradiance, AttachmentRole::Color);
+    RecordSampledHandover(dev.table, cmd, *irradiance, AttachmentRole::Color,
+                          WholeImage(VK_IMAGE_ASPECT_COLOR_BIT));
     if (!EndOneShotAndWait(dev, commands, cmd, "irradiance bake")) { return false; }
 
     LOG("[render] irradiance cube baked (%ux%u, 6 faces)\n",
@@ -191,7 +192,8 @@ bool BakePrefilterCube(const VulkanDevice& dev, const Commands& commands,
         }
     }
 
-    RecordSampledHandover(vk, cmd, *prefiltered, AttachmentRole::Color);
+    RecordSampledHandover(vk, cmd, *prefiltered, AttachmentRole::Color,
+                          WholeImage(VK_IMAGE_ASPECT_COLOR_BIT));
     if (!EndOneShotAndWait(dev, commands, cmd, "prefilter bake")) { return false; }
 
     LOG("[render] prefiltered cube baked (%ux%u, %u levels)\n",
@@ -222,7 +224,8 @@ bool BakeBrdfLut(const VulkanDevice& dev, const Commands& commands,
     vk.vkCmdDraw(cmd, 3, 1, 0, 0);
     vk.vkCmdEndRendering(cmd);
 
-    RecordSampledHandover(vk, cmd, *lut, AttachmentRole::Color);
+    RecordSampledHandover(vk, cmd, *lut, AttachmentRole::Color,
+                          WholeImage(VK_IMAGE_ASPECT_COLOR_BIT));
     if (!EndOneShotAndWait(dev, commands, cmd, "brdf lut bake")) { return false; }
 
     LOG("[render] brdf table baked (%ux%u)\n", lut->desc.extent.width,
@@ -239,7 +242,8 @@ bool BakeSkyCube(const VulkanDevice& dev, const Commands& commands,
     if (!BakeCubeFaces(dev, cmd, pipeline, VK_NULL_HANDLE, sun, cube)) { return false; }
 
     // Every face at once, because from here the cube is read as one thing.
-    RecordSampledHandover(dev.table, cmd, *cube, AttachmentRole::Color);
+    RecordSampledHandover(dev.table, cmd, *cube, AttachmentRole::Color,
+                          WholeImage(VK_IMAGE_ASPECT_COLOR_BIT));
 
     if (!EndOneShotAndWait(dev, commands, cmd, "sky bake")) { return false; }
 
