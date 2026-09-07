@@ -67,6 +67,9 @@ struct Attachment {
 // Every colour target plus depth and stencil, which are two entries over one image.
 inline constexpr uint32_t kMaxAttachments = kMaxColorTargets + 2;
 
+// A ceiling we impose. The most any pass reads today is four, the g-buffer.
+inline constexpr uint32_t kMaxReads = 8;
+
 // **What one pipeline baked, and nothing a caller writes.** Every field is read off
 // the TextureDescs handed to CreateGraphicsPipeline, which is the description the
 // images themselves are made from.
@@ -147,6 +150,14 @@ AttachmentFormats AttachmentFormatsFor(const TextureDesc* const colour[],
 // pass and its pipeline be compared with one call.
 struct RenderPassDesc {
     Attachment attachments[kMaxAttachments]{};
+
+    // What this pass reads that another pass produced, as the same kind of pointer
+    // attachments[].resource is -- so an edge is one comparison and needs no name of
+    // its own. The first null ends the list.
+    //
+    // Not every read: a uniform buffer the CPU fills every frame is not something a
+    // pass waits for. What is here is what makes one pass's order depend on another's.
+    const TextureDesc* reads[kMaxReads]{};
 
     uint32_t layerCount = 1;
     uint32_t viewMask = 0;             // needs multiview, which we do not ask for

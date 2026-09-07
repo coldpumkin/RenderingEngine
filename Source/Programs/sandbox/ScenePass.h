@@ -197,10 +197,7 @@ bool CreateScenePass(const Descriptors& descriptors,
                      const SceneTargets* const targets[kFramesInFlight],
                      const Mesh& mesh,
                      const Pipeline& pipeline, const Pipeline& wirePipeline,
-                     const PassInput& shadowMap,
-                     const FrameCamera* cameras, const FrameLight* lights,
-                     const FrameShadow* shadows,
-                     const FrameViewOptions* views, ScenePass* out) noexcept;
+                     const FrameSetSources& frameSet, ScenePass* out) noexcept;
 
 
 // Input:  the pass, the slot, this frame's list, what the panel decided, and where to

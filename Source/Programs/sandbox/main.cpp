@@ -928,12 +928,16 @@ int main() {
         sceneColorInput.frames[i] = &renderer.sceneTargets[i].resolve;
     }
 
+    // What set 0 holds, said once. Each program takes the subset it declared, so the
+    // geometry pass gets the same value and reflection leaves the three it does not
+    // read as holes.
+    const FrameSetSources frameSet{renderer.cameras, renderer.lights, renderer.shadows,
+                                   shadowMapInput, renderer.viewOptions};
+
     if (!CreateScenePass(renderer.descriptors, sceneTargetDescs, sceneTargets,
                          renderer.mesh, renderer.pipelines.scene,
                          renderer.pipelines.sceneWire,
-                         shadowMapInput, renderer.cameras, renderer.lights,
-                         renderer.shadows, renderer.viewOptions,
-                         &renderer.scenePass)) { return 1; }
+                         frameSet, &renderer.scenePass)) { return 1; }
     if (!CreatePostProcessPass(renderer.descriptors, sceneColorInput, swapchainTarget,
                                renderer.pipelines.post,
                                &renderer.postPass)) {
@@ -954,17 +958,14 @@ int main() {
     if (!CreateGeometryPass(renderer.descriptors, gbufferDescs, gbuffers,
                             renderer.mesh, renderer.pipelines.geometry,
                             renderer.pipelines.geometryWire,
-                            renderer.cameras, renderer.viewOptions,
-                            &renderer.geometryPass)) { return 1; }
+                            frameSet, &renderer.geometryPass)) { return 1; }
 
     // sceneColor is the scene pass's resolve, and this pass draws into it rather than
     // reading it. Only one of the two ever writes it in a frame.
     if (!CreateLightingPass(renderer.descriptors, gbufferDescs, gbuffers,
                             sceneTargetDescs.resolve, sceneColor,
                             renderer.pipelines.lighting,
-                            shadowMapInput, renderer.cameras, renderer.lights,
-                            renderer.shadows, renderer.viewOptions,
-                            &renderer.lightingPass)) { return 1; }
+                            frameSet, &renderer.lightingPass)) { return 1; }
 
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
         if (!CreateFrameSlot(dev, commands, i, &renderer.slots[i])) { return 1; }

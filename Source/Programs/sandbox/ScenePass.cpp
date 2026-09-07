@@ -69,10 +69,7 @@ bool CreateScenePass(const Descriptors& descriptors,
                      const SceneTargets* const targets[kFramesInFlight],
                      const Mesh& mesh,
                      const Pipeline& pipeline, const Pipeline& wirePipeline,
-                     const PassInput& shadowMap,
-                     const FrameCamera* cameras, const FrameLight* lights,
-                     const FrameShadow* shadows,
-                     const FrameViewOptions* views, ScenePass* out) noexcept {
+                     const FrameSetSources& frameSet, ScenePass* out) noexcept {
     // The program is the pipeline's, not a second argument beside it. A pipeline
     // records what it was built from, and taking both let a caller hand over a pair
     // that never met -- which is what the check below used to be for.
@@ -146,12 +143,6 @@ bool CreateScenePass(const Descriptors& descriptors,
     // The one image this pass reads. Nothing looked at it until 09-06: the argument
     // was named shadowMaps and that was the whole of what said it held shadow maps.
     // A colour image of the right shape would have gone in and drawn a wrong picture.
-    for (uint32_t i = 0; i < kFramesInFlight; ++i) {
-        if (!CheckSampledInput(shadowMap.frames[i]->desc, "shadow map", true)) {
-            return false;
-        }
-    }
-
     // Drawn in one call, then handed out: vkAllocateDescriptorSets writes a flat
     // array and PerFrame is not one.
     VkDescriptorSet sets[kFramesInFlight]{};
@@ -179,15 +170,9 @@ bool CreateScenePass(const Descriptors& descriptors,
         // here that runs that direction. It is in this set for the same reason the
         // others are: one per frame in flight, and that is the whole rule for which set
         // a binding belongs in.
-        const BindingValue values[] = {
-            {nullptr, &cameras[i].buffer},
-            {nullptr, &lights[i].buffer},
-            {nullptr, &shadows[i].buffer},
-            {&shadowMap.frames[i]->view},
-            {nullptr, &views[i].buffer},
-        };
-        UpdateSet(descriptors, program.setLayouts[kFrameSet], frame.set,
-                  values, static_cast<uint32_t>(std::size(values)));
+        if (!FillFrameSet(descriptors, program, frame.set, frameSet, i, &out->pass)) {
+            return false;
+        }
     }
     return true;
 }

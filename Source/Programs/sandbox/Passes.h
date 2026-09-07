@@ -821,6 +821,48 @@ struct PassInput {
     const Texture* frames[kFramesInFlight]{};
 };
 
+// Everything set 0 holds, declared once instead of spelled out per pass
+//
+// **The whole of it goes to every pass that uses the frame set, and each program takes
+// the subset it declared.** That is the same relation a VertexLayout has with a vertex
+// stage: the CPU side says what the resource holds and the shader reads part of it.
+// Reflection turns the unread bindings into holes and UpdateSet skips them, so the
+// three empty entries the geometry pass used to write by hand were mirroring a layout
+// that already knew.
+//
+// Written in three files before this, positionally -- binding 0 is the camera, 1 the
+// light, and so on -- with nothing but comments keeping the three in step.
+//
+// shadowMap is the one member of a different kind. The other four are the renderer's
+// own buffers, filled by a memcpy each frame; this one is another pass's product, and
+// so the only member that makes an edge.
+struct FrameSetSources {
+    const FrameCamera* cameras = nullptr;         // binding 0
+    const FrameLight* lights = nullptr;           // binding 1
+    const FrameShadow* shadows = nullptr;         // binding 2
+    PassInput shadowMap;                          // binding 3
+    const FrameViewOptions* views = nullptr;      // binding 4
+};
+
+// Effect: writes this frame's set 0, and declares in desc the pass outputs this
+//         program actually reads
+//
+// **What is read is the program's answer, not this function's.** A binding the shader
+// never mentions is a hole in the layout, so the geometry pass gets no shadow map and
+// no edge for one -- and neither statement is written down twice.
+bool FillFrameSet(const Descriptors& descriptors, const ShaderProgram& program,
+                  VkDescriptorSet set, const FrameSetSources& sources, uint32_t frame,
+                  RenderPassDesc* desc) noexcept;
+
+// Effect: checks every frame's image is the kind this pass reads, then records the
+//         resource in desc->reads[] once
+//
+// what and wantDepth are the pass's knowledge rather than its caller's, so they are
+// arguments here. This is where CheckSampledInput's job moved: the check is the same
+// and the identity it used to discard is kept.
+bool DeclareRead(const PassInput& input, const char* what, bool wantDepth,
+                 RenderPassDesc* desc) noexcept;
+
 struct DrawStats {
     uint32_t draws = 0;
     uint32_t materialBinds = 0;

@@ -32,10 +32,8 @@ bool CreateLightingPass(const Descriptors& descriptors,
                         const TextureDesc& targetDesc,
                         const Texture* const target[kFramesInFlight],
                         const Pipeline& pipeline,
-                        const PassInput& shadowMap,
-                        const FrameCamera* cameras, const FrameLight* lights,
-                        const FrameShadow* shadows,
-                        const FrameViewOptions* views, LightingPass* out) noexcept {
+                        const FrameSetSources& frameSet,
+                        LightingPass* out) noexcept {
     if (pipeline.program == nullptr) {
         LOG("[vk] a pass was given a pipeline that names no program\n");
         return false;
@@ -61,21 +59,32 @@ bool CreateLightingPass(const Descriptors& descriptors,
     // which is the whole shape of this pass: three colours describing a surface and a
     // depth the position is rebuilt from. Reading that one as a colour would be legal
     // Vulkan and a wrong picture, so the kind is stated here rather than assumed.
+    //
+    // Each one is its resource and the images that stand for it per frame. DeclareRead
+    // checks the kind the way this used to and keeps the identity, which is what the
+    // frame graph is made of.
+    PassInput albedo{&sourceDescs.albedo, {}};
+    PassInput normal{&sourceDescs.normal, {}};
+    PassInput material{&sourceDescs.material, {}};
+    PassInput depth{&sourceDescs.depth, {}};
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
-        if (!CheckSampledInput(source[i]->albedo.desc, "g-buffer albedo",
-                               false)
-                || !CheckSampledInput(source[i]->normal.desc, "g-buffer normal",
-                                      false)
-                || !CheckSampledInput(source[i]->material.desc, "g-buffer material",
-                                      false)
-                || !CheckSampledInput(source[i]->depth.desc, "g-buffer depth",
-                                      true)) {
-            return false;
-        }
-        // Every frame draws into an image of the same shape, which is what lets one
-        // RenderPassDesc describe them all -- targets[0] above is frame 0's desc.
-        if (target[i]->desc.format != target[0]->desc.format
-                || target[i]->desc.samples != target[0]->desc.samples) {
+        albedo.frames[i] = &source[i]->albedo;
+        normal.frames[i] = &source[i]->normal;
+        material.frames[i] = &source[i]->material;
+        depth.frames[i] = &source[i]->depth;
+    }
+    if (!DeclareRead(albedo, "g-buffer albedo", false, &out->pass)
+            || !DeclareRead(normal, "g-buffer normal", false, &out->pass)
+            || !DeclareRead(material, "g-buffer material", false, &out->pass)
+            || !DeclareRead(depth, "g-buffer depth", true, &out->pass)) {
+        return false;
+    }
+
+    // Every frame draws into an image of the same shape, which is what lets one
+    // RenderPassDesc describe them all.
+    for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+        if (target[i]->desc.format != targetDesc.format
+                || target[i]->desc.samples != targetDesc.samples) {
             LOG("[vk] the lighting pass's targets are not all the same kind\n");
             return false;
         }
@@ -95,15 +104,11 @@ bool CreateLightingPass(const Descriptors& descriptors,
         // Set 0, the same five the scene pass fills in the same order. That they are
         // the same five is not a coincidence to be preserved by hand -- lighting.frag
         // declares them so that the forward and the deferred lighting read one frame.
-        const BindingValue frame[] = {
-            {nullptr, &cameras[i].buffer},
-            {nullptr, &lights[i].buffer},
-            {nullptr, &shadows[i].buffer},
-            {&shadowMap.frames[i]->view},
-            {nullptr, &views[i].buffer},
-        };
-        UpdateSet(descriptors, program.setLayouts[kFrameSet], out->frameSets[i],
-                  frame, static_cast<uint32_t>(std::size(frame)));
+
+        if (!FillFrameSet(descriptors, program, out->frameSets[i], frameSet, i,
+                          &out->pass)) {
+            return false;
+        }
 
         // Set 1, written in the same step as the pointer above it so the two cannot
         // come to disagree about which g-buffer frame i reads.

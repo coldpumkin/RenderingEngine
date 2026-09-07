@@ -249,6 +249,77 @@ void SetDrawTransform(DrawItem* item, const Transform& transform) noexcept {
     item->normal[2] = glm::vec4{normal[2], 0.0f};
 }
 
+bool DeclareRead(const PassInput& input, const char* what, bool wantDepth,
+                 RenderPassDesc* desc) noexcept {
+    if (input.resource == nullptr) {
+        LOG("[vk] the %s was declared as a read with no resource\n", what);
+        return false;
+    }
+
+    // Every frame's image against the one thing they are all supposed to be. Nothing
+    // else would notice a frame wired to the wrong texture: the descriptor write takes
+    // whatever view it is handed, and the graph would then be about a resource one of
+    // the frames is not.
+    for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+        if (input.frames[i] == nullptr) {
+            LOG("[vk] the %s has no image for frame %u\n", what, i);
+            return false;
+        }
+        const TextureDesc& got = input.frames[i]->desc;
+        if (got.format != input.resource->format || got.samples != input.resource->samples
+                || got.usage != input.resource->usage) {
+            LOG("[vk] the %s's frame %u describes something else than the resource it"
+                " is declared as (format %d/%d)\n", what, i,
+                static_cast<int>(got.format), static_cast<int>(input.resource->format));
+            return false;
+        }
+    }
+
+    if (!CheckSampledInput(*input.resource, what, wantDepth)) { return false; }
+
+    // Once. A pass may read one image through two bindings, which is legal and would
+    // otherwise be two edges where there is one.
+    uint32_t count = 0;
+    while (count < kMaxReads && desc->reads[count] != nullptr) {
+        if (desc->reads[count] == input.resource) { return true; }
+        count += 1;
+    }
+    if (count == kMaxReads) {
+        LOG("[vk] a pass reads more than %u resources\n", kMaxReads);
+        return false;
+    }
+    desc->reads[count] = input.resource;
+    return true;
+}
+
+bool FillFrameSet(const Descriptors& descriptors, const ShaderProgram& program,
+                  VkDescriptorSet set, const FrameSetSources& sources, uint32_t frame,
+                  RenderPassDesc* desc) noexcept {
+    const DescriptorLayout& layout = program.setLayouts[kFrameSet];
+
+    // Every binding of the set, whether or not this program reads it. UpdateSet skips
+    // the ones reflection left as holes, so a program that reads two of the five is
+    // written the same way as one that reads all of them.
+    const BindingValue values[] = {
+        {nullptr, &sources.cameras[frame].buffer},
+        {nullptr, &sources.lights[frame].buffer},
+        {nullptr, &sources.shadows[frame].buffer},
+        {&sources.shadowMap.frames[frame]->view},
+        {nullptr, &sources.views[frame].buffer},
+    };
+    UpdateSet(descriptors, layout, set, values, static_cast<uint32_t>(std::size(values)));
+
+    // The one binding here that another pass produces. Declared only when this program
+    // reads it -- a hole means the shader never mentioned it, which is the shader's
+    // answer to the question rather than one made here.
+    constexpr uint32_t kShadowMapBinding = 3;
+    if (kShadowMapBinding < layout.bindingCount
+            && layout.types[kShadowMapBinding] != 0) {
+        return DeclareRead(sources.shadowMap, "shadow map", /*wantDepth*/ true, desc);
+    }
+    return true;
+}
+
 void UploadFrameValues(const FrameSlot& slot,
                        const FrameCamera* cameras, const FrameLight* lights,
                        const FrameShadow* shadows, FrameViewOptions* views,
@@ -273,6 +344,108 @@ void UploadFrameValues(const FrameSlot& slot,
 
     const FrameShadow& shadow = shadows[slot.index];
     std::memcpy(shadow.buffer.mapped, &shadow.value, sizeof(shadow.value));
+}
+
+// Output: whether the order these passes are recorded in agrees with what they declared
+//
+// **The order stays where it is -- in the lines below -- and this reads it.** Nothing
+// here schedules anything; it walks the chain the recorder is about to walk and asks
+// whether each pass can have what it says it needs by the time it runs.
+//
+// Three questions, and all three were unanswerable until a pass declared its reads:
+//
+//   a read with no earlier producer          nothing wrote what this samples
+//   loadOp LOAD with no earlier producer     loading what nobody put there
+//   a stored output nothing reads            written for no one
+//
+// The last is exempt for the final pass, whose output is the frame itself.
+//
+// Frame-independent: every input is a declaration, and none of it changes between
+// frames. It lives here because which passes make up a path is this function's branch
+// and nowhere else -- writing the chain again outside would be a second copy of the
+// one thing RecordFrame owns. The day that membership becomes data, this moves out.
+static bool CheckPassOrder(const RenderPassDesc* const passes[],
+                           uint32_t count) noexcept {
+    const TextureDesc* produced[kMaxAttachments * 8]{};
+    uint32_t producedCount = 0;
+    bool ok = true;
+
+    const auto wasProduced = [&](const TextureDesc* r) {
+        for (uint32_t k = 0; k < producedCount; ++k) {
+            if (produced[k] == r) { return true; }
+        }
+        return false;
+    };
+    const auto produce = [&](const TextureDesc* r) {
+        if (r == nullptr || wasProduced(r)) { return; }
+        if (producedCount < static_cast<uint32_t>(std::size(produced))) {
+            produced[producedCount++] = r;
+        }
+    };
+
+    for (uint32_t p = 0; p < count; ++p) {
+        const RenderPassDesc& pass = *passes[p];
+
+        for (uint32_t i = 0; i < kMaxReads && pass.reads[i] != nullptr; ++i) {
+            if (!wasProduced(pass.reads[i])) {
+                LOG("[render] pass %u reads something no earlier pass produced\n", p);
+                ok = false;
+            }
+        }
+        for (uint32_t i = 0; i < kMaxAttachments
+                             && pass.attachments[i].resource != nullptr; ++i) {
+            const Attachment& a = pass.attachments[i];
+            if (a.load == VK_ATTACHMENT_LOAD_OP_LOAD && !wasProduced(a.resource)) {
+                LOG("[render] pass %u loads attachment %u, which no earlier pass"
+                    " produced\n", p, i);
+                ok = false;
+            }
+        }
+
+        for (uint32_t i = 0; i < kMaxAttachments
+                             && pass.attachments[i].resource != nullptr; ++i) {
+            const Attachment& a = pass.attachments[i];
+            if (a.store == VK_ATTACHMENT_STORE_OP_STORE) { produce(a.resource); }
+            produce(a.resolve.target);
+        }
+    }
+
+    // What the last pass leaves is the frame, so only what earlier passes stored has
+    // to find a reader.
+    for (uint32_t p = 0; p + 1 < count; ++p) {
+        const RenderPassDesc& pass = *passes[p];
+        for (uint32_t i = 0; i < kMaxAttachments
+                             && pass.attachments[i].resource != nullptr; ++i) {
+            const Attachment& a = pass.attachments[i];
+            const TextureDesc* out = a.resolve.target != nullptr
+                                   ? a.resolve.target
+                                   : (a.store == VK_ATTACHMENT_STORE_OP_STORE
+                                          ? a.resource : nullptr);
+            if (out == nullptr) { continue; }
+
+            bool read = false;
+            for (uint32_t q = p + 1; q < count && !read; ++q) {
+                for (uint32_t r = 0; r < kMaxReads && passes[q]->reads[r] != nullptr; ++r) {
+                    if (passes[q]->reads[r] == out) { read = true; break; }
+                }
+                for (uint32_t a2 = 0; a2 < kMaxAttachments && !read
+                                      && passes[q]->attachments[a2].resource != nullptr;
+                     ++a2) {
+                    if (passes[q]->attachments[a2].resource == out
+                            && passes[q]->attachments[a2].load
+                                   == VK_ATTACHMENT_LOAD_OP_LOAD) {
+                        read = true;
+                    }
+                }
+            }
+            if (!read) {
+                LOG("[render] pass %u stores attachment %u and nothing after it reads"
+                    " that\n", p, i);
+                ok = false;
+            }
+        }
+    }
+    return ok;
 }
 
 bool RecordFrame(const FrameSlot& slot,
@@ -308,12 +481,36 @@ bool RecordFrame(const FrameSlot& slot,
                                GuiDepthWrite(gui), GuiRasterizerDiscard(gui),
                                GuiCullMode(gui), GuiDepthCompare(gui)};
 
+    // The chain, named once and used twice: walked below, and checked once per path
+    // against what the passes declared.
+    const bool deferred = GuiDeferred(gui);
+    const RenderPassDesc* const forwardChain[] = {
+        &shadow.pass, &scene.pass, &post.pass, &gui.pass};
+    const RenderPassDesc* const deferredChain[] = {
+        &shadow.pass, &geometry.pass, &lighting.pass, &post.pass, &gui.pass};
+
+    static bool checkedForward = false;
+    static bool checkedDeferred = false;
+    if (deferred && !checkedDeferred) {
+        checkedDeferred = true;
+        if (!CheckPassOrder(deferredChain,
+                            static_cast<uint32_t>(std::size(deferredChain)))) {
+            return false;
+        }
+    } else if (!deferred && !checkedForward) {
+        checkedForward = true;
+        if (!CheckPassOrder(forwardChain,
+                            static_cast<uint32_t>(std::size(forwardChain)))) {
+            return false;
+        }
+    }
+
     RecordShadowPass(slot, shadow, draws);
 
     // The one branch in a frame. Everything either side of it is the same call with
     // the same arguments, which is the point: what deferred changes is here and
     // nowhere else in this function.
-    if (GuiDeferred(gui)) {
+    if (deferred) {
         RecordGeometryPass(slot, geometry, draws, raster, stats);
         RecordLightingPass(slot, lighting);
     } else {

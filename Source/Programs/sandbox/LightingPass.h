@@ -77,10 +77,8 @@ bool CreateLightingPass(const Descriptors& descriptors,
                         const TextureDesc& targetDesc,
                         const Texture* const target[kFramesInFlight],
                         const Pipeline& pipeline,
-                        const PassInput& shadowMap,
-                        const FrameCamera* cameras, const FrameLight* lights,
-                        const FrameShadow* shadows,
-                        const FrameViewOptions* views, LightingPass* out) noexcept;
+                        const FrameSetSources& frameSet,
+                        LightingPass* out) noexcept;
 
 // Input:  the pass and the slot
 // Effect: makes this slot's four g-buffer images readable, then draws one triangle

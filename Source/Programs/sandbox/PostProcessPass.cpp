@@ -45,14 +45,11 @@ bool CreatePostProcessPass(const Descriptors& descriptors,
         return false;
     }
 
-    // What it reads, asked the way every reader asks it now. A sampler cannot take a
-    // multisample image, which is the whole reason the scene pass resolves -- and this
-    // used to be that one question alone, written here.
-    for (uint32_t i = 0; i < kFramesInFlight; ++i) {
-        if (!CheckSampledInput(source.frames[i]->desc, "post pass's source",
-                               false)) {
-            return false;
-        }
+    // What it reads. A sampler cannot take a multisample image, which is the whole
+    // reason the scene pass resolves -- and the resource this names is the one both
+    // middles write, which is why nothing here knows which of them ran.
+    if (!DeclareRead(source, "post pass's source", false, &out->pass)) {
+        return false;
     }
 
     if (!AllocateSets(descriptors, program.setLayouts[kFrameSet], kFramesInFlight,

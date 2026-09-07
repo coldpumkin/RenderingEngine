@@ -106,8 +106,8 @@ bool CreateGeometryPass(const Descriptors& descriptors,
                         const GBufferTargets* const targets[kFramesInFlight],
                         const Mesh& mesh,
                         const Pipeline& pipeline, const Pipeline& wirePipeline,
-                        const FrameCamera* cameras,
-                        const FrameViewOptions* views, GeometryPass* out) noexcept;
+                        const FrameSetSources& frameSet,
+                        GeometryPass* out) noexcept;
 
 // Input:  the pass, the slot, this frame's list, what the panel decided, and where to
 //         count what the recording cost

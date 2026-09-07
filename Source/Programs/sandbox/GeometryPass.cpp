@@ -63,8 +63,8 @@ bool CreateGeometryPass(const Descriptors& descriptors,
                         const GBufferTargets* const targets[kFramesInFlight],
                         const Mesh& mesh,
                         const Pipeline& pipeline, const Pipeline& wirePipeline,
-                        const FrameCamera* cameras,
-                        const FrameViewOptions* views, GeometryPass* out) noexcept {
+                        const FrameSetSources& frameSet,
+                        GeometryPass* out) noexcept {
     if (pipeline.program == nullptr) {
         LOG("[vk] a pass was given a pipeline that names no program\n");
         return false;
@@ -135,15 +135,12 @@ bool CreateGeometryPass(const Descriptors& descriptors,
         // skips them -- but the array is still indexed by binding number, which is why
         // the three in the middle are here and empty. Writing only two would put the
         // panel's buffer in the light's slot.
-        const BindingValue values[] = {
-            {nullptr, &cameras[i].buffer},     // 0  camera, read by scene.vert
-            {},                                // 1  light, not read here
-            {},                                // 2  shadow matrix, not read here
-            {},                                // 3  shadow map, not read here
-            {nullptr, &views[i].buffer},       // 4  the panel
-        };
-        UpdateSet(descriptors, program.setLayouts[kFrameSet], frame.set,
-                  values, static_cast<uint32_t>(std::size(values)));
+        // The whole frame set. The three this program does not read are holes in its
+        // layout and UpdateSet steps over them, where they used to be written here as
+        // empty entries mirroring a layout that already knew.
+        if (!FillFrameSet(descriptors, program, frame.set, frameSet, i, &out->pass)) {
+            return false;
+        }
     }
     return true;
 }
