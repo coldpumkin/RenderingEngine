@@ -162,8 +162,9 @@ void RecordGeometryPass(const FrameSlot& slot, const GeometryPass& geometry,
 
     // No resolve to transition ahead of the pass, unlike the scene's: nothing here is
     // multisampled, so every image is an attachment BeginPass moves for itself.
-    const Texture* const views[] = {&targets.albedo, &targets.normal,
-                                    &targets.material, &targets.depth};
+    const AttachmentView views[] = {TargetOf(targets.albedo), TargetOf(targets.normal),
+                                    TargetOf(targets.material),
+                                    TargetOf(targets.depth)};
     if (!BeginPass(vk, cmd, geometry.pass, views, nullptr,
                    VkRect2D{{0, 0}, extent}, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT)) {
         return;

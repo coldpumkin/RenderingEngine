@@ -348,7 +348,7 @@ bool ValidatePassDesc(const RenderPassDesc& desc) noexcept {
 
 bool BeginPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
                const RenderPassDesc& desc,
-               const Texture* const views[], const Texture* const resolves[],
+               const AttachmentView views[], const AttachmentView resolves[],
                VkRect2D area, VkPipelineStageFlags2 waitedStage) noexcept {
     uint32_t count = 0;
     while (count < kMaxAttachments && desc.attachments[count].resource != nullptr) {
@@ -381,7 +381,7 @@ bool BeginPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
             return false;
         }
 
-        if (views[i] == nullptr) {
+        if (views[i].view == nullptr) {
             LOG("[vk] attachment %u has no view\n", i);
             return false;
         }
@@ -391,7 +391,7 @@ bool BeginPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
         // which is not everywhere: two targets of the same format and sample count are
         // still tellable apart only by where they sit.
         const TextureDesc& want = *use.resource;
-        const TextureDesc& got = views[i]->desc;
+        const TextureDesc& got = views[i].desc;
         if (!SameTextureDesc(got, want)) {
             LOG("[vk] attachment %u was handed an image the pass did not declare "
                 "(format %d/%d, samples %d/%d)\n", i,
@@ -430,14 +430,14 @@ bool BeginPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
             isColour ? VK_IMAGE_ASPECT_COLOR_BIT
                      : (use.role == AttachmentRole::Depth ? VK_IMAGE_ASPECT_DEPTH_BIT
                                                           : VK_IMAGE_ASPECT_STENCIL_BIT);
-        if ((views[i]->view.aspect & roleAspect) == 0) {
+        if ((views[i].view->aspect & roleAspect) == 0) {
             LOG("[vk] attachment %u is drawn as aspect 0x%x through a view that exposes"
-                " 0x%x\n", i, roleAspect, views[i]->view.aspect);
+                " 0x%x\n", i, roleAspect, views[i].view->aspect);
             return false;
         }
 
         VkRenderingAttachmentInfo info{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-        info.imageView = views[i]->view.handle;
+        info.imageView = views[i].view->handle;
         info.imageLayout = isColour ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
                                     : VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
         info.loadOp = use.load;
@@ -448,8 +448,8 @@ bool BeginPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
         // are needed and neither implies the other: one desc is a different image every
         // frame in flight, and two descs can describe the same thing.
         if (use.resolve.target != nullptr) {
-            const Texture* into = resolves != nullptr ? resolves[i] : nullptr;
-            if (into == nullptr) {
+            const AttachmentView* into = resolves != nullptr ? &resolves[i] : nullptr;
+            if (into == nullptr || into->view == nullptr) {
                 LOG("[vk] attachment %u resolves and was given nowhere to resolve to\n", i);
                 return false;
             }
@@ -471,7 +471,7 @@ bool BeginPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
             // pass that owned this used to say so in a comment and issue it by hand,
             // because until resolve.target was declared the right field to read it from
             // did not exist.
-            RecordLayoutTransition(vk, cmd, into->image.handle,
+            RecordLayoutTransition(vk, cmd, into->image,
                                    FormatAspects(into->desc.format),
                                    waitedStage, 0,
                                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -480,7 +480,7 @@ bool BeginPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
                                    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
             info.resolveMode = use.resolve.mode;
-            info.resolveImageView = into->view.handle;
+            info.resolveImageView = into->view->handle;
             info.resolveImageLayout = info.imageLayout;
         }
 
@@ -491,7 +491,7 @@ bool BeginPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
             // view's answer -- VUID-VkImageMemoryBarrier2-image-03320 wants both on a
             // combined format while a sampled view over the same image may carry only
             // one. A transition covers the image; a view is a window onto it.
-            RecordAttachmentTransition(vk, cmd, views[i]->image.handle,
+            RecordAttachmentTransition(vk, cmd, views[i].image,
                                        FormatAspects(got.format), info, waitedStage);
         }
 

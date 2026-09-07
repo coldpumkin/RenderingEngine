@@ -209,8 +209,8 @@ void RecordScenePass(const FrameSlot& slot, const ScenePass& scene,
     // resolve rides along beside the colour: vkCmdEndRendering does the averaging, so
     // there is no second pass and no vkCmdResolveImage. TOP_OF_PIPE because nothing
     // outside this command buffer holds any of these images.
-    const Texture* const views[] = {&targets.color, &targets.depth};
-    const Texture* const resolves[] = {&targets.resolve, nullptr};
+    const AttachmentView views[] = {TargetOf(targets.color), TargetOf(targets.depth)};
+    const AttachmentView resolves[] = {TargetOf(targets.resolve), {}};
     if (!BeginPass(vk, cmd, scene.pass, views, resolves,
                    VkRect2D{{0, 0}, extent}, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT)) {
         return;

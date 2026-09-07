@@ -139,6 +139,18 @@ inline uint32_t LayersOf(TextureKind kind) noexcept {
     return kind == TextureKind::Cube ? 6u : 1u;
 }
 
+// Output: the desc of one 2D slice of a texture -- one cube face, one array layer
+//
+// What a view over a single layer exposes is a 2D image of the same extent, and that is
+// what a pass drawing into it is drawing into. The whole thing's kind is the cube's
+// business and not that pass's.
+inline TextureDesc SliceDesc(const TextureDesc& whole) noexcept {
+    TextureDesc slice = whole;
+    slice.kind = TextureKind::Texture2D;
+    slice.mipLevels = 1;
+    return slice;
+}
+
 // Output: whether two descs describe the same kind of image
 //
 // Every field but the extent, which is deliberate and was measured: a resize changes it

@@ -101,7 +101,7 @@ void RecordShadowPass(const FrameSlot& slot, const ShadowPass& shadow,
     // One attachment and no colour, the way the pipeline was compiled -- from a
     // fragment stage that declares no outputs. TOP_OF_PIPE because nothing outside this
     // command buffer holds the map.
-    const Texture* const views[] = {frame.depth};
+    const AttachmentView views[] = {TargetOf(*frame.depth)};
     if (!BeginPass(vk, cmd, shadow.pass, views, nullptr,
                    VkRect2D{{0, 0}, extent}, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT)) {
         return;

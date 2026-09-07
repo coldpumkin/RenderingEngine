@@ -130,7 +130,7 @@ void RecordPostProcessPass(const FrameSlot& slot, const PostProcessPass& post,
     // COLOR_ATTACHMENT_OUTPUT for it -- a transition scheduled ahead of that would run
     // before the acquire. Every other attachment in this program is TOP_OF_PIPE because
     // nothing outside the command buffer holds it.
-    const Texture* const views[] = {&dest};
+    const AttachmentView views[] = {TargetOf(dest)};
     if (!BeginPass(vk, cmd, post.pass, views, nullptr,
                    VkRect2D{{0, 0}, destExtent},
                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT)) {

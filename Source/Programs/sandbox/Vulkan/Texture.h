@@ -40,6 +40,30 @@ struct Texture {
     ImageView view;
 };
 
+// One thing a pass can draw into: a view, the image behind it, and what that view is
+//
+// **Not a Texture, and that is the point.** A Texture owns its image, so requiring one
+// here would mean a pass can only draw into whole images allocated for it -- one face
+// of a cube and one level of a mip chain are views onto an image something else owns,
+// and neither could be an attachment.
+//
+// desc says what this view exposes rather than what the whole image is: a cube face is
+// a 2D target of the cube's extent, which is what the pass drawing into it declares.
+//
+// The three members are what BeginPass actually reads. The image is for the barrier,
+// which covers an image; the view is what an attachment is written with; the desc is
+// what the declaration is checked against and what the render area is covered by.
+struct AttachmentView {
+    VkImage image = VK_NULL_HANDLE;
+    const ImageView* view = nullptr;   // nullptr means there is none
+    TextureDesc desc{};
+};
+
+// Output: the whole of a texture, as something a pass can draw into
+inline AttachmentView TargetOf(const Texture& texture) noexcept {
+    return AttachmentView{texture.image.handle, &texture.view, texture.desc};
+}
+
 // Output: an empty texture. Something has to draw into it before it is worth reading.
 // What a pass can state about an image it reads, and the whole of what a desc answers
 // ----------------------------------------------------------------------------

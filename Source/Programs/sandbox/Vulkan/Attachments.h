@@ -191,17 +191,21 @@ bool ValidatePassDesc(const RenderPassDesc& desc) noexcept;
 // An attachment whose loadOp is LOAD gets none. Loading reads what came before, and
 // what wrote it is not in this call -- that barrier belongs to whoever wrote it.
 //
-// views[i] is this frame's image for attachments[i].resource, and resolves[i] is this
-// frame's image for attachments[i].resolve.target -- null wherever there is none.
-// waitedStage is what already waits on these images from outside this command buffer,
-// TOP_OF_PIPE when nothing does.
+// views[i] is this frame's view for attachments[i].resource, and resolves[i] is this
+// frame's view for attachments[i].resolve.target -- an empty one wherever there is
+// none. waitedStage is what already waits on these images from outside this command
+// buffer, TOP_OF_PIPE when nothing does.
+//
+// AttachmentView rather than Texture, because a pass draws into a view and not into an
+// allocation: one face of a cube is not a Texture and could not be an attachment while
+// this asked for one.
 //
 // How many there are comes from desc, not from an argument. Each view is checked
 // against the desc it is standing in for, so handing them over in the wrong order is a
 // refusal wherever the two descs differ rather than a picture with two images swapped.
 bool BeginPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
                const RenderPassDesc& desc,
-               const Texture* const views[], const Texture* const resolves[],
+               const AttachmentView views[], const AttachmentView resolves[],
                VkRect2D area, VkPipelineStageFlags2 waitedStage) noexcept;
 
 // Effect: appends the barrier that hands an attachment on to a sampler

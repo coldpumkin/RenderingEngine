@@ -141,7 +141,7 @@ void RecordLightingPass(const FrameSlot& slot, const LightingPass& lighting) noe
     // The shadow map needs none: the shadow pass published it at its own end, which is
     // the other of the two patterns and the one a writer can use when it knows every
     // reader wants the same thing.
-    const Texture* const views[] = {&target};
+    const AttachmentView views[] = {TargetOf(target)};
     if (!BeginPass(vk, cmd, lighting.pass, views, nullptr,
                    VkRect2D{{0, 0}, extent}, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT)) {
         return;

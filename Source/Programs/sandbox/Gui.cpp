@@ -573,7 +573,7 @@ void RecordGuiPass(const FrameSlot& slot, Gui& gui, const Texture& target) noexc
     //
     // Contract: whatever drew here must already be ordered before this. RecordFrame
     // issues that barrier -- what came first is not this pass's to know.
-    const Texture* const views[] = {&target};
+    const AttachmentView views[] = {TargetOf(target)};
     if (!BeginPass(vk, cmd, gui.pass, views, nullptr,
                    VkRect2D{{0, 0}, target.desc.extent},
                    VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT)) {
