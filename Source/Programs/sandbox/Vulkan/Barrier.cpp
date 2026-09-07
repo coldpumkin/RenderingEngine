@@ -1,7 +1,7 @@
 ﻿#include "Vulkan/Barrier.h"
 
 void RecordLayoutTransition(const VolkDeviceTable& vk, VkCommandBuffer cmd, VkImage image,
-                            VkImageAspectFlags aspect,
+                            const VkImageSubresourceRange& range,
                             VkPipelineStageFlags2 srcStage, VkAccessFlags2 srcAccess,
                             VkPipelineStageFlags2 dstStage, VkAccessFlags2 dstAccess,
                             VkImageLayout oldLayout, VkImageLayout newLayout) noexcept {
@@ -17,9 +17,7 @@ void RecordLayoutTransition(const VolkDeviceTable& vk, VkCommandBuffer cmd, VkIm
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.image = image;
-    barrier.subresourceRange.aspectMask = aspect;
-    barrier.subresourceRange.levelCount = 1;
-    barrier.subresourceRange.layerCount = 1;
+    barrier.subresourceRange = range;
 
     VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
     dep.imageMemoryBarrierCount = 1;
@@ -28,7 +26,7 @@ void RecordLayoutTransition(const VolkDeviceTable& vk, VkCommandBuffer cmd, VkIm
 }
 
 void RecordAttachmentTransition(const VolkDeviceTable& vk, VkCommandBuffer cmd,
-                                VkImage image, VkImageAspectFlags aspect,
+                                VkImage image, const VkImageSubresourceRange& range,
                                 const VkRenderingAttachmentInfo& attachment,
                                 VkPipelineStageFlags2 waitedStage) noexcept {
     if (attachment.loadOp == VK_ATTACHMENT_LOAD_OP_LOAD) {
@@ -57,17 +55,17 @@ void RecordAttachmentTransition(const VolkDeviceTable& vk, VkCommandBuffer cmd,
 
     // srcAccess 0 with any waitedStage: nothing written before this is read after it.
     // UNDEFINED discards the contents, which is what makes that true.
-    RecordLayoutTransition(vk, cmd, image, aspect,
+    RecordLayoutTransition(vk, cmd, image, range,
                            waitedStage, 0,
                            dstStage, dstAccess,
                            VK_IMAGE_LAYOUT_UNDEFINED, attachment.imageLayout);
 }
 
 void RecordSampledTransition(const VolkDeviceTable& vk, VkCommandBuffer cmd,
-                             VkImage image, VkImageAspectFlags aspect,
+                             VkImage image, const VkImageSubresourceRange& range,
                              VkPipelineStageFlags2 srcStage, VkAccessFlags2 srcAccess,
                              VkImageLayout oldLayout) noexcept {
-    RecordLayoutTransition(vk, cmd, image, aspect,
+    RecordLayoutTransition(vk, cmd, image, range,
                            srcStage, srcAccess,
                            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,

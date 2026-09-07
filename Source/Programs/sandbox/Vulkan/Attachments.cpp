@@ -219,7 +219,7 @@ void RecordSampledHandover(const VolkDeviceTable& vk, VkCommandBuffer cmd,
                            const Texture& produced, AttachmentRole role) noexcept {
     const bool isColour = role == AttachmentRole::Color;
     RecordSampledTransition(vk, cmd, produced.image.handle,
-                            FormatAspects(produced.desc.format),
+                            WholeImage(FormatAspects(produced.desc.format)),
                             isColour ? VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT
                                      : VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
                             isColour ? VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT
@@ -244,7 +244,7 @@ void RecordLoadHandover(const VolkDeviceTable& vk, VkCommandBuffer cmd,
                                           : VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
 
     RecordLayoutTransition(vk, cmd, produced.image.handle,
-                           FormatAspects(produced.desc.format),
+                           WholeImage(FormatAspects(produced.desc.format)),
                            stage, write, stage, read | write, layout, layout);
 }
 
@@ -472,7 +472,7 @@ bool BeginPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
             // because until resolve.target was declared the right field to read it from
             // did not exist.
             RecordLayoutTransition(vk, cmd, into->image,
-                                   FormatAspects(into->desc.format),
+                                   WholeImage(FormatAspects(into->desc.format)),
                                    waitedStage, 0,
                                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                                    VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
@@ -492,7 +492,7 @@ bool BeginPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
             // combined format while a sampled view over the same image may carry only
             // one. A transition covers the image; a view is a window onto it.
             RecordAttachmentTransition(vk, cmd, views[i].image,
-                                       FormatAspects(got.format), info, waitedStage);
+                                       AttachedRange(views[i]), info, waitedStage);
         }
 
         if (isColour) {

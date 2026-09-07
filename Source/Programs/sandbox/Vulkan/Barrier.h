@@ -21,8 +21,24 @@
 // Eight arguments, none of them defaulted. A default settles on the safe value --
 // ALL_COMMANDS -- and synchronization gets quietly heavier with nothing reporting it.
 // What to wait for and what to make visible is the caller's answer, every time.
+// Output: the whole of an image with this aspect -- every level and every layer
+//
+// What almost every barrier here covers, and what the ones that do not are exactly the
+// interesting case: baking a cube writes one layer at a time, and a barrier over all
+// six would discard the faces already drawn.
+inline VkImageSubresourceRange WholeImage(VkImageAspectFlags aspect) noexcept {
+    return VkImageSubresourceRange{aspect, 0, VK_REMAINING_MIP_LEVELS,
+                                   0, VK_REMAINING_ARRAY_LAYERS};
+}
+
+// Output: one array layer of an image, at one mip level
+inline VkImageSubresourceRange OneLayer(VkImageAspectFlags aspect, uint32_t layer,
+                                        uint32_t mip) noexcept {
+    return VkImageSubresourceRange{aspect, mip, 1, layer, 1};
+}
+
 void RecordLayoutTransition(const VolkDeviceTable& vk, VkCommandBuffer cmd, VkImage image,
-                            VkImageAspectFlags aspect,
+                            const VkImageSubresourceRange& range,
                             VkPipelineStageFlags2 srcStage, VkAccessFlags2 srcAccess,
                             VkPipelineStageFlags2 dstStage, VkAccessFlags2 dstAccess,
                             VkImageLayout oldLayout, VkImageLayout newLayout) noexcept;
@@ -59,7 +75,7 @@ void RecordLayoutTransition(const VolkDeviceTable& vk, VkCommandBuffer cmd, VkIm
 // Contract: loadOp must not be LOAD. Loading reads what came before, and what wrote it
 //           is not in the attachment -- that barrier is the frame's to issue.
 void RecordAttachmentTransition(const VolkDeviceTable& vk, VkCommandBuffer cmd,
-                                VkImage image, VkImageAspectFlags aspect,
+                                VkImage image, const VkImageSubresourceRange& range,
                                 const VkRenderingAttachmentInfo& attachment,
                                 VkPipelineStageFlags2 waitedStage) noexcept;
 
@@ -70,6 +86,6 @@ void RecordAttachmentTransition(const VolkDeviceTable& vk, VkCommandBuffer cmd,
 // something -- a pass publishing what it just wrote passes its own stage and layout,
 // while a pass transitioning someone else's product passes facts it had to be told.
 void RecordSampledTransition(const VolkDeviceTable& vk, VkCommandBuffer cmd,
-                             VkImage image, VkImageAspectFlags aspect,
+                             VkImage image, const VkImageSubresourceRange& range,
                              VkPipelineStageFlags2 srcStage, VkAccessFlags2 srcAccess,
                              VkImageLayout oldLayout) noexcept;

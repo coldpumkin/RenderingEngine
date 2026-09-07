@@ -71,7 +71,7 @@ bool CreateTextureFromPixels(const VulkanDevice& dev, const Commands& commands,
 
     // srcStage is TOP_OF_PIPE because there is nothing to wait for: this image was
     // just created and nobody has touched it.
-    RecordLayoutTransition(dev.table, cmd, out->image.handle, VK_IMAGE_ASPECT_COLOR_BIT,
+    RecordLayoutTransition(dev.table, cmd, out->image.handle, WholeImage(VK_IMAGE_ASPECT_COLOR_BIT),
                            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                            VK_PIPELINE_STAGE_2_COPY_BIT,
                            VK_ACCESS_2_TRANSFER_WRITE_BIT,
@@ -89,7 +89,7 @@ bool CreateTextureFromPixels(const VulkanDevice& dev, const Commands& commands,
 
     // dstStage is FRAGMENT_SHADER because that is the only place we read it. A vertex
     // shader sampling textures would widen this.
-    RecordLayoutTransition(dev.table, cmd, out->image.handle, VK_IMAGE_ASPECT_COLOR_BIT,
+    RecordLayoutTransition(dev.table, cmd, out->image.handle, WholeImage(VK_IMAGE_ASPECT_COLOR_BIT),
                            VK_PIPELINE_STAGE_2_COPY_BIT,
                            VK_ACCESS_2_TRANSFER_WRITE_BIT,
                            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
@@ -146,7 +146,7 @@ bool ReadTexturePixels(const VulkanDevice& dev, const Commands& commands,
     // srcStage covers both ways this image is written: as an attachment, and by the
     // resolve at the end of a pass. Neither is known here, so the barrier waits for
     // the wider one.
-    RecordLayoutTransition(dev.table, cmd, texture.image.handle, VK_IMAGE_ASPECT_COLOR_BIT,
+    RecordLayoutTransition(dev.table, cmd, texture.image.handle, WholeImage(VK_IMAGE_ASPECT_COLOR_BIT),
                            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                            VK_PIPELINE_STAGE_2_COPY_BIT,
@@ -164,7 +164,7 @@ bool ReadTexturePixels(const VulkanDevice& dev, const Commands& commands,
 
     // Back where it was found. A capture in the middle of a run must leave nothing
     // behind for the next frame's barriers to disagree with.
-    RecordLayoutTransition(dev.table, cmd, texture.image.handle, VK_IMAGE_ASPECT_COLOR_BIT,
+    RecordLayoutTransition(dev.table, cmd, texture.image.handle, WholeImage(VK_IMAGE_ASPECT_COLOR_BIT),
                            VK_PIPELINE_STAGE_2_COPY_BIT,
                            VK_ACCESS_2_TRANSFER_READ_BIT,
                            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,

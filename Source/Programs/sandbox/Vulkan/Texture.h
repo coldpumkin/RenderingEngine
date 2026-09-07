@@ -64,6 +64,23 @@ inline AttachmentView TargetOf(const Texture& texture) noexcept {
     return AttachmentView{texture.image.handle, &texture.view, texture.desc};
 }
 
+// Output: what a barrier over this attachment covers
+//
+// The levels and layers the view exposes, because a barrier for an attachment is about
+// what that attachment is: baking one face of a cube must not transition the five
+// already drawn, and a barrier over the whole image would say their contents are dead.
+//
+// The aspect is the image's and not the view's, which is the barrier's own rule
+// (VUID-VkImageMemoryBarrier2-image-03320) and the one part of a range that does not
+// come from the view.
+inline VkImageSubresourceRange AttachedRange(const AttachmentView& target) noexcept {
+    return VkImageSubresourceRange{FormatAspects(target.desc.format),
+                                   target.view->desc.baseMip,
+                                   target.view->desc.mipCount,
+                                   target.view->desc.baseLayer,
+                                   target.view->desc.layerCount};
+}
+
 // Output: an empty texture. Something has to draw into it before it is worth reading.
 // What a pass can state about an image it reads, and the whole of what a desc answers
 // ----------------------------------------------------------------------------

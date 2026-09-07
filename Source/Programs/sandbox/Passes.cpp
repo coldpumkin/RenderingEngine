@@ -542,7 +542,7 @@ bool RecordFrame(const FrameSlot& slot,
     // operation and reads nothing through the memory model, so there is no access to
     // make visible. The semaphore SubmitFrame signals is what present actually waits
     // on -- this barrier only has to leave the image in the right layout.
-    RecordLayoutTransition(vk, cmd, target.image.handle, VK_IMAGE_ASPECT_COLOR_BIT,
+    RecordLayoutTransition(vk, cmd, target.image.handle, WholeImage(VK_IMAGE_ASPECT_COLOR_BIT),
                            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                            VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0,
