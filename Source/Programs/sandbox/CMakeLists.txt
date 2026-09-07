@@ -113,7 +113,8 @@ set(SHADER_BUILD_DIR "${CMAKE_CURRENT_BINARY_DIR}/Shaders")
 set(SPV_FILES "")
 
 foreach(SHADER shadow.vert scene.vert scene.frag fullscreen.vert post.frag gui.vert gui.frag
-               geometry.frag lighting.frag skybake.frag sky.frag irradiance.frag)
+               geometry.frag lighting.frag skybake.frag sky.frag irradiance.frag
+               prefilter.frag brdflut.frag)
     set(SRC "${CMAKE_CURRENT_SOURCE_DIR}/Shaders/${SHADER}")
     set(SPV "${SHADER_BUILD_DIR}/${SHADER}.spv")
     add_custom_command(
@@ -150,7 +151,8 @@ set(SHADER_SOURCES
     Shaders/gui.vert        Shaders/gui.frag
     Shaders/geometry.frag   Shaders/lighting.frag
     Shaders/skybake.frag    Shaders/sky.frag
-    Shaders/irradiance.frag
+    Shaders/irradiance.frag  Shaders/prefilter.frag
+    Shaders/brdflut.frag
 )
 target_sources(sandbox PRIVATE ${SHADER_SOURCES})
 set_source_files_properties(${SHADER_SOURCES} PROPERTIES HEADER_FILE_ONLY TRUE)

@@ -857,6 +857,11 @@ struct FrameSetSources {
     // What a matte surface receives from the whole sky, convolved once from the cube
     // above. Same category as it -- made once, never again.
     const Texture* irradianceCube = nullptr;       // binding 6
+
+    // The other half of the environment: what a shiny surface reflects, blurred into
+    // the mip chain by roughness, and the table that says what the BRDF does with it.
+    const Texture* prefilteredCube = nullptr;      // binding 7
+    const Texture* brdfLut = nullptr;              // binding 8
 };
 
 // Effect: writes this frame's set 0, and declares in desc the pass outputs this

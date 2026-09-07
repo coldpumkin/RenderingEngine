@@ -174,6 +174,8 @@ struct Renderer {
     // frame reads it.
     Texture skyCube;
     Texture irradianceCube;
+    Texture prefilteredCube;
+    Texture brdfLut;
 
     // The scene's three, for the same reason and one step further: these are remade
     // on every resize, and a resize is main's to run now rather than something a pass

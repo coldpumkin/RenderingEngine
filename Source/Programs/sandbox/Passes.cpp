@@ -308,6 +308,8 @@ bool FillFrameSet(const Descriptors& descriptors, const ShaderProgram& program,
         {nullptr, &sources.views[frame].buffer},
         {&sources.skyCube->view},
         {&sources.irradianceCube->view},
+        {&sources.prefilteredCube->view},
+        {&sources.brdfLut->view},
     };
     UpdateSet(descriptors, layout, set, values, static_cast<uint32_t>(std::size(values)));
 

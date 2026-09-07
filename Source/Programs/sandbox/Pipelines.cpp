@@ -140,6 +140,28 @@ GraphicsPipelineDesc IrradianceDesc(const ShaderProgram& program,
     return desc;
 }
 
+// A face of one level of the prefiltered cube, and the BRDF table. Both are one
+// triangle into one colour target; what differs is the format, which comes with it.
+GraphicsPipelineDesc PrefilterDesc(const ShaderProgram& program,
+                                   const PipelineSources& sources) noexcept {
+    GraphicsPipelineDesc desc;
+    desc.program = &program;
+    const TextureDesc* const colour[] = {sources.prefilterFace};
+    desc.formats = AttachmentFormatsFor(colour, 1, nullptr);
+    desc.blend[0] = NoBlend();
+    return desc;
+}
+
+GraphicsPipelineDesc BrdfLutDesc(const ShaderProgram& program,
+                                 const PipelineSources& sources) noexcept {
+    GraphicsPipelineDesc desc;
+    desc.program = &program;
+    const TextureDesc* const colour[] = {sources.brdfLut};
+    desc.formats = AttachmentFormatsFor(colour, 1, nullptr);
+    desc.blend[0] = NoBlend();
+    return desc;
+}
+
 GraphicsPipelineDesc PostDesc(const ShaderProgram& program,
                               const PipelineSources& sources) noexcept {
     GraphicsPipelineDesc desc;
@@ -192,6 +214,10 @@ bool CreatePipelines(const VulkanDevice& dev, const PipelineSources& sources,
                                          "Shaders/skybake.frag.spv"};
     const char* const irradianceStages[] = {"Shaders/fullscreen.vert.spv",
                                             "Shaders/irradiance.frag.spv"};
+    const char* const prefilterStages[] = {"Shaders/fullscreen.vert.spv",
+                                           "Shaders/prefilter.frag.spv"};
+    const char* const brdfLutStages[] = {"Shaders/fullscreen.vert.spv",
+                                         "Shaders/brdflut.frag.spv"};
     const char* const skyStages[] = {"Shaders/fullscreen.vert.spv", "Shaders/sky.frag.spv"};
     const char* const postStages[] = {"Shaders/fullscreen.vert.spv", "Shaders/post.frag.spv"};
     const char* const guiStages[] = {"Shaders/gui.vert.spv", "Shaders/gui.frag.spv"};
@@ -245,6 +271,12 @@ bool CreatePipelines(const VulkanDevice& dev, const PipelineSources& sources,
             || !CreateShaderProgram(dev, irradianceStages,
                                     static_cast<uint32_t>(std::size(irradianceStages)),
                                     anyProgram, &out->irradianceProgram)
+            || !CreateShaderProgram(dev, prefilterStages,
+                                    static_cast<uint32_t>(std::size(prefilterStages)),
+                                    anyProgram, &out->prefilterProgram)
+            || !CreateShaderProgram(dev, brdfLutStages,
+                                    static_cast<uint32_t>(std::size(brdfLutStages)),
+                                    anyProgram, &out->brdfLutProgram)
             || !CreateShaderProgram(dev, skyStages,
                                     static_cast<uint32_t>(std::size(skyStages)),
                                     anyProgram, &out->skyProgram)
@@ -273,6 +305,10 @@ bool CreatePipelines(const VulkanDevice& dev, const PipelineSources& sources,
                                   &out->skyBake)
         && CreateGraphicsPipeline(dev, IrradianceDesc(out->irradianceProgram, sources),
                                   &out->irradianceBake)
+        && CreateGraphicsPipeline(dev, PrefilterDesc(out->prefilterProgram, sources),
+                                  &out->prefilterBake)
+        && CreateGraphicsPipeline(dev, BrdfLutDesc(out->brdfLutProgram, sources),
+                                  &out->brdfLutBake)
         && CreateGraphicsPipeline(dev, SkyDesc(out->skyProgram, sources.sceneColor),
                                   &out->skyForward)
         && CreateGraphicsPipeline(dev, SkyDesc(out->skyProgram, sources.sceneResolve),

@@ -605,6 +605,9 @@ int main() {
     const TextureDesc skyFaceTarget = SliceDesc(skyTarget);
     const TextureDesc irradianceTarget = MakeIrradianceTarget();
     const TextureDesc irradianceFaceTarget = SliceDesc(irradianceTarget);
+    const TextureDesc prefilterTarget = MakePrefilterTarget();
+    const TextureDesc prefilterFaceTarget = SliceDesc(prefilterTarget);
+    const TextureDesc brdfLutTarget = MakeBrdfLutTarget();
 
     // Device -- and past it, everything that needs one
     // ========================================================================
@@ -634,6 +637,8 @@ int main() {
     pipelineSources.shadowDepth = &shadowTarget;
     pipelineSources.skyFace = &skyFaceTarget;
     pipelineSources.irradianceFace = &irradianceFaceTarget;
+    pipelineSources.prefilterFace = &prefilterFaceTarget;
+    pipelineSources.brdfLut = &brdfLutTarget;
     pipelineSources.sceneColor = &sceneTargetDescs.color;
     pipelineSources.sceneDepth = &sceneTargetDescs.depth;
     pipelineSources.swapchain = &swapchainTarget;
@@ -822,6 +827,7 @@ int main() {
         {&renderer.pipelines.lightingProgram.setLayouts[kFrameSet], kFramesInFlight},
         {&renderer.pipelines.lightingProgram.setLayouts[kMaterialSet], kFramesInFlight},
         {&renderer.pipelines.irradianceProgram.setLayouts[kFrameSet], 1},
+        {&renderer.pipelines.prefilterProgram.setLayouts[kFrameSet], 1},
         {&renderer.pipelines.skyProgram.setLayouts[kFrameSet], 2 * kFramesInFlight},
         {&renderer.pipelines.postProgram.setLayouts[kFrameSet], kFramesInFlight},
         // One, and counted by neither of the other two reasons: there is one font.
@@ -928,6 +934,20 @@ int main() {
         return 1;
     }
 
+    // The specular half, and the table that says what a surface does with it. The first
+    // is from the sky like the irradiance is; the second is from nothing at all and
+    // would be the same file every run.
+    if (!CreateTexture(dev, prefilterTarget, &renderer.prefilteredCube)) { return 1; }
+    if (!BakePrefilterCube(dev, commands, renderer.descriptors,
+                           renderer.pipelines.prefilterBake,
+                           renderer.skyCube, &renderer.prefilteredCube)) {
+        return 1;
+    }
+    if (!CreateTexture(dev, brdfLutTarget, &renderer.brdfLut)) { return 1; }
+    if (!BakeBrdfLut(dev, commands, renderer.pipelines.brdfLutBake, &renderer.brdfLut)) {
+        return 1;
+    }
+
     const Texture* shadowMaps[kFramesInFlight]{};
     PassInput shadowMapInput{&shadowTarget, {}};
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
@@ -972,7 +992,8 @@ int main() {
     // read as holes.
     const FrameSetSources frameSet{renderer.cameras, renderer.lights, renderer.shadows,
                                    shadowMapInput, renderer.viewOptions,
-                                   &renderer.skyCube, &renderer.irradianceCube};
+                                   &renderer.skyCube, &renderer.irradianceCube,
+                                   &renderer.prefilteredCube, &renderer.brdfLut};
 
     if (!CreateScenePass(renderer.descriptors, sceneTargetDescs, sceneTargets,
                          renderer.mesh, renderer.pipelines.scene,

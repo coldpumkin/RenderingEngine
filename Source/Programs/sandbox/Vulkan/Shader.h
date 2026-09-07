@@ -13,7 +13,7 @@
 // The second row is packing, and no shader declares it: one shader can read buffers
 // laid out differently. So vertex layouts still need Vertex; push ranges and set
 // layouts need nothing else.
-constexpr uint32_t kMaxBindingsPerSet = 8;   // ceiling we impose, not a counted value
+constexpr uint32_t kMaxBindingsPerSet = 12;   // ceiling we impose, not a counted value
 
 // Sets are read, not just set 0, because how many sets exist is not a preference:
 // a binding's count comes from somewhere, and bindings whose counts come from

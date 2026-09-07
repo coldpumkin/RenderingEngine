@@ -100,6 +100,131 @@ bool BakeIrradianceCube(const VulkanDevice& dev, const Commands& commands,
     return true;
 }
 
+TextureDesc MakePrefilterTarget() noexcept {
+    TextureDesc desc = MakeSkyTarget();
+    desc.extent = VkExtent2D{128, 128};
+    desc.mipLevels = kPrefilterMips;
+    return desc;
+}
+
+TextureDesc MakeBrdfLutTarget() noexcept {
+    TextureDesc desc{};
+    desc.extent = VkExtent2D{256, 256};
+    desc.format = VK_FORMAT_R16G16_SFLOAT;
+    desc.samples = VK_SAMPLE_COUNT_1_BIT;
+    desc.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    return desc;
+}
+
+bool BakePrefilterCube(const VulkanDevice& dev, const Commands& commands,
+                       const Descriptors& descriptors, const Pipeline& pipeline,
+                       const Texture& environment, Texture* prefiltered) noexcept {
+    if (pipeline.program == nullptr) { return false; }
+    const ShaderProgram& program = *pipeline.program;
+
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    if (!AllocateSets(descriptors, program.setLayouts[kFrameSet], 1, &set)) {
+        return false;
+    }
+    const BindingValue values[] = {{&environment.view}};
+    UpdateSet(descriptors, program.setLayouts[kFrameSet], set,
+              values, static_cast<uint32_t>(std::size(values)));
+
+    VkCommandBuffer cmd = BeginOneShot(dev, commands);
+    if (cmd == VK_NULL_HANDLE) { return false; }
+    const VolkDeviceTable& vk = dev.table;
+
+    // A level's target is a 2D image of that level's size, which is what a pass drawing
+    // into it declares -- not the cube, and not the cube's extent.
+    TextureDesc levelDesc = SliceDesc(prefiltered->desc);
+
+    RenderPassDesc desc{};
+    desc.attachments[0].resource = &levelDesc;
+    desc.attachments[0].load = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    desc.attachments[0].store = VK_ATTACHMENT_STORE_OP_STORE;
+
+    for (uint32_t mip = 0; mip < prefiltered->desc.mipLevels; ++mip) {
+        const uint32_t size = prefiltered->desc.extent.width >> mip;
+        levelDesc.extent = VkExtent2D{size, size};
+        if (!ValidatePassDesc(desc)) { return false; }
+
+        // Level 0 is the environment itself and the last is the roughest, spread evenly
+        // between -- which is the mapping a shader inverts to pick a level.
+        const float roughness =
+            static_cast<float>(mip) / static_cast<float>(prefiltered->desc.mipLevels - 1);
+        const VkRect2D area{{0, 0}, levelDesc.extent};
+
+        for (uint32_t layer = 0; layer < 6; ++layer) {
+            ImageViewDesc viewDesc;
+            viewDesc.type = VK_IMAGE_VIEW_TYPE_2D;
+            viewDesc.baseMip = mip;
+            viewDesc.mipCount = 1;
+            viewDesc.baseLayer = layer;
+            viewDesc.layerCount = 1;
+
+            ImageView faceView;
+            if (!CreateImageView(dev, prefiltered->image.handle, prefiltered->desc.format,
+                                 prefiltered->desc.samples, prefiltered->desc.usage,
+                                 viewDesc, &faceView)) {
+                return false;
+            }
+
+            const AttachmentView view{prefiltered->image.handle, &faceView, levelDesc};
+            if (!BeginPass(vk, cmd, desc, &view, nullptr, area,
+                           VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT)) {
+                return false;
+            }
+
+            BindPipeline(vk, cmd, pipeline, area);
+            vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                       program.layout, kFrameSet, 1, &set, 0, nullptr);
+            const PrefilterFace face{static_cast<int32_t>(layer), roughness};
+            vk.vkCmdPushConstants(cmd, program.layout, VK_SHADER_STAGE_FRAGMENT_BIT,
+                                  0, sizeof(face), &face);
+            vk.vkCmdDraw(cmd, 3, 1, 0, 0);
+            vk.vkCmdEndRendering(cmd);
+        }
+    }
+
+    RecordSampledHandover(vk, cmd, *prefiltered, AttachmentRole::Color);
+    if (!EndOneShotAndWait(dev, commands, cmd, "prefilter bake")) { return false; }
+
+    LOG("[render] prefiltered cube baked (%ux%u, %u levels)\n",
+        prefiltered->desc.extent.width, prefiltered->desc.extent.height,
+        prefiltered->desc.mipLevels);
+    return true;
+}
+
+bool BakeBrdfLut(const VulkanDevice& dev, const Commands& commands,
+                 const Pipeline& pipeline, Texture* lut) noexcept {
+    RenderPassDesc desc{};
+    desc.attachments[0].resource = &lut->desc;
+    desc.attachments[0].load = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    desc.attachments[0].store = VK_ATTACHMENT_STORE_OP_STORE;
+    if (!ValidatePassDesc(desc)) { return false; }
+
+    VkCommandBuffer cmd = BeginOneShot(dev, commands);
+    if (cmd == VK_NULL_HANDLE) { return false; }
+    const VolkDeviceTable& vk = dev.table;
+
+    const VkRect2D area{{0, 0}, lut->desc.extent};
+    const AttachmentView view = TargetOf(*lut);
+    if (!BeginPass(vk, cmd, desc, &view, nullptr, area,
+                   VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT)) {
+        return false;
+    }
+    BindPipeline(vk, cmd, pipeline, area);
+    vk.vkCmdDraw(cmd, 3, 1, 0, 0);
+    vk.vkCmdEndRendering(cmd);
+
+    RecordSampledHandover(vk, cmd, *lut, AttachmentRole::Color);
+    if (!EndOneShotAndWait(dev, commands, cmd, "brdf lut bake")) { return false; }
+
+    LOG("[render] brdf table baked (%ux%u)\n", lut->desc.extent.width,
+        lut->desc.extent.height);
+    return true;
+}
+
 bool BakeSkyCube(const VulkanDevice& dev, const Commands& commands,
                  const Pipeline& pipeline, Texture* cube) noexcept {
     VkCommandBuffer cmd = BeginOneShot(dev, commands);

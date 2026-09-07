@@ -74,6 +74,30 @@ layout(set = 0, binding = 3) uniform sampler2D shadowMap;
 // looking into a corner, and this one has that difference built into it.
 layout(set = 0, binding = 6) uniform samplerCube irradianceCube;
 
+layout(set = 0, binding = 7) uniform samplerCube prefilteredCube;
+layout(set = 0, binding = 8) uniform sampler2D brdfLut;
+
+// Output: what the environment reflects off this surface
+//
+// The split-sum approximation put back together: the prefiltered environment in the
+// mirror direction, at the level that stands for this roughness, multiplied by what the
+// BRDF does to it. Neither half means anything alone -- one is the light and the other
+// is the surface, and the whole point of splitting them is that each fits in a texture.
+//
+// Contract: kPrefilterMips in Sky.h. The level is where a roughness was stored, so
+//           reading it back is that mapping run the other way.
+vec3 EnvironmentSpecular(vec3 normal, vec3 toEye, float roughness, vec3 f0) {
+    const float kPrefilterMips = 5.0;
+    const vec3 reflected = reflect(-toEye, normal);
+    const float ndotv = max(dot(normal, toEye), 0.0);
+
+    const vec3 prefiltered =
+        textureLod(prefilteredCube, reflected, roughness * (kPrefilterMips - 1.0)).rgb;
+    const vec2 scaleBias = texture(brdfLut, vec2(ndotv, roughness)).rg;
+    return prefiltered * (f0 * scaleBias.x + scaleBias.y);
+}
+
+
 // What to leave out, so a feature can be compared against its own absence without
 // rebuilding. Owned by the panel -- nothing the scene computes decides any of it.
 //
@@ -253,9 +277,15 @@ void main() {
     // slider still means something and a scene with no sky is not black.
     const vec3 ambient = texture(irradianceCube, normal).rgb + vec3(light.color.a);
 
+    // The environment's share of the specular, which is what a metal facing away from
+    // the sun now reflects instead of going black. The direct highlight stays: one is a
+    // light source and the other is everything else, and they add.
+    const vec3 envSpecular =
+        EnvironmentSpecular(normal, toEye, roughness, specularColor);
+
     const vec3 lit =
         (light.color.rgb * lambert * shade + ambient) * diffuseColor
-        + (light.color.rgb * specular * shade + ambient) * specularColor;
+        + (light.color.rgb * specular * shade) * specularColor + envSpecular;
 
     outColor = vec4(lit, pc.alpha);
 }

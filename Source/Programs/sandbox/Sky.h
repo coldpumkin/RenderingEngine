@@ -54,6 +54,43 @@ bool BakeIrradianceCube(const VulkanDevice& dev, const Commands& commands,
                         const Descriptors& descriptors, const Pipeline& pipeline,
                         const Texture& environment, Texture* irradiance) noexcept;
 
+// How many roughness levels the prefiltered cube carries
+//
+// 5 over a 128 base, so the roughest level is 8 texels a side -- past that a level holds
+// less than the lobe it stands for and the blur stops improving.
+inline constexpr uint32_t kPrefilterMips = 5;
+
+// Output: what the prefiltered specular cube is
+TextureDesc MakePrefilterTarget() noexcept;
+
+// Output: what the BRDF table is
+//
+// Two channels because the answer is a scale and a bias. UNORM and not float: both are
+// in 0..1 by construction, and a table that is the same for every scene is the one
+// place where the smaller format costs nothing.
+TextureDesc MakeBrdfLutTarget() noexcept;
+
+// Contract: matches Face in prefilter.frag. The roughness and not the level number --
+//           what the shader integrates over is the first, and the second is only where
+//           the answer is stored.
+struct PrefilterFace {
+    int32_t index = 0;
+    float roughness = 0.0f;
+};
+
+// Effect: fills every level of prefiltered, each from environment at its own roughness
+//
+// One render pass per face per level, through a view of exactly that face and level.
+// **This is what ImageViewDesc::baseMip was for**: until now every view in this
+// renderer was the whole of an image.
+bool BakePrefilterCube(const VulkanDevice& dev, const Commands& commands,
+                       const Descriptors& descriptors, const Pipeline& pipeline,
+                       const Texture& environment, Texture* prefiltered) noexcept;
+
+// Effect: fills the BRDF table, which depends on no scene and is the same every run
+bool BakeBrdfLut(const VulkanDevice& dev, const Commands& commands,
+                 const Pipeline& pipeline, Texture* lut) noexcept;
+
 // Effect: draws the sky into all six faces and leaves the cube readable by a sampler
 //
 // Six render passes, one per layer, each through a 2D view of that layer. One pass over
