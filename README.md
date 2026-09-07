@@ -33,6 +33,11 @@ descriptor set을 들고 있으므로, 스위치는 아무것도 다시 만들�
 MSAA를 deferred에 맞추지 않았다. 샘플마다 조명을 따로 해야 하고, **평균 낸 normal은 어느
 표면의 것도 아니기** 때문이다. 비교하는 대상은 구조이고, 가장자리는 다르게 나오는 것이 맞다.
 
+![Sponza, deferred 경로](docs/images/sponza-deferred.jpg)
+
+*같은 시점, deferred. G-buffer를 거쳐 화면 픽셀마다 조명한 결과이고, 위 그림과 다른 곳은
+가장자리뿐이다 — 그 차이가 MSAA 4x와 1 sample의 차이다*
+
 ---
 
 ## 구현된 것
