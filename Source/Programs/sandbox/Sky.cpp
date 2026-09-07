@@ -26,7 +26,7 @@ TextureDesc MakeIrradianceTarget() noexcept {
 // and both of those are arguments rather than a second copy of this loop.
 static bool BakeCubeFaces(const VulkanDevice& dev, VkCommandBuffer cmd,
                           const Pipeline& pipeline, VkDescriptorSet set,
-                          Texture* cube) noexcept {
+                          const glm::vec3& sun, Texture* cube) noexcept {
     const TextureDesc faceDesc = SliceDesc(cube->desc);
 
     RenderPassDesc desc{};
@@ -62,7 +62,9 @@ static bool BakeCubeFaces(const VulkanDevice& dev, VkCommandBuffer cmd,
                                        pipeline.program->layout, kFrameSet,
                                        1, &set, 0, nullptr);
         }
-        const SkyFace face{static_cast<int32_t>(i)};
+        SkyFace face{};
+        face.index = static_cast<int32_t>(i);
+        face.sun = glm::vec4{sun, 0.0f};
         vk.vkCmdPushConstants(cmd, pipeline.program->layout,
                               VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(face), &face);
         vk.vkCmdDraw(cmd, 3, 1, 0, 0);
@@ -91,7 +93,10 @@ bool BakeIrradianceCube(const VulkanDevice& dev, const Commands& commands,
 
     VkCommandBuffer cmd = BeginOneShot(dev, commands);
     if (cmd == VK_NULL_HANDLE) { return false; }
-    if (!BakeCubeFaces(dev, cmd, pipeline, set, irradiance)) { return false; }
+    // The sun is the sky's, not this one's: what this reads is already a cube.
+    if (!BakeCubeFaces(dev, cmd, pipeline, set, glm::vec3{0.0f}, irradiance)) {
+        return false;
+    }
     RecordSampledHandover(dev.table, cmd, *irradiance, AttachmentRole::Color);
     if (!EndOneShotAndWait(dev, commands, cmd, "irradiance bake")) { return false; }
 
@@ -226,12 +231,12 @@ bool BakeBrdfLut(const VulkanDevice& dev, const Commands& commands,
 }
 
 bool BakeSkyCube(const VulkanDevice& dev, const Commands& commands,
-                 const Pipeline& pipeline, Texture* cube) noexcept {
+                 const Pipeline& pipeline, const glm::vec3& sun, Texture* cube) noexcept {
     VkCommandBuffer cmd = BeginOneShot(dev, commands);
     if (cmd == VK_NULL_HANDLE) { return false; }
 
     // No set: this program reads nothing. The face index is the whole of its input.
-    if (!BakeCubeFaces(dev, cmd, pipeline, VK_NULL_HANDLE, cube)) { return false; }
+    if (!BakeCubeFaces(dev, cmd, pipeline, VK_NULL_HANDLE, sun, cube)) { return false; }
 
     // Every face at once, because from here the cube is read as one thing.
     RecordSampledHandover(dev.table, cmd, *cube, AttachmentRole::Color);

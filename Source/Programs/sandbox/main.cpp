@@ -601,6 +601,15 @@ int main() {
 
     // One cube, and the 2D slice one of its faces is. The second is what the bake's
     // pipeline is compiled against -- a face is what that pass draws into.
+    // Where the sun is. One fact, read by two things that must agree: the light the
+    // scene is lit by, and the sky the environment maps are baked from. It was a
+    // function of time, which made the shadows sweep across a sky that never moved --
+    // and once there is an irradiance cube that inconsistency is not cosmetic, because
+    // that cube is the same sun integrated over the hemisphere.
+    //
+    // y = 3.0 is measured: below it the arcades cut the sun off before the courtyard.
+    const glm::vec3 kSunDirection = glm::normalize(glm::vec3{0.55f, 3.0f, 0.35f});
+
     const TextureDesc skyTarget = MakeSkyTarget();
     const TextureDesc skyFaceTarget = SliceDesc(skyTarget);
     const TextureDesc irradianceTarget = MakeIrradianceTarget();
@@ -921,7 +930,8 @@ int main() {
     // different every frame -- shadowTarget is what all of them were made from.
     // Made and filled before anything that reads it, and never touched again.
     if (!CreateTexture(dev, skyTarget, &renderer.skyCube)) { return 1; }
-    if (!BakeSkyCube(dev, commands, renderer.pipelines.skyBake, &renderer.skyCube)) {
+    if (!BakeSkyCube(dev, commands, renderer.pipelines.skyBake, kSunDirection,
+                     &renderer.skyCube)) {
         return 1;
     }
 
@@ -1086,7 +1096,6 @@ int main() {
     // see the capture itself, below the submit.
     constexpr uint32_t kCaptureFrame = 1;
     uint32_t framesDrawn = 0;
-    constexpr float kFixedTime = 1.0f;   // any constant. 1.0 puts the light off-axis
 
     // Inside the atrium, looking along it.
     glm::vec3 eye{-7.0f, 5.5f, 0.0f};
@@ -1155,14 +1164,14 @@ int main() {
 
         // Clock
         //
-        // One reading, two values: t is absolute (object spin), dt is the gap (camera
-        // movement). Reading twice would let them drift apart.
+        // The gap only. **Nothing in a frame reads absolute time any more** -- the sun
+        // was the last thing that did, and it stopped when it became a scene fact the
+        // environment is baked from. What is left is how far the keys move the camera.
         //
-        // dt is fixed with t and not left real: the panel prints a frame time, so the
-        // machine's speed would reach the picture. 1/60 and not 0 -- a zero gap is a
-        // frame nothing could have moved in.
+        // Still fixed under a capture, because the panel prints a frame time and the
+        // machine's speed would otherwise reach the picture. 1/60 and not 0 -- a zero
+        // gap is a frame nothing could have moved in.
         const double now = glfwGetTime();
-        const float t = fixedTime ? kFixedTime : static_cast<float>(now);
         const float dt = fixedTime ? 1.0f / 60.0f
                                    : static_cast<float>(now - lastTime);
         lastTime = now;
@@ -1214,12 +1223,11 @@ int main() {
 
         // Light -- state, and only state
         //
-        // One directional light, circling in xz so the shadows sweep. y = 3.0 is
-        // measured: below it the arcades cut the sun off before the courtyard.
-        const LightState light{
-            glm::normalize(glm::vec3{std::cos(t) * 0.7f, 3.0f, std::sin(t) * 0.7f}),
-            glm::vec3{1.0f, 0.95f, 0.9f},
-            0.15f};
+        // The same direction the sky was baked from, because they are one fact. Moving
+        // it means baking the sky, the irradiance and the prefiltered cube again: the
+        // environment would stop being an input of the frame and become something a
+        // frame produces, which is the line the frame graph draws.
+        const LightState light{kSunDirection, glm::vec3{1.0f, 0.95f, 0.9f}, 0.15f};
         // Fill this frame's share of the pass
         //
         // Assignment only, so it belongs up here: what reaches the GPU, and when, is

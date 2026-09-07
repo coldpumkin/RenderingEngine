@@ -14,9 +14,16 @@
 layout(location = 0) in vec2 uv;
 layout(location = 0) out vec4 outColor;
 
-// Contract: matches SkyFace in Sky.h.
+// Contract: matches SkyFace in Sky.h -- the whole of it, because one loop bakes both
+//           cubes and pushes one struct. The sun is the sky's and is read there; a
+//           block that declared only the face would be a four-byte range receiving
+//           thirty-two.
 layout(push_constant) uniform Face {
     int index;
+    float pad0;
+    float pad1;
+    float pad2;
+    vec4 sun;
 } face;
 
 layout(set = 0, binding = 0) uniform samplerCube environment;

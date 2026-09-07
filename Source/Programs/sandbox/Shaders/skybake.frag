@@ -18,6 +18,10 @@ layout(location = 0) out vec4 outColor;
 //           a face of the cube is the same whichever way anyone is looking.
 layout(push_constant) uniform Face {
     int index;
+    float pad0;
+    float pad1;
+    float pad2;
+    vec4 sun;      // xyz = from a surface toward the sun, w unused
 } face;
 
 // Output: the direction this texel of this face stands for, unnormalised
@@ -60,6 +64,19 @@ void main() {
     // A soft edge and not a hard one: the ground is a stand-in for everything below the
     // horizon, and a step there reads as a seam in anything convolved from this.
     sky = mix(ground, sky, smoothstep(-0.12, 0.02, height));
+
+    // The sun, in the direction the scene's light comes from. Two lobes: a small bright
+    // disc, and a wide soft glow around it.
+    //
+    // **This is why the sun direction is a scene fact and not a per-frame value.** What
+    // is here is what the irradiance and the prefiltered cube are convolved from, so a
+    // sun that moved would leave both of them describing a sky that is no longer there.
+    // Moving it means baking all three again, which is the same image turning from an
+    // input of the frame into something the frame produces.
+    const float alignment = max(dot(dir, normalize(face.sun.xyz)), 0.0);
+    const vec3 sunColour = vec3(1.0, 0.94, 0.86);
+    sky += sunColour * 220.0 * smoothstep(0.9985, 0.9995, alignment);
+    sky += sunColour * 3.0 * pow(alignment, 64.0);
 
     // Linear light, like every other colour written in this renderer. The swapchain's
     // sRGB format is what encodes at the end, and nothing on the way encodes twice.

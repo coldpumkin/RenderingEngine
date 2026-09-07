@@ -36,6 +36,8 @@ TextureDesc MakeSkyTarget() noexcept;
 //           else -- a face of a cube is the same whichever way anyone is looking.
 struct SkyFace {
     int32_t index = 0;
+    float pad[3]{};              // vec4 below starts on a 16-byte boundary
+    glm::vec4 sun{0.0f, 1.0f, 0.0f, 0.0f};
 };
 
 // Output: what the diffuse irradiance cube is
@@ -100,7 +102,7 @@ bool BakeBrdfLut(const VulkanDevice& dev, const Commands& commands,
 // The views are made and destroyed here: nothing after this addresses a single face, so
 // keeping them would be keeping six handles for one moment.
 bool BakeSkyCube(const VulkanDevice& dev, const Commands& commands,
-                 const Pipeline& pipeline, Texture* cube) noexcept;
+                 const Pipeline& pipeline, const glm::vec3& sun, Texture* cube) noexcept;
 
 // The pass that draws it, once per path
 //
