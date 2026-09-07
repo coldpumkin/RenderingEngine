@@ -1223,11 +1223,31 @@ int main() {
         // it means baking the sky, the irradiance and the prefiltered cube again: the
         // environment would stop being an input of the frame and become something a
         // frame produces, which is the line the frame graph draws.
-        LightState light{};
-        light.kind = LightKind::Directional;
-        light.direction = kSunDirection;
-        light.color = glm::vec3{1.0f, 0.95f, 0.9f};
-        light.ambient = 0.15f;
+        // The scene's lights. The first is the sun the sky was baked from and the
+        // only one with a shadow map; the two after it are things in the room, which is
+        // the difference the kind makes -- they have somewhere to be.
+        LightState lights[3]{};
+
+        lights[0].kind = LightKind::Directional;
+        lights[0].direction = kSunDirection;
+        lights[0].color = glm::vec3{1.0f, 0.95f, 0.9f};
+
+        lights[1].kind = LightKind::Point;
+        lights[1].position = kSceneCenter + glm::vec3{-5.0f, 2.2f, 0.0f};
+        lights[1].color = glm::vec3{9.0f, 3.6f, 1.2f};   // a warm lamp, in radiance
+        lights[1].range = 14.0f;
+
+        lights[2].kind = LightKind::Spot;
+        lights[2].position = kSceneCenter + glm::vec3{5.0f, 7.5f, 0.0f};
+        lights[2].direction = glm::vec3{0.0f, 1.0f, 0.0f};   // pointing down
+        lights[2].color = glm::vec3{6.0f, 7.0f, 12.0f};      // a cool one
+        lights[2].innerCos = 0.94f;
+        lights[2].outerCos = 0.80f;
+        lights[2].range = 20.0f;
+
+        // The first is what the shadow map is drawn from, and ShadowView and
+        // ShadowProjectionFor both branch on its kind.
+        const LightState& light = lights[0];
         // Fill this frame's share of the pass
         //
         // Assignment only, so it belongs up here: what reaches the GPU, and when, is
@@ -1255,14 +1275,12 @@ int main() {
         // What reaches a surface, and where its shadow map was drawn from. The second
         // is made here rather than held: it turns with the light every frame, while
         // lightProj above does not move at all.
-        // w carries the kind, which is what it already meant: 0 is a direction and 1
-        // is a point, and only the second has a position to read.
-        renderer.lights[slot.index].value =
-            {.direction = glm::vec4{light.direction,
-                                    light.kind == LightKind::Spot ? 1.0f : 0.0f},
-             .color = glm::vec4{light.color, light.ambient},
-             .position = glm::vec4{light.position, light.range},
-             .cone = glm::vec4{light.innerCos, light.outerCos, 0.0f, 0.0f}};
+        // The ambient is the scene's and not any one light's, which is why it is an
+        // argument here rather than a field of the first of them.
+        if (!FillLights(lights, static_cast<uint32_t>(std::size(lights)),
+                        glm::vec3{0.15f}, &renderer.lights[slot.index].value)) {
+            break;
+        }
         // Both from the light itself now, because both answers differ by its kind: a
         // spot looks from where it is with a perspective, a directional light from a
         // point invented far enough back with an orthographic box.

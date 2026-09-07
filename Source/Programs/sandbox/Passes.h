@@ -369,7 +369,13 @@ glm::mat4 ProjectionFor(float fovDegrees, VkExtent2D target) noexcept;
 // changes with it: its shadow is a perspective from that point rather than an
 // orthographic box around the scene, its light falls off with distance, and it stops
 // where its cone does.
-enum class LightKind { Directional, Spot };
+enum class LightKind { Directional, Spot, Point };
+
+// How many lights a frame can carry
+//
+// A ceiling we impose. One shadow map is drawn, for the first light, which is what
+// makes the rest cheap enough that four is not a number worth tuning.
+inline constexpr uint32_t kMaxLights = 4;
 
 struct LightState {
     LightKind kind = LightKind::Directional;
@@ -382,13 +388,18 @@ struct LightState {
     // have.
     glm::vec3 position{};
 
-    // Half-angle of the cone, in radians, and where the light fades to nothing.
-    // Spot only, for the same reason.
+    // The cone, as cosines. **Spot only** -- a point light is a positioned light with
+    // no cone, so what it sends in a direction does not depend on the direction.
     float innerCos = 0.0f;
     float outerCos = 0.0f;
+
+    // Where the light is called nothing. Positioned kinds only.
     float range = 0.0f;
 
     glm::vec3 color{1.0f};
+
+    // Not per light. What the sky sends is one fact about the scene, and a second light
+    // does not add a second sky.
     float ambient = 0.0f;
 };
 
@@ -510,22 +521,53 @@ struct ShadowUniform {
 };
 
 // Contract: field order and types match the shader's Light block.
-struct LightUniform {
-    // xyz = surface toward the light. **w says which kind**: 0 for a directional light
-    // and 1 for a spot. That is not a flag put beside the vector, it is what w means in
-    // homogeneous coordinates -- 0 is a direction and 1 is a point -- so the shader
-    // reads the kind out of the same number that says translation may not reach it.
+// One light, in the form a shader reads
+//
+// **A projection of LightState, and the kind is what it loses.** What shading needs is
+// not the name of a category but a direction, a position and a cone, and the three
+// kinds differ only in which of those mean anything:
+//
+//   directional   w = 0, so the direction is the same everywhere and nothing falls off
+//   spot          w = 1, position and cone both read
+//   point         w = 1, cone opened all the way -- a point light is a spot with no cone
+//
+// The last line is why there is no kind field here. LightState declares which it is and
+// this is what that declaration comes to; opening the cone is not a guess about the
+// kind, it is what a point light's cone is.
+struct LightEntry {
+    // xyz = surface toward the light, w = 0 for a direction and 1 for a position, which
+    // is what w means in homogeneous coordinates. Not a flag beside the vector: the
+    // shader reads whether translation reaches it out of the same number.
     glm::vec4 direction;
 
-    glm::vec4 color;       // rgb = colour, a = ambient
-
-    // Spot only, read when direction.w is 1. w is a payload here rather than a
-    // homogeneous coordinate, which the line above is what separates.
+    glm::vec4 color;       // rgb = colour, a unused
     glm::vec4 position;    // xyz = where it is, w = how far its light carries
-
-    // The cone as cosines and not angles, because a shader compares a dot product.
-    glm::vec4 cone;        // x = inner, y = outer, zw unused
+    glm::vec4 cone;        // x = inner cosine, y = outer, zw unused
 };
+
+struct LightUniform {
+    LightEntry lights[kMaxLights];
+
+    // rgb = the ambient the sky adds under all of them, a = how many entries above are
+    // live. A count and not a sentinel: a loop that stops on one has to read a light to
+    // find out it should not have.
+    glm::vec4 ambient;
+};
+
+// Output: what one light comes to, in the form a shader reads
+//
+// The projection LightEntry's comment describes, in one place: a directional light
+// writes w = 0 and nothing else matters; a spot writes its cone; a point opens the cone
+// all the way, which is what a point light's cone is rather than a way of marking it.
+LightEntry EntryFor(const LightState& light) noexcept;
+
+// Effect: fills a LightUniform from up to kMaxLights states
+//
+// Refuses more than fit rather than dropping the last quietly -- a light that is not
+// there is a picture nobody can explain. The ambient is an argument because it is the
+// scene's and not any one light's.
+bool FillLights(const LightState lights[], uint32_t count, const glm::vec3& ambient,
+                LightUniform* out) noexcept;
 
 // What a frame computes, once per frame in flight, owned by no pass
 // ----------------------------------------------------------------------------
@@ -687,10 +729,8 @@ inline ProgramRequirements SharedBlocks() noexcept {
         {"viewPos",  offsetof(CameraUniform, viewPos),  sizeof(CameraUniform::viewPos)},
     };
     static const RequiredMember kLight[] = {
-        {"direction", offsetof(LightUniform, direction), sizeof(LightUniform::direction)},
-        {"color",     offsetof(LightUniform, color),     sizeof(LightUniform::color)},
-        {"position",  offsetof(LightUniform, position),  sizeof(LightUniform::position)},
-        {"cone",      offsetof(LightUniform, cone),      sizeof(LightUniform::cone)},
+        {"lights",  offsetof(LightUniform, lights),  sizeof(LightUniform::lights)},
+        {"ambient", offsetof(LightUniform, ambient), sizeof(LightUniform::ambient)},
     };
     static const RequiredMember kShadow[] = {
         {"lightView", offsetof(ShadowUniform, lightView), sizeof(ShadowUniform::lightView)},

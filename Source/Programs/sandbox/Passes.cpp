@@ -104,6 +104,34 @@ glm::mat4 ProjectionFor(float fovDegrees, VkExtent2D target) noexcept {
     return glm::perspective(glm::radians(fovDegrees), aspect, kNearPlane, kFarPlane);
 }
 
+LightEntry EntryFor(const LightState& light) noexcept {
+    LightEntry entry{};
+    const bool positioned = light.kind != LightKind::Directional;
+
+    entry.direction = glm::vec4{light.direction, positioned ? 1.0f : 0.0f};
+    entry.color = glm::vec4{light.color, 0.0f};
+    entry.position = glm::vec4{light.position, light.range};
+
+    // A point light accepts every direction, and that is a cone of -1 rather than a
+    // flag saying it has none. The shader's smoothstep is then 1 everywhere, so one
+    // expression serves both positioned kinds without asking which it is.
+    entry.cone = light.kind == LightKind::Point
+               ? glm::vec4{-1.0f, -1.0f, 0.0f, 0.0f}
+               : glm::vec4{light.innerCos, light.outerCos, 0.0f, 0.0f};
+    return entry;
+}
+
+bool FillLights(const LightState lights[], uint32_t count, const glm::vec3& ambient,
+                LightUniform* out) noexcept {
+    if (count > kMaxLights) {
+        LOG("[render] %u lights, and a frame carries %u\n", count, kMaxLights);
+        return false;
+    }
+    for (uint32_t i = 0; i < count; ++i) { out->lights[i] = EntryFor(lights[i]); }
+    out->ambient = glm::vec4{ambient, static_cast<float>(count)};
+    return true;
+}
+
 glm::mat4 ShadowView(const LightState& light, const glm::vec3& sceneCenter) noexcept {
     // Chosen and not assumed: lookAt builds a basis by crossing the forward with the
     // up, and that collapses when the two are parallel -- a sun directly overhead.

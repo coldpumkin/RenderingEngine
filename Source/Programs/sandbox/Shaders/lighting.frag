@@ -60,13 +60,21 @@ layout(set = 0, binding = 0) uniform Camera {
 } camera;
 
 // Contract: same fields as LightUniform in Passes.h.
-layout(set = 0, binding = 1) uniform Light {
-    // xyz = surface toward the light, w = which kind: 0 a direction, 1 a spot. That is
-    // the homogeneous meaning of w and the kind at the same time.
+// Contract: matches LightUniform in Passes.h, kMaxLights included.
+struct LightEntry {
+    // xyz = surface toward the light, w = 0 a direction, 1 a position. The homogeneous
+    // meaning of w, which is also the only thing that separates the kinds here.
     vec4 direction;
-    vec4 color;        // rgb = colour, a = ambient
-    vec4 position;     // spot only: xyz where it is, w how far it carries
-    vec4 cone;         // spot only: x inner cosine, y outer
+    vec4 color;        // rgb = colour, a unused
+    vec4 position;     // xyz where it is, w how far it carries
+    vec4 cone;         // x inner cosine, y outer -- opened all the way for a point
+};
+
+layout(set = 0, binding = 1) uniform Light {
+    LightEntry lights[4];
+
+    // rgb = the ambient under all of them, a = how many are live.
+    vec4 ambient;
 } light;
 
 // Output: xyz toward the light from this point, w how much of it arrives
@@ -78,12 +86,12 @@ layout(set = 0, binding = 1) uniform Light {
 // and does not know which kind produced them.
 //
 // Contract: matches LightUniform in Passes.h.
-vec4 LightAt(vec3 worldPos) {
-    if (light.direction.w < 0.5) {
-        return vec4(normalize(light.direction.xyz), 1.0);
+vec4 LightAt(LightEntry entry, vec3 worldPos) {
+    if (entry.direction.w < 0.5) {
+        return vec4(normalize(entry.direction.xyz), 1.0);
     }
 
-    const vec3 toLightVec = light.position.xyz - worldPos;
+    const vec3 toLightVec = entry.position.xyz - worldPos;
     const float dist = length(toLightVec);
     const vec3 toLight = toLightVec / max(dist, 0.0001);
 
@@ -91,11 +99,13 @@ vec4 LightAt(vec3 worldPos) {
     // window is what stops a light reaching the whole scene faintly, which would cost
     // shadow map area for light nobody can see.
     const float falloff = 1.0 / max(dist * dist, 0.0001);
-    const float window = clamp(1.0 - dist / max(light.position.w, 0.0001), 0.0, 1.0);
+    const float window = clamp(1.0 - dist / max(entry.position.w, 0.0001), 0.0, 1.0);
 
-    // Full inside the inner cone, nothing outside the outer, smooth between.
-    const float aligned = dot(-toLight, normalize(light.direction.xyz));
-    const float cone = smoothstep(light.cone.y, light.cone.x, aligned);
+    // Full inside the inner cone, nothing outside the outer, smooth between. A point
+    // light's outer cosine is -1, so this is 1 in every direction and the same
+    // expression covers both positioned kinds without asking which one it is.
+    const float aligned = dot(-toLight, normalize(entry.direction.xyz));
+    const float cone = smoothstep(entry.cone.y, entry.cone.x, aligned);
 
     return vec4(toLight, falloff * window * window * cone);
 }
@@ -261,45 +271,46 @@ void main() {
     const float metallic = view.useMetallicRoughness > 0.5 ? material.y : 0.0;
 
     const vec3 worldPos = WorldFromDepth(uv, depth);
-    // One call, and after it nothing here knows which kind of light this is: xyz is the
-    // direction and w is how much arrives, which a directional light answers with 1.
-    const vec4 incoming = LightAt(worldPos);
-    const vec3 toLight = incoming.xyz;
-    const float reach = incoming.w;
     const vec3 toEye = normalize(camera.viewPos.xyz - worldPos);
-    const float lambert = max(dot(normal, toLight), 0.0) * reach;
 
-    // Blinn-Phong, carried over from scene.frag unchanged. **This is not PBR** -- no
-    // GGX, no Fresnel, no energy conservation. What roughness buys is that it comes
-    // from the asset rather than one constant for the whole scene.
-    const vec3 halfway = normalize(toLight + toEye);
-    const float shininess = mix(256.0, 4.0, roughness);
-    const float highlight = pow(max(dot(normal, halfway), 0.0), shininess);
-    const float specular = view.useSpecular > 0.5
-                         ? highlight * step(0.0001, lambert) : 0.0;
-
-    const float lit = view.useShadow > 0.5 ? ShadowFactor(worldPos, lambert) : 1.0;
-
-    // A metal reflects its own colour and has no diffuse; a dielectric reflects the
-    // light's colour and keeps its paint. 0.04 is where most non-metals sit.
+    // What metalness means, in the two places it means anything: a metal reflects its
+    // own colour and has no diffuse, a dielectric reflects the light's and keeps its
+    // paint.
     const vec3 specularColor = mix(vec3(0.04), albedo, metallic);
     const vec3 diffuseColor = albedo * (1.0 - metallic);
 
-    // Ambient reaches the reflected term too, standing in for an environment map --
-    // without it every metal not facing the light goes black, which Sponza's curtain
-    // rods did. Ambient is outside the shadow term: a shadowed surface still sits in
-    // the room.
-    // The same ambient the forward path uses, from the same cube.
-    const vec3 ambient = texture(irradianceCube, normal).rgb + vec3(light.color.a);
+    // **The loop is the whole of what having several lights costs here.** One shadow
+    // map is drawn, for the first light, so only that one is shaded; the rest light
+    // what they reach and cast nothing.
+    const int liveLights = int(light.ambient.a);
 
-    // The environment's share of the specular, which is what a metal facing away from
-    // the sun now reflects instead of going black. The direct highlight stays: one is a
-    // light source and the other is everything else, and they add.
+    vec3 direct = vec3(0.0);
+    for (int i = 0; i < liveLights; ++i) {
+        // After this call nothing in the loop knows which kind of light it is.
+        const vec4 incoming = LightAt(light.lights[i], worldPos);
+        const vec3 toLight = incoming.xyz;
+        const float lambert = max(dot(normal, toLight), 0.0) * incoming.w;
+
+        const vec3 halfway = normalize(toLight + toEye);
+        const float shininess = mix(256.0, 4.0, roughness);
+        const float highlight = pow(max(dot(normal, halfway), 0.0), shininess);
+        const float specular = view.useSpecular > 0.5
+                             ? highlight * step(0.0001, lambert) : 0.0;
+
+        const float lit = (i == 0 && view.useShadow > 0.5)
+                        ? ShadowFactor(worldPos, lambert) : 1.0;
+
+        direct += light.lights[i].color.rgb * lambert * lit * diffuseColor
+                + light.lights[i].color.rgb * specular * lit * specularColor;
+    }
+
+    // Once, outside the loop and outside the shade: a shadowed surface is still lit by
+    // the room, and a second light does not add a second sky.
+    const vec3 ambient = texture(irradianceCube, normal).rgb + light.ambient.rgb;
     const vec3 envSpecular =
         EnvironmentSpecular(normal, toEye, roughness, specularColor);
 
-    const vec3 colour = (light.color.rgb * lambert * lit + ambient) * diffuseColor
-                      + (light.color.rgb * specular * lit) * specularColor + envSpecular;
+    const vec3 colour = direct + ambient * diffuseColor + envSpecular;
 
     outColor = vec4(colour, 1.0);
 }
