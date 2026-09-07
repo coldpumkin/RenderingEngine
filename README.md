@@ -58,8 +58,10 @@ the two paths are meant to compare is structure, so the edges differ and that is
 - **Image-based lighting.** Four bakes at startup: sky cube (256², procedural), irradiance
   cube (32²), prefiltered cube (128², 5 mips), BRDF LUT (256² RG16F). Split-sum
   approximation. There is no environment texture file; the sky is a function of direction.
-- **Direct lighting is Blinn-Phong**, not a microfacet BRDF. Roughness comes from the
-  asset and drives the highlight width, and that is as far as it goes.
+- **Cook-Torrance for direct light**, the same microfacet model the environment was baked
+  from: GGX for the distribution of facet normals, Smith for masking, Schlick for
+  Fresnel, and `kd = (1 - F)(1 - metallic)` so the two halves split one budget instead of
+  being added independently.
 - **glTF loading** with tangent generation where the asset has none (one primitive in
   Sponza; the generator was checked against the 102 that ship tangents, mean dot 0.9953).
 - MSAA resolve, resize and minimize handling, VMA for allocation.
@@ -163,7 +165,8 @@ shader interface and per-frame draw statistics.
 
   | | shadow | point shadow | sky | middle | post | total |
   |---|---|---|---|---|---|---|
-  | forward | 3.133 | 0.674 | 0.347 | scene 2.236 | 0.057 | 6.447 ms |
+  | forward | 3.144 | 0.682 | 0.348 | scene 2.249 | 0.057 | 6.479 ms |
+  | deferred | 2.848 | 0.682 | 0.322 | geometry 0.836 + lighting 0.758 | 0.059 | 5.505 ms |
 
   The point shadow figure is six faces for one light, drawing the whole list each time.
 

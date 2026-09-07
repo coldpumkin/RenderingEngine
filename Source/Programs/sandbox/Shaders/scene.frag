@@ -133,6 +133,46 @@ layout(set = 0, binding = 8) uniform sampler2D brdfLut;
 // multiplies it back rather than undoing a projection.
 layout(set = 0, binding = 9) uniform samplerCubeArray pointShadowMaps;
 
+const float kPi = 3.14159265359;
+
+// The three terms a microfacet BRDF is made of. A rough surface is taken as a crowd of
+// tiny mirrors; the only ones that send this light at this eye are those whose normal is
+// the halfway vector, so every term below is about that crowd rather than about the
+// surface as a whole.
+//
+// The same D and G the environment bakes use. prefilter.frag draws its samples from this
+// distribution and brdflut.frag integrates this geometry term, so direct light and image
+// based light are now two halves of one model rather than two models.
+
+// How much of the crowd faces exactly the halfway vector. GGX rather than a power of the
+// cosine: its tail falls off slowly, which is what gives a real highlight a bright core
+// and a wide skirt at once.
+float DistributionGGX(float ndoth, float roughness) {
+    const float a = roughness * roughness;
+    const float a2 = a * a;
+    const float d = ndoth * ndoth * (a2 - 1.0) + 1.0;
+    return a2 / max(kPi * d * d, 1e-7);
+}
+
+// How much of that crowd is hidden behind its neighbours, from the eye and from the
+// light. k is the direct-light one; the image based case halves it, which is the
+// difference brdflut.frag notes.
+float GeometrySmith(float ndotv, float ndotl, float roughness) {
+    const float r = roughness + 1.0;
+    const float k = (r * r) / 8.0;
+    const float gv = ndotv / (ndotv * (1.0 - k) + k);
+    const float gl = ndotl / (ndotl * (1.0 - k) + k);
+    return gv * gl;
+}
+
+// What fraction of the light a mirror reflects rather than lets in. It rises to 1 at
+// grazing angles, which is why every surface has a bright rim, and f0 is what it reads
+// head on -- 0.04 for a dielectric, the metal's own colour for a metal.
+vec3 FresnelSchlick(float vdoth, vec3 f0) {
+    return f0 + (1.0 - f0) * pow(clamp(1.0 - vdoth, 0.0, 1.0), 5.0);
+}
+
+
 // Output: what the environment reflects off this surface
 //
 // The split-sum approximation put back together: the prefiltered environment in the
@@ -330,19 +370,29 @@ void main() {
         const vec3 toLight = incoming.xyz;
         const float lambert = max(dot(normal, toLight), 0.0) * incoming.w;
 
-        // Blinn-Phong. The halfway vector stands in for the mirror direction and lines
-        // up with the normal exactly when the surface reflects the light at the eye.
+        // Cook-Torrance. The halfway vector is the normal a microfacet would need to
+        // send this light at this eye, so the three terms are all about the facets that
+        // have it: how many there are, how many are not hidden, and how reflective they
+        // are.
         const vec3 halfway = normalize(toLight + toEye);
+        const float ndotv = max(dot(normal, toEye), 1e-4);
+        const float ndotl = max(dot(normal, toLight), 0.0);
+        const float ndoth = max(dot(normal, halfway), 0.0);
+        const float vdoth = max(dot(toEye, halfway), 0.0);
 
-        // Roughness as an exponent. **This is not PBR** -- no GGX distribution, no
-        // Fresnel, no energy conservation. What it buys is roughness coming from the
-        // asset instead of one constant, so marble and cloth stop having the same
-        // highlight. Smooth concentrates it, rough spreads it.
-        const float shininess = mix(256.0, 4.0, roughness);
-        const float highlight = pow(max(dot(normal, halfway), 0.0), shininess);
+        const float d = DistributionGGX(ndoth, roughness);
+        const float g = GeometrySmith(ndotv, ndotl, roughness);
+        const vec3 f = FresnelSchlick(vdoth, specularColor);
 
-        // Gated on lambert: a surface facing away from the light cannot shine.
-        const float specular = highlight * step(0.0001, lambert) * view.useSpecular;
+        // The denominator turns the facets' own area into the surface's. Gated on ndotl
+        // for the reason the old exponent was: a surface facing away cannot shine.
+        const vec3 specular = (d * g * f) / max(4.0 * ndotv * ndotl, 1e-4)
+                            * step(1e-4, ndotl) * view.useSpecular;
+
+        // What Fresnel did not reflect is what goes in and comes back as diffuse, and a
+        // metal keeps none of it. This is the link Blinn-Phong has no way to express:
+        // there the two halves are added without either knowing the other.
+        const vec3 kd = (vec3(1.0) - f) * (1.0 - metallic);
 
         // Only the first light has a map. Skipped where the surface already faces
         // away -- unlit either way, and the bias is meaningless at a grazing angle.
@@ -360,10 +410,11 @@ void main() {
             }
         }
 
-        // Diffuse takes the surface colour, specular takes the light's: a highlight is
-        // the light itself reflected, not the paint.
-        direct += light.lights[i].color.rgb * lambert * shade * diffuseColor
-                + light.lights[i].color.rgb * specular * shade * specularColor;
+        // One radiance, one cosine, one shadow, and the BRDF decides how the two halves
+        // split it. albedo / pi is what a Lambertian surface is; the colour of a
+        // highlight is already inside f.
+        direct += (kd * albedo / kPi + specular)
+                * light.lights[i].color.rgb * lambert * shade;
     }
 
     // --- and what the sky sends, once --------------------------------------
@@ -375,6 +426,11 @@ void main() {
     const vec3 envSpecular =
         EnvironmentSpecular(normal, toEye, roughness, specularColor);
 
+    // No division by pi here, unlike the direct diffuse above, and the integral says
+    // why. irradiance.frag sums L cos sin over a grid and multiplies by pi, which comes
+    // to E / pi rather than E -- the true irradiance carries pi squared over the sample
+    // count. So the factor a Lambertian surface needs is already in the texture, and
+    // dividing again would darken the sky's contribution by pi.
     const vec3 lit = direct + ambient * diffuseColor + envSpecular;
 
     outColor = vec4(lit, pc.alpha);

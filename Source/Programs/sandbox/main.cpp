@@ -900,12 +900,19 @@ int main() {
 
         lights[0].kind = LightKind::Directional;
         lights[0].direction = kSunDirection;
-        lights[0].color = glm::vec3{1.0f, 0.95f, 0.9f};
+        // Times pi, and the reason is the BRDF rather than the light. A Lambertian
+        // surface returns albedo / pi of what arrives, and until the shading used a
+        // microfacet model that division was simply left out -- so every light was
+        // implicitly pi times what it said. Putting the factor where it belongs and
+        // scaling the lights by it keeps the same picture with the terms now correct.
+        constexpr float kRadiance = 3.14159265f;
+
+        lights[0].color = glm::vec3{1.0f, 0.95f, 0.9f} * kRadiance;
 
         lights[1].kind = LightKind::Spot;
         lights[1].position = kSceneCenter + glm::vec3{5.0f, 7.5f, 0.0f};
         lights[1].direction = glm::vec3{0.0f, 1.0f, 0.0f};   // pointing down
-        lights[1].color = glm::vec3{6.0f, 7.0f, 12.0f};      // a cool one
+        lights[1].color = glm::vec3{6.0f, 7.0f, 12.0f} * kRadiance;   // a cool one
         lights[1].innerCos = 0.94f;
         lights[1].outerCos = 0.80f;
         lights[1].range = 20.0f;
@@ -913,7 +920,7 @@ int main() {
         // Last, because it casts no shadow and the casters are a prefix.
         lights[2].kind = LightKind::Point;
         lights[2].position = kSceneCenter + glm::vec3{-5.0f, 2.2f, 0.0f};
-        lights[2].color = glm::vec3{9.0f, 3.6f, 1.2f};   // a warm lamp, in radiance
+        lights[2].color = glm::vec3{9.0f, 3.6f, 1.2f} * kRadiance;   // a warm lamp
         lights[2].range = 14.0f;
 
         // Which lights get a map, and it is a prefix rather than a set: the ones that
@@ -968,7 +975,8 @@ int main() {
         // The ambient is the scene's and not any one light's, which is why it is an
         // argument here rather than a field of the first of them.
         if (!FillLights(lights, static_cast<uint32_t>(std::size(lights)),
-                        glm::vec3{0.15f}, &renderer->lights[slot.index].value)) {
+                        glm::vec3{0.15f} * kRadiance,
+                        &renderer->lights[slot.index].value)) {
             break;
         }
         // Both from the light itself now, because both answers differ by its kind: a
