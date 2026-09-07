@@ -603,6 +603,8 @@ int main() {
     // pipeline is compiled against -- a face is what that pass draws into.
     const TextureDesc skyTarget = MakeSkyTarget();
     const TextureDesc skyFaceTarget = SliceDesc(skyTarget);
+    const TextureDesc irradianceTarget = MakeIrradianceTarget();
+    const TextureDesc irradianceFaceTarget = SliceDesc(irradianceTarget);
 
     // Device -- and past it, everything that needs one
     // ========================================================================
@@ -631,6 +633,7 @@ int main() {
     pipelineSources.guiLayout = GuiVertexInput();
     pipelineSources.shadowDepth = &shadowTarget;
     pipelineSources.skyFace = &skyFaceTarget;
+    pipelineSources.irradianceFace = &irradianceFaceTarget;
     pipelineSources.sceneColor = &sceneTargetDescs.color;
     pipelineSources.sceneDepth = &sceneTargetDescs.depth;
     pipelineSources.swapchain = &swapchainTarget;
@@ -818,6 +821,7 @@ int main() {
         {&renderer.pipelines.geometryProgram.setLayouts[kFrameSet], kFramesInFlight},
         {&renderer.pipelines.lightingProgram.setLayouts[kFrameSet], kFramesInFlight},
         {&renderer.pipelines.lightingProgram.setLayouts[kMaterialSet], kFramesInFlight},
+        {&renderer.pipelines.irradianceProgram.setLayouts[kFrameSet], 1},
         {&renderer.pipelines.skyProgram.setLayouts[kFrameSet], 2 * kFramesInFlight},
         {&renderer.pipelines.postProgram.setLayouts[kFrameSet], kFramesInFlight},
         // One, and counted by neither of the other two reasons: there is one font.
@@ -915,6 +919,15 @@ int main() {
         return 1;
     }
 
+    // From the sky, so after it. What every matte surface receives, worked out once
+    // rather than per pixel per frame -- the integral has no other input.
+    if (!CreateTexture(dev, irradianceTarget, &renderer.irradianceCube)) { return 1; }
+    if (!BakeIrradianceCube(dev, commands, renderer.descriptors,
+                            renderer.pipelines.irradianceBake,
+                            renderer.skyCube, &renderer.irradianceCube)) {
+        return 1;
+    }
+
     const Texture* shadowMaps[kFramesInFlight]{};
     PassInput shadowMapInput{&shadowTarget, {}};
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
@@ -959,7 +972,7 @@ int main() {
     // read as holes.
     const FrameSetSources frameSet{renderer.cameras, renderer.lights, renderer.shadows,
                                    shadowMapInput, renderer.viewOptions,
-                                   &renderer.skyCube};
+                                   &renderer.skyCube, &renderer.irradianceCube};
 
     if (!CreateScenePass(renderer.descriptors, sceneTargetDescs, sceneTargets,
                          renderer.mesh, renderer.pipelines.scene,

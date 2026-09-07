@@ -307,6 +307,7 @@ bool FillFrameSet(const Descriptors& descriptors, const ShaderProgram& program,
         {&sources.shadowMap.frames[frame]->view},
         {nullptr, &sources.views[frame].buffer},
         {&sources.skyCube->view},
+        {&sources.irradianceCube->view},
     };
     UpdateSet(descriptors, layout, set, values, static_cast<uint32_t>(std::size(values)));
 

@@ -853,6 +853,10 @@ struct FrameSetSources {
     // So it sits with the material textures and the mesh: an input the frame is handed,
     // not something the frame produces.
     const Texture* skyCube = nullptr;              // binding 5
+
+    // What a matte surface receives from the whole sky, convolved once from the cube
+    // above. Same category as it -- made once, never again.
+    const Texture* irradianceCube = nullptr;       // binding 6
 };
 
 // Effect: writes this frame's set 0, and declares in desc the pass outputs this

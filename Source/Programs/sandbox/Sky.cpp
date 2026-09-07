@@ -14,57 +14,102 @@ TextureDesc MakeSkyTarget() noexcept {
     return desc;
 }
 
-bool BakeSkyCube(const VulkanDevice& dev, const Commands& commands,
-                 const Pipeline& pipeline, Texture* cube) noexcept {
+TextureDesc MakeIrradianceTarget() noexcept {
+    TextureDesc desc = MakeSkyTarget();
+    desc.extent = VkExtent2D{32, 32};
+    return desc;
+}
+
+// Effect: draws one triangle into every face of cube, with whatever set is bound
+//
+// The shape both bakes share. What differs is the program and whether a set is bound,
+// and both of those are arguments rather than a second copy of this loop.
+static bool BakeCubeFaces(const VulkanDevice& dev, VkCommandBuffer cmd,
+                          const Pipeline& pipeline, VkDescriptorSet set,
+                          Texture* cube) noexcept {
     const TextureDesc faceDesc = SliceDesc(cube->desc);
 
-    // One 2D view per layer. The kind says 2D and not Cube because that is what one
-    // layer is -- a cube is how the six are addressed together, and nothing addresses
-    // them together while they are being drawn.
-    ImageView faces[6];
-    for (uint32_t i = 0; i < std::size(faces); ++i) {
-        ImageViewDesc viewDesc;
-        viewDesc.type = VK_IMAGE_VIEW_TYPE_2D;
-        viewDesc.baseLayer = i;
-        viewDesc.layerCount = 1;
-        if (!CreateImageView(dev, cube->image.handle, cube->desc.format,
-                             cube->desc.samples, cube->desc.usage, viewDesc, &faces[i])) {
-            return false;
-        }
-    }
-
-    // One attachment, cleared by being written: the shader covers the face, so what was
-    // there is dead. Declared against the face's desc rather than the cube's, because a
-    // 2D view of one layer is what this pass draws into.
     RenderPassDesc desc{};
     desc.attachments[0].resource = &faceDesc;
     desc.attachments[0].load = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     desc.attachments[0].store = VK_ATTACHMENT_STORE_OP_STORE;
     if (!ValidatePassDesc(desc)) { return false; }
 
-    VkCommandBuffer cmd = BeginOneShot(dev, commands);
-    if (cmd == VK_NULL_HANDLE) { return false; }
-
     const VolkDeviceTable& vk = dev.table;
     const VkRect2D area{{0, 0}, cube->desc.extent};
 
-    for (uint32_t i = 0; i < std::size(faces); ++i) {
-        const AttachmentView view{cube->image.handle, &faces[i], faceDesc};
+    for (uint32_t i = 0; i < 6; ++i) {
+        ImageViewDesc viewDesc;
+        viewDesc.type = VK_IMAGE_VIEW_TYPE_2D;
+        viewDesc.baseLayer = i;
+        viewDesc.layerCount = 1;
+
+        ImageView faceView;
+        if (!CreateImageView(dev, cube->image.handle, cube->desc.format,
+                             cube->desc.samples, cube->desc.usage, viewDesc, &faceView)) {
+            return false;
+        }
+
+        const AttachmentView view{cube->image.handle, &faceView, faceDesc};
         if (!BeginPass(vk, cmd, desc, &view, nullptr, area,
                        VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT)) {
             return false;
         }
 
         BindPipeline(vk, cmd, pipeline, area);
+        if (set != VK_NULL_HANDLE) {
+            vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                       pipeline.program->layout, kFrameSet,
+                                       1, &set, 0, nullptr);
+        }
         const SkyFace face{static_cast<int32_t>(i)};
         vk.vkCmdPushConstants(cmd, pipeline.program->layout,
                               VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(face), &face);
         vk.vkCmdDraw(cmd, 3, 1, 0, 0);
         vk.vkCmdEndRendering(cmd);
+
+        // The view is destroyed when this iteration ends, after the commands that name
+        // it are recorded and before they run -- which is legal: a view has to outlive
+        // recording, not execution.
     }
+    return true;
+}
+
+bool BakeIrradianceCube(const VulkanDevice& dev, const Commands& commands,
+                        const Descriptors& descriptors, const Pipeline& pipeline,
+                        const Texture& environment, Texture* irradiance) noexcept {
+    if (pipeline.program == nullptr) { return false; }
+    const ShaderProgram& program = *pipeline.program;
+
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    if (!AllocateSets(descriptors, program.setLayouts[kFrameSet], 1, &set)) {
+        return false;
+    }
+    const BindingValue values[] = {{&environment.view}};
+    UpdateSet(descriptors, program.setLayouts[kFrameSet], set,
+              values, static_cast<uint32_t>(std::size(values)));
+
+    VkCommandBuffer cmd = BeginOneShot(dev, commands);
+    if (cmd == VK_NULL_HANDLE) { return false; }
+    if (!BakeCubeFaces(dev, cmd, pipeline, set, irradiance)) { return false; }
+    RecordSampledHandover(dev.table, cmd, *irradiance, AttachmentRole::Color);
+    if (!EndOneShotAndWait(dev, commands, cmd, "irradiance bake")) { return false; }
+
+    LOG("[render] irradiance cube baked (%ux%u, 6 faces)\n",
+        irradiance->desc.extent.width, irradiance->desc.extent.height);
+    return true;
+}
+
+bool BakeSkyCube(const VulkanDevice& dev, const Commands& commands,
+                 const Pipeline& pipeline, Texture* cube) noexcept {
+    VkCommandBuffer cmd = BeginOneShot(dev, commands);
+    if (cmd == VK_NULL_HANDLE) { return false; }
+
+    // No set: this program reads nothing. The face index is the whole of its input.
+    if (!BakeCubeFaces(dev, cmd, pipeline, VK_NULL_HANDLE, cube)) { return false; }
 
     // Every face at once, because from here the cube is read as one thing.
-    RecordSampledHandover(vk, cmd, *cube, AttachmentRole::Color);
+    RecordSampledHandover(dev.table, cmd, *cube, AttachmentRole::Color);
 
     if (!EndOneShotAndWait(dev, commands, cmd, "sky bake")) { return false; }
 

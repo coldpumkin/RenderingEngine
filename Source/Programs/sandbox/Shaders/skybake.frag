@@ -43,16 +43,23 @@ vec3 DirectionFor(int index, vec2 st) {
 void main() {
     const vec3 dir = normalize(DirectionFor(face.index, uv));
 
-    // A day sky: deep blue overhead, pale at the horizon, brown below it. The height is
-    // the y of the direction, which is what makes this a function of direction alone
-    // and so the one thing a cube map can hold.
-    const vec3 zenith  = vec3(0.10, 0.26, 0.62);
-    const vec3 horizon = vec3(0.62, 0.72, 0.86);
-    const vec3 ground  = vec3(0.16, 0.13, 0.10);
+    // A day sky: deep blue overhead, bright at the horizon, dark ground below it.
+    //
+    // **The values go above 1.** The cube is 16-bit float and this is radiance, not a
+    // colour on a screen -- an environment clamped to 1 lights everything as if the
+    // sky were as bright as a sheet of paper, and the irradiance convolved out of it
+    // would be flat. The horizon is the brightest part of a clear sky, which is why it
+    // is the one over 1 here.
+    const vec3 zenith  = vec3(0.18, 0.42, 1.00);
+    const vec3 horizon = vec3(1.35, 1.55, 1.85);
+    const vec3 ground  = vec3(0.05, 0.043, 0.035);
 
     const float height = dir.y;
-    vec3 sky = mix(horizon, zenith, clamp(height * 1.6, 0.0, 1.0));
-    sky = mix(ground, sky, clamp((height + 0.05) * 12.0, 0.0, 1.0));
+    vec3 sky = mix(horizon, zenith, clamp(pow(max(height, 0.0), 0.55), 0.0, 1.0));
+
+    // A soft edge and not a hard one: the ground is a stand-in for everything below the
+    // horizon, and a step there reads as a seam in anything convolved from this.
+    sky = mix(ground, sky, smoothstep(-0.12, 0.02, height));
 
     // Linear light, like every other colour written in this renderer. The swapchain's
     // sRGB format is what encodes at the end, and nothing on the way encodes twice.

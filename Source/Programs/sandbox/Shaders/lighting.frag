@@ -73,6 +73,7 @@ layout(set = 0, binding = 2) uniform Shadow {
 } shadow;
 
 layout(set = 0, binding = 3) uniform sampler2D shadowMap;
+layout(set = 0, binding = 6) uniform samplerCube irradianceCube;
 
 // The panel. **Only three of these mean anything here** -- useNormalMap, useBaseColor
 // and useAlphaMask were decided in the geometry pass and are already written into the
@@ -211,8 +212,11 @@ void main() {
     // without it every metal not facing the light goes black, which Sponza's curtain
     // rods did. Ambient is outside the shadow term: a shadowed surface still sits in
     // the room.
-    const vec3 colour = (light.color.rgb * lambert * lit + light.color.a) * diffuseColor
-                      + (light.color.rgb * specular * lit + light.color.a) * specularColor;
+    // The same ambient the forward path uses, from the same cube.
+    const vec3 ambient = texture(irradianceCube, normal).rgb + vec3(light.color.a);
+
+    const vec3 colour = (light.color.rgb * lambert * lit + ambient) * diffuseColor
+                      + (light.color.rgb * specular * lit + ambient) * specularColor;
 
     outColor = vec4(colour, 1.0);
 }

@@ -44,6 +44,7 @@ struct PipelineSources {
 
     // What a face of the sky cube is, which is the 2D slice the bake draws into.
     const TextureDesc* skyFace = nullptr;
+    const TextureDesc* irradianceFace = nullptr;
 
     // What the caller holds these programs to, and the two halves answer different
     // questions.
@@ -86,6 +87,7 @@ struct Pipelines {
     ShaderProgram geometryProgram;
     ShaderProgram lightingProgram;
     ShaderProgram skyBakeProgram;
+    ShaderProgram irradianceProgram;
     ShaderProgram skyProgram;
     ShaderProgram postProgram;
     ShaderProgram guiProgram;
@@ -101,6 +103,7 @@ struct Pipelines {
     // sky into what each path's middle fills. Same program for the last two, and the
     // sample count is the whole of the difference.
     Pipeline skyBake;
+    Pipeline irradianceBake;
     Pipeline skyForward;
     Pipeline skyDeferred;
     Pipeline post;

@@ -173,6 +173,7 @@ struct Renderer {
     // makes. Nothing writes it after startup, so nothing can be half-written when a
     // frame reads it.
     Texture skyCube;
+    Texture irradianceCube;
 
     // The scene's three, for the same reason and one step further: these are remade
     // on every resize, and a resize is main's to run now rather than something a pass

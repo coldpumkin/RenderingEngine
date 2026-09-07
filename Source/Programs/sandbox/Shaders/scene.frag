@@ -69,6 +69,11 @@ layout(set = 0, binding = 2) uniform Shadow {
 
 layout(set = 0, binding = 3) uniform sampler2D shadowMap;
 
+// What the sky sends a matte surface facing a direction. Replaces a constant ambient:
+// a colour that was the same everywhere could not tell a surface looking up from one
+// looking into a corner, and this one has that difference built into it.
+layout(set = 0, binding = 6) uniform samplerCube irradianceCube;
+
 // What to leave out, so a feature can be compared against its own absence without
 // rebuilding. Owned by the panel -- nothing the scene computes decides any of it.
 //
@@ -243,9 +248,14 @@ void main() {
     // there an environment map is what a metal reflects. Without one a metal has no
     // diffuse and only a highlight, so every metal surface facing away goes black.
     // Sponza has several and they did exactly that.
+    // Ambient is what the sky sends this normal, not a number that was the same
+    // everywhere. light.color.a stays as a floor under it, so the panel's ambient
+    // slider still means something and a scene with no sky is not black.
+    const vec3 ambient = texture(irradianceCube, normal).rgb + vec3(light.color.a);
+
     const vec3 lit =
-        (light.color.rgb * lambert * shade + light.color.a) * diffuseColor
-        + (light.color.rgb * specular * shade + light.color.a) * specularColor;
+        (light.color.rgb * lambert * shade + ambient) * diffuseColor
+        + (light.color.rgb * specular * shade + ambient) * specularColor;
 
     outColor = vec4(lit, pc.alpha);
 }

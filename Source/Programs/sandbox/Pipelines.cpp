@@ -128,6 +128,18 @@ GraphicsPipelineDesc SkyDesc(const ShaderProgram& program,
     return desc;
 }
 
+// A face of the irradiance cube. Same shape as the bake above and a different target:
+// the size differs and the format does not, because it holds the same kind of quantity.
+GraphicsPipelineDesc IrradianceDesc(const ShaderProgram& program,
+                                    const PipelineSources& sources) noexcept {
+    GraphicsPipelineDesc desc;
+    desc.program = &program;
+    const TextureDesc* const colour[] = {sources.irradianceFace};
+    desc.formats = AttachmentFormatsFor(colour, 1, nullptr);
+    desc.blend[0] = NoBlend();
+    return desc;
+}
+
 GraphicsPipelineDesc PostDesc(const ShaderProgram& program,
                               const PipelineSources& sources) noexcept {
     GraphicsPipelineDesc desc;
@@ -178,6 +190,8 @@ bool CreatePipelines(const VulkanDevice& dev, const PipelineSources& sources,
                                           "Shaders/lighting.frag.spv"};
     const char* const skyBakeStages[] = {"Shaders/fullscreen.vert.spv",
                                          "Shaders/skybake.frag.spv"};
+    const char* const irradianceStages[] = {"Shaders/fullscreen.vert.spv",
+                                            "Shaders/irradiance.frag.spv"};
     const char* const skyStages[] = {"Shaders/fullscreen.vert.spv", "Shaders/sky.frag.spv"};
     const char* const postStages[] = {"Shaders/fullscreen.vert.spv", "Shaders/post.frag.spv"};
     const char* const guiStages[] = {"Shaders/gui.vert.spv", "Shaders/gui.frag.spv"};
@@ -228,6 +242,9 @@ bool CreatePipelines(const VulkanDevice& dev, const PipelineSources& sources,
             || !CreateShaderProgram(dev, skyBakeStages,
                                     static_cast<uint32_t>(std::size(skyBakeStages)),
                                     anyProgram, &out->skyBakeProgram)
+            || !CreateShaderProgram(dev, irradianceStages,
+                                    static_cast<uint32_t>(std::size(irradianceStages)),
+                                    anyProgram, &out->irradianceProgram)
             || !CreateShaderProgram(dev, skyStages,
                                     static_cast<uint32_t>(std::size(skyStages)),
                                     anyProgram, &out->skyProgram)
@@ -254,6 +271,8 @@ bool CreatePipelines(const VulkanDevice& dev, const PipelineSources& sources,
                                   &out->lighting)
         && CreateGraphicsPipeline(dev, SkyBakeDesc(out->skyBakeProgram, sources),
                                   &out->skyBake)
+        && CreateGraphicsPipeline(dev, IrradianceDesc(out->irradianceProgram, sources),
+                                  &out->irradianceBake)
         && CreateGraphicsPipeline(dev, SkyDesc(out->skyProgram, sources.sceneColor),
                                   &out->skyForward)
         && CreateGraphicsPipeline(dev, SkyDesc(out->skyProgram, sources.sceneResolve),

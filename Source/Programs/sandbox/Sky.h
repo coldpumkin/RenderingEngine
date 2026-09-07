@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 // Sky - a cube map, and the pass that shows it
 // ============================================================================
@@ -37,6 +37,22 @@ TextureDesc MakeSkyTarget() noexcept;
 struct SkyFace {
     int32_t index = 0;
 };
+
+// Output: what the diffuse irradiance cube is
+//
+// Small on purpose. What it holds is an integral over a hemisphere, so it has no detail
+// to lose -- 32 a side is the usual size and more would be storing the same numbers
+// again. Same format as the sky, because it is the same kind of quantity.
+TextureDesc MakeIrradianceTarget() noexcept;
+
+// Effect: convolves environment into every face of irradiance, then leaves it readable
+//
+// The same six-pass shape the sky bake has, with one difference that costs a descriptor
+// set: this program reads a cube while it writes one. Its own set, not the frame set --
+// nothing about a frame is in this, and it runs before any frame exists.
+bool BakeIrradianceCube(const VulkanDevice& dev, const Commands& commands,
+                        const Descriptors& descriptors, const Pipeline& pipeline,
+                        const Texture& environment, Texture* irradiance) noexcept;
 
 // Effect: draws the sky into all six faces and leaves the cube readable by a sampler
 //
