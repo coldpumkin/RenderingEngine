@@ -224,6 +224,22 @@ bool BeginPass(const VolkDeviceTable& vk, VkCommandBuffer cmd,
 void RecordSampledHandover(const VolkDeviceTable& vk, VkCommandBuffer cmd,
                            const Texture& produced, AttachmentRole role) noexcept;
 
+// Effect: appends the barrier that hands an attachment on to a pass that loads it
+//
+// The other half of the pair above, for a reader that draws into the image rather than
+// samples it. BeginPass issues no barrier for a loadOp of LOAD on purpose -- what wrote
+// the image is not in that call -- and this is the writing side of that.
+//
+// One role, not two: loading an attachment means using it as the same role again, so
+// what the writer left and what the loader needs are the same layout, and what is
+// missing without this is ordering and visibility rather than a move. dstAccess is
+// both ways because a loadOp reads the image and the pass then writes over it.
+//
+// Contract: produced was written as an attachment of that role earlier in this command
+//           buffer, and the loading pass declares it with loadOp LOAD.
+void RecordLoadHandover(const VolkDeviceTable& vk, VkCommandBuffer cmd,
+                        const Texture& produced, AttachmentRole role) noexcept;
+
 // The comparison the pass creations make: the descs they were handed, projected, and
 // what their pipeline actually baked. Nobody else can see both ends.
 inline bool SameAttachmentFormats(const AttachmentFormats& a,

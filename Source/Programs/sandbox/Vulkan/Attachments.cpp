@@ -228,6 +228,26 @@ void RecordSampledHandover(const VolkDeviceTable& vk, VkCommandBuffer cmd,
                                      : VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
 }
 
+void RecordLoadHandover(const VolkDeviceTable& vk, VkCommandBuffer cmd,
+                        const Texture& produced, AttachmentRole role) noexcept {
+    const bool isColour = role == AttachmentRole::Color;
+    const VkPipelineStageFlags2 stage =
+        isColour ? VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT
+                 : VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+    const VkAccessFlags2 write = isColour
+                               ? VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT
+                               : VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    const VkAccessFlags2 read = isColour
+                              ? VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT
+                              : VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+    const VkImageLayout layout = isColour ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+                                          : VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+
+    RecordLayoutTransition(vk, cmd, produced.image.handle,
+                           FormatAspects(produced.desc.format),
+                           stage, write, stage, read | write, layout, layout);
+}
+
 bool ValidatePassDesc(const RenderPassDesc& desc) noexcept {
     uint32_t count = 0;
     while (count < kMaxAttachments && desc.attachments[count].resource != nullptr) {

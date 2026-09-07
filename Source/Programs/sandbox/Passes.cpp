@@ -523,23 +523,14 @@ bool RecordFrame(const FrameSlot& slot,
     // write it. Here for the same reason the present transition below is: it is about
     // what runs either side of it, and neither side is allowed to know the other.
     //
-    // Nothing moves -- both sides want COLOR_ATTACHMENT_OPTIMAL. What is missing
-    // without it is the other two halves of a barrier, ordering and visibility: the
-    // gui pass's loadOp LOAD reads what the post pass's storeOp wrote.
+    // The edge from the post pass to the gui pass, which is the one BeginPass leaves
+    // to the writer because a loadOp of LOAD reads something that call cannot see. The
+    // role is what it takes: both passes draw into this as a colour attachment, and
+    // ordering and visibility follow from that.
     //
-    // dstAccess is both ways round because loadOp LOAD reads the image and the panel
-    // then blends over it.
-    //
-    // Issued whether or not the panel draws. A pass that returns early leaves a
-    // barrier that moves nothing between two writes that no longer collide.
-    RecordLayoutTransition(vk, cmd, target.image.handle, VK_IMAGE_ASPECT_COLOR_BIT,
-                           VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                           VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                           VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                           VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT
-                               | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                           VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                           VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    // Issued whether or not the panel draws. A pass that returns early leaves a barrier
+    // between two writes that no longer collide, which costs nothing.
+    RecordLoadHandover(vk, cmd, target, AttachmentRole::Color);
 
     RecordGuiPass(slot, gui, target);
 
