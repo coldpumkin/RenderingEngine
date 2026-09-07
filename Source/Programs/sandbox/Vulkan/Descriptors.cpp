@@ -74,7 +74,24 @@ bool CreateDescriptors(const VulkanDevice& dev,
     samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;   // no mips to choose from
+    // Between levels as well as within one. NEAREST here snaps from one level to the
+    // next, and the seam moves across the floor as the camera does.
+    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+
+    // Every level a texture has. 0 would clamp sampling to level 0 and undo the chain.
+    samplerInfo.maxLod = VK_LOD_CLAMP_NONE;
+
+    // How many samples along the long axis of the footprint. A level is chosen from the
+    // larger of the two screen derivatives, so a surface seen at a grazing angle gets a
+    // level that is right for the long direction and too blurry for the short one;
+    // taking several samples along that axis is what recovers it.
+    //
+    // The device's own ceiling, not a number we picked -- 16 is what desktop hardware
+    // reports and asking for more is a validation error.
+    VkPhysicalDeviceProperties props{};
+    dev.inst->table.vkGetPhysicalDeviceProperties(dev.gpu, &props);
+    samplerInfo.anisotropyEnable = VK_TRUE;
+    samplerInfo.maxAnisotropy = props.limits.maxSamplerAnisotropy;
     if (dev.table.vkCreateSampler(dev.handle, &samplerInfo, nullptr, &out->sampler)
             != VK_SUCCESS) {
         LOG("[vk] vkCreateSampler failed\n");

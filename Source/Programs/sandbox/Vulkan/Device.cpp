@@ -109,11 +109,15 @@ PhysicalDeviceSelection PickPhysicalDevice(const VulkanInstance& inst,
                 && features2.features.fillModeNonSolid != VK_TRUE) {
             continue;
         }
+        if (required10.samplerAnisotropy == VK_TRUE
+                && features2.features.samplerAnisotropy != VK_TRUE) {
+            continue;
+        }
         if (features13.dynamicRendering != VK_TRUE || features13.synchronization2 != VK_TRUE) {
             continue;
         }
-        // features2.features goes unread: no core 1.0 feature is required. Adding one
-        // means editing here and Core.h both.
+        // Every core 1.0 feature required is checked above by name. Adding one means
+        // editing here and Core.h both.
 
         // (c) the swapchain extension
         uint32_t extCount = 0;

@@ -137,6 +137,21 @@ uniform contents, dynamic state commands, and the one switch that selects a diff
 compiled pipeline. The right-hand window reads back the descriptor pool, the reflected
 shader interface and per-frame draw statistics.
 
+- **Mip chain and anisotropy.** Every loaded texture is built with a full chain, blit by
+  blit, and the sampler filters between levels with anisotropy at the device's limit.
+  Sampling a minified 1024² texture at level 0 speckles the distant stonework and misses
+  the texture cache on nearly every tap, so this is faster as well as steadier:
+
+  | | before | after |
+  |---|---|---|
+  | forward, scene pass | 3.431 ms | 2.077 ms |
+  | deferred, geometry pass | 2.569 ms | 0.849 ms |
+  | frame total, forward | 6.639 ms | 5.328 ms |
+
+  ![without mipmaps](docs/images/mips-off.jpg) ![with mipmaps](docs/images/mips-on.jpg)
+
+  *The same distant arcade, sampled at level 0 and through the chain.*
+
 - **GPU time per pass.** Timestamps written by the device, one query pool per frame in
   flight, read after that slot's fence. Both stamps are taken at `ALL_COMMANDS` so an
   interval covers one pass rather than the tail of the one before it, and a pass that did
@@ -145,8 +160,8 @@ shader interface and per-frame draw statistics.
 
   | | shadow | sky | middle | post | total |
   |---|---|---|---|---|---|
-  | forward | 2.807 | 0.344 | scene 3.431 | 0.057 | 6.639 ms |
-  | deferred | 2.801 | 0.328 | geometry 2.569 + lighting 0.615 | 0.059 | 6.373 ms |
+  | forward | 2.851 | 0.342 | scene 2.077 | 0.057 | 5.328 ms |
+  | deferred | 2.808 | 0.331 | geometry 0.849 + lighting 0.917 | 0.059 | 4.964 ms |
 
 - **Frustum culling.** Six planes taken from `proj * view`, tested against each
   primitive's glTF bounds. It removes 34 of the 103 draws from this viewpoint and leaves

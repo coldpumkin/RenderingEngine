@@ -122,9 +122,14 @@ static bool LoadTextureFile(const VulkanDevice& dev, const Commands& commands,
         return false;
     }
 
-    const TextureDesc desc{{static_cast<uint32_t>(width), static_cast<uint32_t>(height)},
-                           format, VK_SAMPLE_COUNT_1_BIT,
-                           VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT};
+    // A full chain, and TRANSFER_SRC because building it reads level i to write level
+    // i + 1. Declared here rather than worked out inside the upload: how many levels an
+    // image has is a property of the image, and a 1 x 1 stand-in asks for one.
+    TextureDesc desc{{static_cast<uint32_t>(width), static_cast<uint32_t>(height)},
+                     format, VK_SAMPLE_COUNT_1_BIT,
+                     VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT
+                         | VK_IMAGE_USAGE_SAMPLED_BIT};
+    desc.mipLevels = MipLevelsFor(desc.extent);
     const size_t byteCount = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
     const bool uploaded = CreateTextureFromPixels(dev, commands, desc, pixels,
                                                   byteCount, out);

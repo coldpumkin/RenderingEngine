@@ -140,6 +140,18 @@ struct TextureDesc {
     uint32_t arrayLayers = 1;
 };
 
+// Output: how many mip levels a texture of this size can have
+//
+// Halving the larger side until it reaches 1, counting the original. A 1024 x 1024
+// image has 11 levels; a 1 x 1 image has one, which is why the stand-in textures need no
+// special case.
+inline uint32_t MipLevelsFor(VkExtent2D extent) noexcept {
+    uint32_t side = extent.width > extent.height ? extent.width : extent.height;
+    uint32_t levels = 1;
+    while (side > 1) { side /= 2; ++levels; }
+    return levels;
+}
+
 // Output: how many array layers this texture has
 //
 // Six for a cube because that is what a cube is, one for a plain 2D, and whatever was

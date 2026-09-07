@@ -64,14 +64,43 @@ bool CreateTextureFromPixels(const VulkanDevice& dev, const Commands& commands,
     }
     std::memcpy(staging.mapped, pixels, size);
 
+    // What a mip chain needs of the caller, asked before anything is created. Both are
+    // the caller's declaration rather than something to work out here: mipLevels says
+    // there is a chain, and the usage says the image may be read from while it is built.
+    if (desc.mipLevels > 1) {
+        if ((desc.usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) == 0) {
+            LOG("[vk] %u mip levels asked for without TRANSFER_SRC to build them with\n", desc.mipLevels);
+            return false;
+        }
+
+        // Each level is a filtered copy of the one above it, so the format has to
+        // support being filtered. A format that cannot is refused rather than silently
+        // given a nearest-filtered chain, which would look like a bad texture.
+        VkFormatProperties props{};
+        dev.inst->table.vkGetPhysicalDeviceFormatProperties(dev.gpu, desc.format, &props);
+        if ((props.optimalTilingFeatures
+                 & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) == 0) {
+            LOG("[vk] format %d cannot be linearly filtered, so no mip chain\n",
+                static_cast<int>(desc.format));
+            return false;
+        }
+    }
+
     if (!CreateTexture(dev, desc, out)) { return false; }
 
     VkCommandBuffer cmd = BeginOneShot(dev, commands);
     if (cmd == VK_NULL_HANDLE) { return false; }
 
-    // srcStage is TOP_OF_PIPE because there is nothing to wait for: this image was
-    // just created and nobody has touched it.
-    RecordLayoutTransition(dev.table, cmd, out->image.handle, WholeImage(VK_IMAGE_ASPECT_COLOR_BIT),
+    // Level 0 only. Every level below is moved to a writable layout right before it is
+    // written, which is what keeps two writes to the same level ordered -- a single
+    // transition of the whole image at the start names every level and then nothing
+    // stands between it and the blit that writes level i. The synchronization
+    // validation layer reports that as a write-after-write hazard, correctly.
+    //
+    // srcStage is TOP_OF_PIPE because there is nothing to wait for: this image was just
+    // created and nobody has touched it.
+    RecordLayoutTransition(dev.table, cmd, out->image.handle,
+                           OneLayer(VK_IMAGE_ASPECT_COLOR_BIT, 0, 0),
                            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                            VK_PIPELINE_STAGE_2_COPY_BIT,
                            VK_ACCESS_2_TRANSFER_WRITE_BIT,
@@ -87,10 +116,74 @@ bool CreateTextureFromPixels(const VulkanDevice& dev, const Commands& commands,
     dev.table.vkCmdCopyBufferToImage(cmd, staging.handle, out->image.handle,
                                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
+    // The chain. Vulkan has no glGenerateMipmap: level i is a filtered copy of level
+    // i - 1, so each step moves the source to a readable layout, opens the destination,
+    // and blits between them.
+    int32_t width = static_cast<int32_t>(desc.extent.width);
+    int32_t height = static_cast<int32_t>(desc.extent.height);
+    for (uint32_t level = 1; level < desc.mipLevels; ++level) {
+        // The level just written becomes the source. Its write was the buffer copy for
+        // level 0 and a blit for every level after that.
+        RecordLayoutTransition(dev.table, cmd, out->image.handle,
+                               OneLayer(VK_IMAGE_ASPECT_COLOR_BIT, 0, level - 1),
+                               level == 1 ? VK_PIPELINE_STAGE_2_COPY_BIT
+                                          : VK_PIPELINE_STAGE_2_BLIT_BIT,
+                               VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                               VK_PIPELINE_STAGE_2_BLIT_BIT,
+                               VK_ACCESS_2_TRANSFER_READ_BIT,
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+        // And this level becomes the destination. From UNDEFINED because nothing has
+        // ever been in it, which is also why there is no earlier write to make visible.
+        RecordLayoutTransition(dev.table, cmd, out->image.handle,
+                               OneLayer(VK_IMAGE_ASPECT_COLOR_BIT, 0, level),
+                               VK_PIPELINE_STAGE_2_BLIT_BIT, 0,
+                               VK_PIPELINE_STAGE_2_BLIT_BIT,
+                               VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                               VK_IMAGE_LAYOUT_UNDEFINED,
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+        // Halved, and never below one: a 1024 x 16 image reaches 1 in one direction
+        // long before the other, and the levels after that are one texel tall.
+        const int32_t nextWidth = width > 1 ? width / 2 : 1;
+        const int32_t nextHeight = height > 1 ? height / 2 : 1;
+
+        VkImageBlit blit{};
+        blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level - 1, 0, 1};
+        blit.srcOffsets[1] = VkOffset3D{width, height, 1};
+        blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1};
+        blit.dstOffsets[1] = VkOffset3D{nextWidth, nextHeight, 1};
+        dev.table.vkCmdBlitImage(cmd, out->image.handle,
+                                 VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                 out->image.handle,
+                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                 1, &blit, VK_FILTER_LINEAR);
+        width = nextWidth;
+        height = nextHeight;
+    }
+
+    // Two transitions where there is a chain, because the levels are not in the same
+    // layout: every level but the last was read from to make the next, and the last was
+    // only written.
+    if (desc.mipLevels > 1) {
+        const VkImageSubresourceRange read{VK_IMAGE_ASPECT_COLOR_BIT, 0,
+                                           desc.mipLevels - 1, 0, 1};
+        RecordLayoutTransition(dev.table, cmd, out->image.handle, read,
+                               VK_PIPELINE_STAGE_2_BLIT_BIT,
+                               VK_ACCESS_2_TRANSFER_READ_BIT,
+                               VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                               VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    }
+
     // dstStage is FRAGMENT_SHADER because that is the only place we read it. A vertex
     // shader sampling textures would widen this.
-    RecordLayoutTransition(dev.table, cmd, out->image.handle, WholeImage(VK_IMAGE_ASPECT_COLOR_BIT),
-                           VK_PIPELINE_STAGE_2_COPY_BIT,
+    RecordLayoutTransition(dev.table, cmd, out->image.handle,
+                           OneLayer(VK_IMAGE_ASPECT_COLOR_BIT, 0, desc.mipLevels - 1),
+                           desc.mipLevels > 1 ? VK_PIPELINE_STAGE_2_BLIT_BIT
+                                              : VK_PIPELINE_STAGE_2_COPY_BIT,
                            VK_ACCESS_2_TRANSFER_WRITE_BIT,
                            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,

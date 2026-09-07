@@ -63,5 +63,11 @@ inline VkPhysicalDeviceVulkan13Features RequiredFeatures13() noexcept {
 inline VkPhysicalDeviceFeatures RequiredFeatures10() noexcept {
     VkPhysicalDeviceFeatures features{};
     features.fillModeNonSolid = VK_TRUE;   // POLYGON_MODE_LINE
+
+    // Anisotropic filtering. A mip level is chosen from the larger of the two screen
+    // derivatives, which over-blurs a surface seen at a grazing angle -- the footprint
+    // is long in one direction and short in the other, and one level cannot be right
+    // for both. Anisotropy takes several samples along the long axis instead.
+    features.samplerAnisotropy = VK_TRUE;
     return features;
 }
