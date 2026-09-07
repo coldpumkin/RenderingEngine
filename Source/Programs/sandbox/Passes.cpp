@@ -104,28 +104,37 @@ glm::mat4 ProjectionFor(float fovDegrees, VkExtent2D target) noexcept {
     return glm::perspective(glm::radians(fovDegrees), aspect, kNearPlane, kFarPlane);
 }
 
-glm::mat4 ShadowView(const glm::vec3& direction, const glm::vec3& sceneCenter) noexcept {
-    // direction runs from a surface toward the light, so the eye is the centre plus it.
-    //
+glm::mat4 ShadowView(const LightState& light, const glm::vec3& sceneCenter) noexcept {
     // Chosen and not assumed: lookAt builds a basis by crossing the forward with the
     // up, and that collapses when the two are parallel -- a sun directly overhead.
-    const glm::vec3 up = glm::abs(direction.y) > 0.99f
+    const glm::vec3 up = glm::abs(light.direction.y) > 0.99f
                        ? glm::vec3{0.0f, 0.0f, 1.0f} : kWorldUp;
 
-    return glm::lookAt(sceneCenter + direction * kShadowDistance, sceneCenter, up);
+    // A spot is somewhere, and looks along its own direction from there.
+    //
+    // A directional light is not anywhere. The eye put back along the direction is a
+    // choice about how big a piece of the scene the map covers, not a fact about the
+    // light -- which is the whole difference between the two kinds in one place.
+    if (light.kind == LightKind::Spot) {
+        return glm::lookAt(light.position, light.position - light.direction, up);
+    }
+    return glm::lookAt(sceneCenter + light.direction * kShadowDistance, sceneCenter, up);
 }
 
-glm::mat4 ShadowProjectionFor(VkExtent2D map) noexcept {
-    // Orthographic because the light is directional: parallel rays have no eye point to
-    // project from, only a box, and the box decides how much world one texel covers.
-    //
-    // The aspect comes from the map the way the camera's comes from its target, which
-    // is what lets the map stop being square without anything else knowing.
+glm::mat4 ShadowProjectionFor(const LightState& light, VkExtent2D map) noexcept {
+    // The aspect comes from the map the way the camera's comes from its target.
     const float aspect = static_cast<float>(map.width)
                        / static_cast<float>(map.height);
 
-    // 0.1 rather than 0: an ortho box with a zero near plane is legal and wastes half
-    // its depth range on space behind the light.
+    // **Orthographic against perspective is the same distinction one level down**:
+    // parallel rays against rays that leave a point. The cone is the field of view,
+    // doubled because outerCos is a half-angle, and clamped below pi so a very wide
+    // spot does not ask for a projection with no far plane.
+    if (light.kind == LightKind::Spot) {
+        const float half = glm::acos(glm::clamp(light.outerCos, -1.0f, 1.0f));
+        const float fov = glm::min(2.0f * half, 3.0f);
+        return glm::perspective(fov, aspect, 0.1f, glm::max(light.range, 1.0f));
+    }
     return glm::ortho(-kShadowRadius * aspect, kShadowRadius * aspect,
                       -kShadowRadius, kShadowRadius, 0.1f, kShadowDistance * 2.0f);
 }

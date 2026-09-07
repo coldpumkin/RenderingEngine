@@ -1074,10 +1074,6 @@ int main() {
     // larger; scene.frag returns "lit" outside it.
     constexpr glm::vec3 kSceneCenter{0.0f, 3.0f, 0.0f};
 
-    // Built once, because none of its inputs move -- see ShadowProjectionFor, which
-    // takes no state at all.
-    const glm::mat4 lightProj = ShadowProjectionFor(shadowTarget.extent);
-
     // What the item order costs in state changes. Outside the loop because the panel
     // is built before RecordFrame fills it, so what it shows is the last frame's --
     // honest only because the list does not change between frames.
@@ -1227,7 +1223,11 @@ int main() {
         // it means baking the sky, the irradiance and the prefiltered cube again: the
         // environment would stop being an input of the frame and become something a
         // frame produces, which is the line the frame graph draws.
-        const LightState light{kSunDirection, glm::vec3{1.0f, 0.95f, 0.9f}, 0.15f};
+        LightState light{};
+        light.kind = LightKind::Directional;
+        light.direction = kSunDirection;
+        light.color = glm::vec3{1.0f, 0.95f, 0.9f};
+        light.ambient = 0.15f;
         // Fill this frame's share of the pass
         //
         // Assignment only, so it belongs up here: what reaches the GPU, and when, is
@@ -1255,12 +1255,20 @@ int main() {
         // What reaches a surface, and where its shadow map was drawn from. The second
         // is made here rather than held: it turns with the light every frame, while
         // lightProj above does not move at all.
+        // w carries the kind, which is what it already meant: 0 is a direction and 1
+        // is a point, and only the second has a position to read.
         renderer.lights[slot.index].value =
-            {.direction = glm::vec4{light.direction, 0.0f},
-             .color = glm::vec4{light.color, light.ambient}};
+            {.direction = glm::vec4{light.direction,
+                                    light.kind == LightKind::Spot ? 1.0f : 0.0f},
+             .color = glm::vec4{light.color, light.ambient},
+             .position = glm::vec4{light.position, light.range},
+             .cone = glm::vec4{light.innerCos, light.outerCos, 0.0f, 0.0f}};
+        // Both from the light itself now, because both answers differ by its kind: a
+        // spot looks from where it is with a perspective, a directional light from a
+        // point invented far enough back with an orthographic box.
         renderer.shadows[slot.index].value =
-            {.lightView = ShadowView(light.direction, kSceneCenter),
-             .lightProj = lightProj};
+            {.lightView = ShadowView(light, kSceneCenter),
+             .lightProj = ShadowProjectionFor(light, shadowTarget.extent)};
 
         // Draw it
         // --------------------------------------------------------------------

@@ -47,9 +47,44 @@ layout(set = 0, binding = 0) uniform Camera {
 //
 // Contract: same fields as LightUniform in Passes.h.
 layout(set = 0, binding = 1) uniform Light {
-    vec4 direction;   // xyz = surface toward the light
-    vec4 color;       // rgb = colour, a = ambient
+    // xyz = surface toward the light, w = which kind: 0 a direction, 1 a spot. That is
+    // the homogeneous meaning of w and the kind at the same time.
+    vec4 direction;
+    vec4 color;        // rgb = colour, a = ambient
+    vec4 position;     // spot only: xyz where it is, w how far it carries
+    vec4 cone;         // spot only: x inner cosine, y outer
 } light;
+
+// Output: xyz toward the light from this point, w how much of it arrives
+//
+// **The two kinds part here and nowhere else in the shading.** A directional light is
+// the same vector at every point and loses nothing on the way; a spot points from the
+// surface to where it is, falls off with distance, and stops at its cone. Everything
+// after this -- lambert, the highlight, the shadow -- reads one vector and one scalar
+// and does not know which kind produced them.
+//
+// Contract: matches LightUniform in Passes.h.
+vec4 LightAt(vec3 worldPos) {
+    if (light.direction.w < 0.5) {
+        return vec4(normalize(light.direction.xyz), 1.0);
+    }
+
+    const vec3 toLightVec = light.position.xyz - worldPos;
+    const float dist = length(toLightVec);
+    const vec3 toLight = toLightVec / max(dist, 0.0001);
+
+    // Inverse square, with the range as the distance where it is called nothing. The
+    // window is what stops a light reaching the whole scene faintly, which would cost
+    // shadow map area for light nobody can see.
+    const float falloff = 1.0 / max(dist * dist, 0.0001);
+    const float window = clamp(1.0 - dist / max(light.position.w, 0.0001), 0.0, 1.0);
+
+    // Full inside the inner cone, nothing outside the outer, smooth between.
+    const float aligned = dot(-toLight, normalize(light.direction.xyz));
+    const float cone = smoothstep(light.cone.y, light.cone.x, aligned);
+
+    return vec4(toLight, falloff * window * window * cone);
+}
 
 // The same light as a viewpoint -- one fact in two halves. The matrix puts a fragment
 // where the map was drawn from, and the map says what was nearest there.
@@ -235,8 +270,12 @@ void main() {
     const vec3 diffuseColor = albedo * (1.0 - metallic);
 
     // --- how much light arrives ---------------------------------------------
-    const vec3 toLight = normalize(light.direction.xyz);
-    const float lambert = max(dot(normal, toLight), 0.0);
+    // One call, and after it nothing here knows which kind of light this is: xyz is the
+    // direction and w is how much arrives, which a directional light answers with 1.
+    const vec4 incoming = LightAt(fragWorldPos);
+    const vec3 toLight = incoming.xyz;
+    const float reach = incoming.w;
+    const float lambert = max(dot(normal, toLight), 0.0) * reach;
 
     // Blinn-Phong. The halfway vector stands in for the mirror direction and lines up
     // with the normal exactly when the surface reflects the light at the eye.

@@ -357,8 +357,37 @@ glm::mat4 ProjectionFor(float fovDegrees, VkExtent2D target) noexcept;
 // Which is why quaternions do not follow here. They were worth it for the camera
 // because an orientation was state being derived every frame; there is no orientation
 // to preserve in a direction, so a basis has to be manufactured either way.
+// What kind of light, which is what decides what one owns
+//
+// **Not a taxonomy.** The two differ in one thing that changes every layer beneath
+// them: a directional light has no position. It is the idealisation of something
+// infinitely far away, so it is a property of the world rather than an object in it --
+// which is why it never fitted the Transform the camera and the objects use, and why
+// the roll about its axis is a value nobody holds.
+//
+// A spot has a position. That makes it a thing in the scene, and everything downstream
+// changes with it: its shadow is a perspective from that point rather than an
+// orthographic box around the scene, its light falls off with distance, and it stops
+// where its cone does.
+enum class LightKind { Directional, Spot };
+
 struct LightState {
-    glm::vec3 direction{};       // from a surface toward the light
+    LightKind kind = LightKind::Directional;
+
+    // Which way the light travels from, as a surface sees it. Both kinds own this.
+    glm::vec3 direction{};
+
+    // Where it is. **Read only when kind is Spot** -- a directional light has no
+    // position, and giving it one here would be inventing a fact the world does not
+    // have.
+    glm::vec3 position{};
+
+    // Half-angle of the cone, in radians, and where the light fades to nothing.
+    // Spot only, for the same reason.
+    float innerCos = 0.0f;
+    float outerCos = 0.0f;
+    float range = 0.0f;
+
     glm::vec3 color{1.0f};
     float ambient = 0.0f;
 };
@@ -373,7 +402,12 @@ struct LightState {
 // The up is chosen inside, next to the cross product it protects. It used to live in
 // the frame loop, far from this lookAt, which is how one constant came to hold both a
 // lighting decision and this one with only the first written down.
-glm::mat4 ShadowView(const glm::vec3& direction, const glm::vec3& sceneCenter) noexcept;
+// Output: where the shadow map is drawn from
+//
+// The two kinds put the eye in different places for different reasons. A directional
+// light has none, so one is invented far enough back along the direction to cover the
+// scene; a spot has one and it is used.
+glm::mat4 ShadowView(const LightState& light, const glm::vec3& sceneCenter) noexcept;
 
 // Output: the box the light sees through
 //
@@ -381,7 +415,12 @@ glm::mat4 ShadowView(const glm::vec3& direction, const glm::vec3& sceneCenter) n
 // are the technique's, the aspect is the map's, and nothing of the app's reaches any of
 // it -- so this is built once and not per frame, which is the same rule ProjectionFor
 // states and the reason both of these read a TextureDesc rather than an extent.
-glm::mat4 ShadowProjectionFor(VkExtent2D map) noexcept;
+// Output: the projection the shadow map is drawn with
+//
+// **Orthographic for a directional light and perspective for a spot**, which is the
+// same distinction one level down: rays that are parallel against rays that come from
+// a point. The map's shape decides the aspect either way.
+glm::mat4 ShadowProjectionFor(const LightState& light, VkExtent2D map) noexcept;
 
 // Output: how big to render -- the one of this program's three extents we choose. A
 //         surface extent is what the platform answers and a swapchain's must equal
@@ -472,10 +511,20 @@ struct ShadowUniform {
 
 // Contract: field order and types match the shader's Light block.
 struct LightUniform {
-    // w = 0: a direction, which translation must not reach. Below, w is a payload
-    // instead -- the two meanings share the slot and only these lines separate them.
-    glm::vec4 direction;   // xyz = surface toward the light, w = 0
+    // xyz = surface toward the light. **w says which kind**: 0 for a directional light
+    // and 1 for a spot. That is not a flag put beside the vector, it is what w means in
+    // homogeneous coordinates -- 0 is a direction and 1 is a point -- so the shader
+    // reads the kind out of the same number that says translation may not reach it.
+    glm::vec4 direction;
+
     glm::vec4 color;       // rgb = colour, a = ambient
+
+    // Spot only, read when direction.w is 1. w is a payload here rather than a
+    // homogeneous coordinate, which the line above is what separates.
+    glm::vec4 position;    // xyz = where it is, w = how far its light carries
+
+    // The cone as cosines and not angles, because a shader compares a dot product.
+    glm::vec4 cone;        // x = inner, y = outer, zw unused
 };
 
 // What a frame computes, once per frame in flight, owned by no pass
@@ -640,6 +689,8 @@ inline ProgramRequirements SharedBlocks() noexcept {
     static const RequiredMember kLight[] = {
         {"direction", offsetof(LightUniform, direction), sizeof(LightUniform::direction)},
         {"color",     offsetof(LightUniform, color),     sizeof(LightUniform::color)},
+        {"position",  offsetof(LightUniform, position),  sizeof(LightUniform::position)},
+        {"cone",      offsetof(LightUniform, cone),      sizeof(LightUniform::cone)},
     };
     static const RequiredMember kShadow[] = {
         {"lightView", offsetof(ShadowUniform, lightView), sizeof(ShadowUniform::lightView)},
