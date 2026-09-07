@@ -47,6 +47,7 @@ add_executable(sandbox
     Vulkan/Descriptors.h Vulkan/Descriptors.cpp # how a shader reaches an image or buffer
     Vulkan/Commands.h    Vulkan/Commands.cpp    # command pools, one per queue family
     Vulkan/Frame.h       Vulkan/Frame.cpp       # frame slot, frame target, opening and closing
+    Vulkan/Timing.h      Vulkan/Timing.cpp      # GPU timestamps, one query pool per frame
     Vulkan/Shader.h      Vulkan/Shader.cpp      # reading .spv, and reflecting on it
     Vulkan/Pipeline.h    Vulkan/Pipeline.cpp
     Vulkan/VertexLayout.h                       # what a vertex buffer hands the vertex stage

@@ -44,6 +44,7 @@
 #include "Vulkan/Descriptors.h"
 #include "Vulkan/Frame.h"
 #include "Vulkan/Pipeline.h"
+#include "Vulkan/Timing.h"
 #include "Vulkan/Texture.h"
 
 #include <cstddef>    // offsetof, for the block members MaterialSet declares
@@ -1117,6 +1118,40 @@ void UploadFrameValues(const FrameSlot& slot,
 // still throws its shadow into the picture, so removing it from the shadow pass would
 // delete a shadow rather than save work.
 //
+// What a frame times, and where each pass's pair of timestamps lives
+// ============================================================================
+//
+// Fixed indices rather than the order they were written. A frame runs five passes or
+// six depending on the path, so an order-based layout would put the same index on
+// different passes and the panel would compare two things that are not the same. The
+// unwritten pair of a pass that did not run reads as unavailable, which the panel shows
+// as a dash.
+enum class TimedPass : uint32_t {
+    Shadow, Sky, Scene, Geometry, Lighting, Post, Gui, Count
+};
+
+inline constexpr uint32_t kTimedPassCount = static_cast<uint32_t>(TimedPass::Count);
+inline constexpr uint32_t kTimestampsPerFrame = kTimedPassCount * 2;
+
+// Output: the name to print for one of them
+const char* TimedPassName(TimedPass pass) noexcept;
+
+// What the GPU reported for the frame that has finished
+//
+// ran[] is false where that pass did not run this frame, which is not the same as taking
+// no time. Read from the slot's pool after its fence, so these are the numbers from the
+// last frame that used this slot rather than from the one being recorded.
+struct PassTimings {
+    double ms[kTimedPassCount]{};
+    bool ran[kTimedPassCount]{};
+    double totalMs = 0.0;
+};
+
+// Effect: fills out from what the GPU wrote during this slot's previous submit
+//
+// Contract: the caller has waited on that submit's fence. BeginFrame does.
+void ReadPassTimings(const GpuTimer& timer, PassTimings* out) noexcept;
+
 // Effect: resets the slot's command buffer and records this frame's passes into it
 // Output: false means the buffer is invalid and must not be submitted
 //         stats, if given, is what the pass that walked the draw list cost. Every
@@ -1148,4 +1183,4 @@ bool RecordFrame(const FrameSlot& slot,
                  const GeometryPass& geometry, const LightingPass& lighting,
                  const PostProcessPass& post, Gui& gui, const Texture& target,
                  const DrawList& draws, const DrawList& shadowDraws,
-                 DrawStats* stats = nullptr) noexcept;
+                 const GpuTimer& timer, DrawStats* stats = nullptr) noexcept;

@@ -234,6 +234,10 @@ struct GuiFrameInfo {
     // types and nothing of ours above it.
     uint32_t recordedDraws = 0;
     uint32_t culledDraws = 0;
+
+    // What the GPU reported for the last frame that used this slot. Null while the
+    // first frames are still in flight, or on a device with no timestamp support.
+    const PassTimings* gpuTimings = nullptr;
     uint32_t materialBinds = 0;
     uint32_t cullChanges = 0;
 

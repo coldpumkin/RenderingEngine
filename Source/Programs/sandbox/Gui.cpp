@@ -491,6 +491,25 @@ void BuildGui(Gui* gui, const GuiFrameInfo& info) noexcept {
                     info.cullChanges);
         ImGui::Text("mats   %u", info.materialCount);
 
+        // What the GPU spent, per pass, measured on the device. These lag by
+        // kFramesInFlight -- they are read from this slot's pool, which last held the
+        // frame before the one on screen. A pass that did not run shows a dash rather
+        // than a zero, because the two mean different things.
+        if (info.gpuTimings != nullptr) {
+            ImGui::Separator();
+            ImGui::TextDisabled("gpu, last frame on this slot");
+            for (uint32_t i = 0; i < kTimedPassCount; ++i) {
+                const TimedPass pass = static_cast<TimedPass>(i);
+                if (info.gpuTimings->ran[i]) {
+                    ImGui::Text("  %-9s %6.3f ms", TimedPassName(pass),
+                                info.gpuTimings->ms[i]);
+                } else {
+                    ImGui::TextDisabled("  %-9s      -", TimedPassName(pass));
+                }
+            }
+            ImGui::Text("  %-9s %6.3f ms", "total", info.gpuTimings->totalMs);
+        }
+
         ImGui::Separator();
         ShowTexture("color", info.sceneColor);
         ShowTexture("resolve", info.sceneResolve);

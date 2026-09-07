@@ -137,6 +137,17 @@ uniform contents, dynamic state commands, and the one switch that selects a diff
 compiled pipeline. The right-hand window reads back the descriptor pool, the reflected
 shader interface and per-frame draw statistics.
 
+- **GPU time per pass.** Timestamps written by the device, one query pool per frame in
+  flight, read after that slot's fence. Both stamps are taken at `ALL_COMMANDS` so an
+  interval covers one pass rather than the tail of the one before it, and a pass that did
+  not run reads back as unavailable rather than as zero. On an RX 6800S at 1280x720 with
+  three lights:
+
+  | | shadow | sky | middle | post | total |
+  |---|---|---|---|---|---|
+  | forward | 2.807 | 0.344 | scene 3.431 | 0.057 | 6.639 ms |
+  | deferred | 2.801 | 0.328 | geometry 2.569 + lighting 0.615 | 0.059 | 6.373 ms |
+
 - **Frustum culling.** Six planes taken from `proj * view`, tested against each
   primitive's glTF bounds. It removes 34 of the 103 draws from this viewpoint and leaves
   both capture hashes byte-identical, which is what says nothing visible was dropped. The
@@ -203,7 +214,6 @@ it refer to one image by one name.
 
 ## Not implemented
 
-- GPU timing per pass.
 - Cube shadows for point lights.
 - One mesh, no instancing.
 - Compute and transfer queues are created but nothing is submitted to them.

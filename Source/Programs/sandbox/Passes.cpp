@@ -560,6 +560,38 @@ static bool CheckPassOrder(const RenderPassDesc* const passes[],
     return ok;
 }
 
+const char* TimedPassName(TimedPass pass) noexcept {
+    switch (pass) {
+        case TimedPass::Shadow:   return "shadow";
+        case TimedPass::Sky:      return "sky";
+        case TimedPass::Scene:    return "scene";
+        case TimedPass::Geometry: return "geometry";
+        case TimedPass::Lighting: return "lighting";
+        case TimedPass::Post:     return "post";
+        case TimedPass::Gui:      return "gui";
+        default:                  return "?";
+    }
+}
+
+void ReadPassTimings(const GpuTimer& timer, PassTimings* out) noexcept {
+    *out = PassTimings{};
+    for (uint32_t i = 0; i < kTimedPassCount; ++i) {
+        uint64_t begin = 0;
+        uint64_t end = 0;
+
+        // Both or neither. A pair with one half missing is a pass that was interrupted
+        // between its two writes, which nothing here does, so it is treated as absent
+        // rather than reported as a number from two different frames.
+        if (!ReadGpuTimestamp(timer, i * 2, &begin)
+                || !ReadGpuTimestamp(timer, i * 2 + 1, &end)) {
+            continue;
+        }
+        out->ran[i] = true;
+        out->ms[i] = GpuMillis(timer, begin, end);
+        out->totalMs += out->ms[i];
+    }
+}
+
 bool RecordFrame(const FrameSlot& slot,
                  const ShadowPass& shadow, uint32_t shadowCasters,
                  const SkyPass& skyForward, const SkyPass& skyDeferred,
@@ -567,7 +599,7 @@ bool RecordFrame(const FrameSlot& slot,
                  const GeometryPass& geometry, const LightingPass& lighting,
                  const PostProcessPass& post, Gui& gui, const Texture& target,
                  const DrawList& draws, const DrawList& shadowDraws,
-                 DrawStats* stats) noexcept {
+                 const GpuTimer& timer, DrawStats* stats) noexcept {
     const VolkDeviceTable& vk = slot.dev->table;
     VkCommandBuffer cmd = slot.cmd;
     // The pool has RESET_COMMAND_BUFFER_BIT, so one buffer can rewind on its own.
@@ -582,6 +614,10 @@ bool RecordFrame(const FrameSlot& slot,
         LOG("[vk] vkBeginCommandBuffer failed\n");
         return false;
     }
+
+    // Every query, and only once the buffer is open. The pool belongs to this slot and
+    // its fence was waited on, so nothing is reading the old values any more.
+    ResetGpuTimer(timer, cmd);
 
     // The order is here, in these lines, and nowhere else. Both dependencies are
     // written somewhere -- the scene's set names the shadow map, post.source names the
@@ -621,21 +657,54 @@ bool RecordFrame(const FrameSlot& slot,
         }
     }
 
+    // A pair per pass, at fixed indices, both written at ALL_COMMANDS.
+    //
+    // TOP_OF_PIPE for the opening stamp reads as the moment the command was reached,
+    // which on a queue that is still working through earlier passes is well before this
+    // pass starts. The interval then includes the tail of whatever came before it, and
+    // measured that way the deferred post pass reported 0.666 ms of work it did not do.
+    // Waiting for everything before it makes the two stamps bracket this pass alone.
+    const auto timeBegin = [&](TimedPass pass) {
+        WriteGpuTimestamp(timer, cmd, static_cast<uint32_t>(pass) * 2,
+                          VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+    };
+    const auto timeEnd = [&](TimedPass pass) {
+        WriteGpuTimestamp(timer, cmd, static_cast<uint32_t>(pass) * 2 + 1,
+                          VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+    };
+
+    timeBegin(TimedPass::Shadow);
     RecordShadowPass(slot, shadow, shadowDraws, shadowCasters);
+    timeEnd(TimedPass::Shadow);
 
     // The one branch in a frame. Everything either side of it is the same call with
     // the same arguments, which is the point: what deferred changes is here and
     // nowhere else in this function.
     if (deferred) {
+        timeBegin(TimedPass::Sky);
         RecordSkyPass(slot, skyDeferred);
+        timeEnd(TimedPass::Sky);
+
+        timeBegin(TimedPass::Geometry);
         RecordGeometryPass(slot, geometry, draws, raster, stats);
+        timeEnd(TimedPass::Geometry);
+
+        timeBegin(TimedPass::Lighting);
         RecordLightingPass(slot, lighting);
+        timeEnd(TimedPass::Lighting);
     } else {
+        timeBegin(TimedPass::Sky);
         RecordSkyPass(slot, skyForward);
+        timeEnd(TimedPass::Sky);
+
+        timeBegin(TimedPass::Scene);
         RecordScenePass(slot, scene, draws, raster, stats);
+        timeEnd(TimedPass::Scene);
     }
 
+    timeBegin(TimedPass::Post);
     RecordPostProcessPass(slot, post, target);
+    timeEnd(TimedPass::Post);
 
     // The third edge on this image, and the only one between two passes that both
     // write it. Here for the same reason the present transition below is: it is about
@@ -650,7 +719,9 @@ bool RecordFrame(const FrameSlot& slot,
     // between two writes that no longer collide, which costs nothing.
     RecordLoadHandover(vk, cmd, target, AttachmentRole::Color);
 
+    timeBegin(TimedPass::Gui);
     RecordGuiPass(slot, gui, target);
+    timeEnd(TimedPass::Gui);
 
     // The frame leaves for the presentation engine here, after everything that draws
     // into it. This used to sit at the end of the post-process pass, which made that

@@ -210,6 +210,11 @@ struct Renderer {
     // FrameTarget is made per acquire and lives no longer than the frame.
     FrameSlot slots[kFramesInFlight];
 
+    // One query pool per slot, for the reason the slot itself is per frame: the results
+    // of a submit cannot be read until that submit has finished, and the fence beside
+    // them is what says so.
+    GpuTimer timers[kFramesInFlight];
+
     Renderer() = default;
     ~Renderer() = default;
     Renderer(const Renderer&) = delete;

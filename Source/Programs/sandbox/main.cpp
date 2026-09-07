@@ -1056,6 +1056,9 @@ int main() {
 
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
         if (!CreateFrameSlot(dev, commands, i, &renderer.slots[i])) { return 1; }
+        if (!CreateGpuTimer(dev, commands, kTimestampsPerFrame, &renderer.timers[i])) {
+            return 1;
+        }
     }
 
 
@@ -1092,6 +1095,7 @@ int main() {
     // honest only because the list does not change between frames.
     DrawStats drawStats;
     bool loggedDrawStats = false;
+    bool loggedGpuTimings = false;
 
     // The light is the only thing here that reads absolute time, so two runs never
     // draw the same picture unless this stops it. Environment variables rather than
@@ -1331,6 +1335,27 @@ int main() {
 
         if (begun == FrameResult::Skip) { continue; }
 
+        // What the GPU reported for the last frame that ran on this slot. Here because
+        // BeginFrame waited on that submit's fence, which is what makes the results
+        // readable; earlier and there would be nothing to read.
+        PassTimings gpuTimings;
+        ReadPassTimings(renderer.timers[slot.index], &gpuTimings);
+
+        // Once, the first time there is anything to report, so the numbers reach the
+        // console without the panel being opened. A capture run does not reach this: it
+        // exits at frame kCaptureFrame, before this slot's pool has been written and
+        // read once.
+        if (!loggedGpuTimings && gpuTimings.totalMs > 0.0) {
+            loggedGpuTimings = true;
+            LOG("[gpu] pass times, ms:");
+            for (uint32_t i = 0; i < kTimedPassCount; ++i) {
+                if (!gpuTimings.ran[i]) { continue; }
+                LOG("  %s %.3f", TimedPassName(static_cast<TimedPass>(i)),
+                    gpuTimings.ms[i]);
+            }
+            LOG("  total %.3f\n", gpuTimings.totalMs);
+        }
+
         // The panel, after the acquire because it reports the image this frame got.
         // Nothing here touches the GPU -- it only fills a draw list that
         // RecordGuiPass reads. Below the Skip return on purpose: a frame that is not
@@ -1341,6 +1366,7 @@ int main() {
         guiInfo.materialCount = materialCount;
         guiInfo.recordedDraws = drawStats.draws;
         guiInfo.culledDraws = drawStats.culled;
+        guiInfo.gpuTimings = &gpuTimings;
         guiInfo.materialBinds = drawStats.materialBinds;
         guiInfo.cullChanges = drawStats.cullChanges;
         guiInfo.descriptors = &renderer.descriptors;
@@ -1403,7 +1429,8 @@ int main() {
                          renderer.scenePass,
                          renderer.geometryPass, renderer.lightingPass,
                          renderer.postPass, renderer.guiPass,
-                         *target.texture, visibleList, drawList, &drawStats)) {
+                         *target.texture, visibleList, drawList,
+                         renderer.timers[slot.index], &drawStats)) {
             break;
         }
 
