@@ -157,6 +157,12 @@ shader interface and per-frame draw statistics.
 
   *The same distant arcade, sampled at level 0 and through the chain.*
 
+- **A point light lighting something.** Its cube shadow is the warm half of this frame:
+  the arch soffits and the wall behind the near column go dark when it is switched off,
+  3.2% of the frame by more than 12 levels.
+
+  ![point light and its cube shadow](docs/images/point-shadow.jpg)
+
 - **GPU time per pass.** Timestamps written by the device, one query pool per frame in
   flight, read after that slot's fence. Both stamps are taken at `ALL_COMMANDS` so an
   interval covers one pass rather than the tail of the one before it, and a pass that did

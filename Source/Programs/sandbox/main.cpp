@@ -919,7 +919,13 @@ int main() {
 
         // Last, because it casts no shadow and the casters are a prefix.
         lights[2].kind = LightKind::Point;
-        lights[2].position = kSceneCenter + glm::vec3{-5.0f, 2.2f, 0.0f};
+        // Low, and close to the colonnade the camera is looking down. Two facts decide
+        // where a point light has to be for anyone to see what it does. Its falloff is
+        // inverse square with a range window, so past three or four units it is a few
+        // percent of the sun; and a shadow needs a surface the light cannot see and the
+        // camera can, which a light sitting at the camera never has. Beside the near
+        // columns at floor height satisfies both.
+        lights[2].position = kSceneCenter + glm::vec3{-3.5f, 2.0f, -1.8f};
         lights[2].color = glm::vec3{9.0f, 3.6f, 1.2f} * kRadiance;   // a warm lamp
         lights[2].range = 14.0f;
 

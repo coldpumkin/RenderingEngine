@@ -109,7 +109,14 @@ LightEntry EntryFor(const LightState& light) noexcept {
     LightEntry entry{};
     const bool positioned = light.kind != LightKind::Directional;
 
-    entry.direction = glm::vec4{light.direction, positioned ? 1.0f : 0.0f};
+    // A point light has no axis, so nothing sets one -- and the shader normalizes this
+    // vector for the cone term below. Normalizing a zero vector is not a number, and
+    // that carries through the whole contribution: until this line existed, a point
+    // light lit nothing at all and its shadow had nothing to fall on. The value is
+    // arbitrary because the cone is open; what matters is that it is a direction.
+    const glm::vec3 axis = light.kind == LightKind::Point ? glm::vec3{0.0f, -1.0f, 0.0f}
+                                                         : light.direction;
+    entry.direction = glm::vec4{axis, positioned ? 1.0f : 0.0f};
     // color.a says which kind of map this light has, not merely whether it has one:
     // 0 none, 1 a layer of the 2D array, 2 a cube. The two are sampled differently and
     // the shader has no other way to tell -- kind is not in this struct on purpose.
@@ -118,11 +125,16 @@ LightEntry EntryFor(const LightState& light) noexcept {
     entry.color = glm::vec4{light.color, mapKind};
     entry.position = glm::vec4{light.position, light.range};
 
-    // A point light accepts every direction, and that is a cone of -1 rather than a
-    // flag saying it has none. The shader's smoothstep is then 1 everywhere, so one
-    // expression serves both positioned kinds without asking which it is.
+    // A point light accepts every direction, and that is an open cone rather than a flag
+    // saying it has none -- so one expression serves both positioned kinds without
+    // asking which it is.
+    //
+    // The outer edge is below -1 rather than equal to the inner one. smoothstep is
+    // undefined when its two edges are the same, and an alignment is never below -1, so
+    // putting the outer edge under that makes the window 1 everywhere by arithmetic
+    // rather than by a special case.
     entry.cone = light.kind == LightKind::Point
-               ? glm::vec4{-1.0f, -1.0f, 0.0f, 0.0f}
+               ? glm::vec4{-1.0f, -2.0f, 0.0f, 0.0f}
                : glm::vec4{light.innerCos, light.outerCos, 0.0f, 0.0f};
     return entry;
 }
