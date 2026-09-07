@@ -3,6 +3,7 @@
 #include "Gui.h"
 #include "GeometryPass.h"
 #include "LightingPass.h"
+#include "PointShadowPass.h"
 #include "ShadowPass.h"
 #include "Sky.h"
 #include "PostProcessPass.h"
@@ -109,7 +110,12 @@ LightEntry EntryFor(const LightState& light) noexcept {
     const bool positioned = light.kind != LightKind::Directional;
 
     entry.direction = glm::vec4{light.direction, positioned ? 1.0f : 0.0f};
-    entry.color = glm::vec4{light.color, light.castsShadow ? 1.0f : 0.0f};
+    // color.a says which kind of map this light has, not merely whether it has one:
+    // 0 none, 1 a layer of the 2D array, 2 a cube. The two are sampled differently and
+    // the shader has no other way to tell -- kind is not in this struct on purpose.
+    const float mapKind = !light.castsShadow ? 0.0f
+                        : (light.kind == LightKind::Point ? 2.0f : 1.0f);
+    entry.color = glm::vec4{light.color, mapKind};
     entry.position = glm::vec4{light.position, light.range};
 
     // A point light accepts every direction, and that is a cone of -1 rather than a
@@ -241,6 +247,60 @@ bool CreateFrameLights(const VulkanDevice& dev, FrameLight* out) noexcept {
         }
         if (out[i].buffer.mapped == nullptr) {
             LOG("[vk] light uniform buffer is not mapped\n");
+            return false;
+        }
+    }
+    return true;
+}
+
+glm::mat4 PointShadowFaceView(const glm::vec3& position, uint32_t face) noexcept {
+    // Vulkan's cube order, +X -X +Y -Y +Z -Z, with the up vectors the convention asks
+    // for rather than the world's. skybake.frag reads the same order at the other end.
+    static const glm::vec3 kForward[6] = {
+        { 1.0f,  0.0f,  0.0f}, {-1.0f,  0.0f,  0.0f},
+        { 0.0f,  1.0f,  0.0f}, { 0.0f, -1.0f,  0.0f},
+        { 0.0f,  0.0f,  1.0f}, { 0.0f,  0.0f, -1.0f},
+    };
+    static const glm::vec3 kUp[6] = {
+        { 0.0f, -1.0f,  0.0f}, { 0.0f, -1.0f,  0.0f},
+        { 0.0f,  0.0f,  1.0f}, { 0.0f,  0.0f, -1.0f},
+        { 0.0f, -1.0f,  0.0f}, { 0.0f, -1.0f,  0.0f},
+    };
+    const uint32_t i = face < 6 ? face : 0;
+    return glm::lookAt(position, position + kForward[i], kUp[i]);
+}
+
+glm::mat4 PointShadowProjection(float range) noexcept {
+    // Square and 90 degrees, which is what makes six faces meet without a gap or an
+    // overlap. far is the range because past it the light adds nothing.
+    return glm::perspective(glm::radians(90.0f), 1.0f, 0.05f,
+                            range > 0.05f ? range : 1.0f);
+}
+
+void FillPointShadows(const LightState lights[], uint32_t count,
+                      PointShadowUniform* out) noexcept {
+    *out = PointShadowUniform{};
+    const uint32_t live = count < kMaxLights ? count : kMaxLights;
+    for (uint32_t i = 0; i < live; ++i) {
+        if (lights[i].kind != LightKind::Point) { continue; }
+
+        const glm::mat4 proj = PointShadowProjection(lights[i].range);
+        for (uint32_t face = 0; face < 6; ++face) {
+            out->faceViewProj[i * 6 + face] =
+                proj * PointShadowFaceView(lights[i].position, face);
+        }
+        out->lightPosRange[i] = glm::vec4{lights[i].position, lights[i].range};
+    }
+}
+
+bool CreateFramePointShadows(const VulkanDevice& dev, FramePointShadow* out) noexcept {
+    for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+        if (!CreateBuffer(dev, sizeof(PointShadowUniform),
+                          VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                          VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+                          VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+                              | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                          &out[i].buffer)) {
             return false;
         }
     }
@@ -411,6 +471,7 @@ bool FillFrameSet(const Descriptors& descriptors, const ShaderProgram& program,
         {&sources.irradianceCube->view},
         {&sources.prefilteredCube->view},
         {&sources.brdfLut->view},
+        {&sources.pointShadowMap.frames[frame]->view},
     };
     UpdateSet(descriptors, layout, set, values, static_cast<uint32_t>(std::size(values)));
 
@@ -420,15 +481,26 @@ bool FillFrameSet(const Descriptors& descriptors, const ShaderProgram& program,
     constexpr uint32_t kShadowMapBinding = 3;
     if (kShadowMapBinding < layout.bindingCount
             && layout.types[kShadowMapBinding] != 0) {
-        return DeclareRead(sources.shadowMap, "shadow map", /*wantDepth*/ true, desc);
+        if (!DeclareRead(sources.shadowMap, "shadow map", /*wantDepth*/ true, desc)) {
+            return false;
+        }
+    }
+
+    // The same question for the cubes. Colour rather than depth: what is stored there is
+    // a distance this renderer computed, not something the depth test produced.
+    constexpr uint32_t kPointShadowBinding = 9;
+    if (kPointShadowBinding < layout.bindingCount
+            && layout.types[kPointShadowBinding] != 0) {
+        return DeclareRead(sources.pointShadowMap, "point shadow cubes",
+                           /*wantDepth*/ false, desc);
     }
     return true;
 }
 
 void UploadFrameValues(const FrameSlot& slot,
                        const FrameCamera* cameras, const FrameLight* lights,
-                       const FrameShadow* shadows, FrameViewOptions* views,
-                       const Gui& gui) noexcept {
+                       const FrameShadow* shadows, const FramePointShadow* pointShadows,
+                       FrameViewOptions* views, const Gui& gui) noexcept {
     // Every uniform a frame writes, in the order the passes read them. Four memcpys
     // and one shape -- the panel's switches used to be a call into Gui here, which is
     // what having the buffer on the other side of that boundary cost.
@@ -449,6 +521,9 @@ void UploadFrameValues(const FrameSlot& slot,
 
     const FrameShadow& shadow = shadows[slot.index];
     std::memcpy(shadow.buffer.mapped, &shadow.value, sizeof(shadow.value));
+
+    const FramePointShadow& point = pointShadows[slot.index];
+    std::memcpy(point.buffer.mapped, &point.value, sizeof(point.value));
 }
 
 // Output: whether the order these passes are recorded in agrees with what they declared
@@ -563,6 +638,7 @@ static bool CheckPassOrder(const RenderPassDesc* const passes[],
 const char* TimedPassName(TimedPass pass) noexcept {
     switch (pass) {
         case TimedPass::Shadow:   return "shadow";
+        case TimedPass::PointShadow: return "point shadow";
         case TimedPass::Sky:      return "sky";
         case TimedPass::Scene:    return "scene";
         case TimedPass::Geometry: return "geometry";
@@ -594,6 +670,8 @@ void ReadPassTimings(const GpuTimer& timer, PassTimings* out) noexcept {
 
 bool RecordFrame(const FrameSlot& slot,
                  const ShadowPass& shadow, uint32_t shadowCasters,
+                 const PointShadowPass& pointShadow,
+                 const uint32_t* pointLights, uint32_t pointLightCount,
                  const SkyPass& skyForward, const SkyPass& skyDeferred,
                  const ScenePass& scene,
                  const GeometryPass& geometry, const LightingPass& lighting,
@@ -636,10 +714,11 @@ bool RecordFrame(const FrameSlot& slot,
     // against what the passes declared.
     const bool deferred = GuiDeferred(gui);
     const RenderPassDesc* const forwardChain[] = {
-        &shadow.pass, &skyForward.pass, &scene.pass, &post.pass, &gui.pass};
+        &shadow.pass, &pointShadow.pass, &skyForward.pass, &scene.pass, &post.pass,
+        &gui.pass};
     const RenderPassDesc* const deferredChain[] = {
-        &shadow.pass, &skyDeferred.pass, &geometry.pass, &lighting.pass,
-        &post.pass, &gui.pass};
+        &shadow.pass, &pointShadow.pass, &skyDeferred.pass, &geometry.pass,
+        &lighting.pass, &post.pass, &gui.pass};
 
     static bool checkedForward = false;
     static bool checkedDeferred = false;
@@ -676,6 +755,10 @@ bool RecordFrame(const FrameSlot& slot,
     timeBegin(TimedPass::Shadow);
     RecordShadowPass(slot, shadow, shadowDraws, shadowCasters);
     timeEnd(TimedPass::Shadow);
+
+    timeBegin(TimedPass::PointShadow);
+    RecordPointShadowPass(slot, pointShadow, shadowDraws, pointLights, pointLightCount);
+    timeEnd(TimedPass::PointShadow);
 
     // The one branch in a frame. Everything either side of it is the same call with
     // the same arguments, which is the point: what deferred changes is here and

@@ -78,6 +78,7 @@
 #include "Pipelines.h"
 #include "GeometryPass.h"
 #include "LightingPass.h"
+#include "PointShadowPass.h"
 #include "PostProcessPass.h"
 #include "ScenePass.h"
 #include "Sky.h"
@@ -151,6 +152,10 @@ struct Renderer {
     // which is why it is out here beside them rather than inside either.
     FrameShadow shadows[kFramesInFlight];
 
+    // The cubes' matrices and where each point light is, in one buffer read by the pass
+    // that draws them and by the two that sample them.
+    FramePointShadow pointShadows[kFramesInFlight];
+
     // The panel's switches, and **the reason this one is here is the reason the
     // shadow map is.** It lived inside Gui until 09-06, when three passes read it and
     // each had to say GuiOptionsBuffer(gui, i) -- a name only the panel could give.
@@ -167,6 +172,11 @@ struct Renderer {
     //
     // Before the passes, so it outlives both: their sets name its view.
     Texture shadowMaps[kFramesInFlight];
+
+    // One cube per light slot, and the depth the faces are drawn with. The depth is not
+    // sampled by anything: it is what makes the nearest surface win inside a face.
+    Texture pointShadowCubes[kFramesInFlight];
+    Texture pointShadowDepths[kFramesInFlight];
 
     // One, not one per frame in flight: it is baked once and read from then on, which
     // is what makes it an input the frame is handed rather than something the frame
@@ -188,6 +198,7 @@ struct Renderer {
     GBufferTargets gbuffers[kFramesInFlight];
 
     ShadowPass shadowPass;
+    PointShadowPass pointShadowPass;
     // One per path, because the two fill different images at different sample counts.
     SkyPass skyForwardPass;
     SkyPass skyDeferredPass;

@@ -71,7 +71,7 @@ bool CreateImage(const VulkanDevice& dev, const TextureDesc& desc, Image* out) n
     // A cube is six 2D layers plus a flag that lets a view address them by direction.
     // Both follow from the kind, so neither is a field of its own.
     info.imageType = VK_IMAGE_TYPE_2D;
-    info.flags = desc.kind == TextureKind::Cube
+    info.flags = (desc.kind == TextureKind::Cube || desc.kind == TextureKind::CubeArray)
                ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0;
     info.format = format;
     info.extent = VkExtent3D{extent.width, extent.height, 1};

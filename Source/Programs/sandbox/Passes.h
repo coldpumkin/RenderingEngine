@@ -59,6 +59,7 @@ struct Mesh;
 // included, so the arrow points one way -- RecordFrame is handed each of them and
 // orders them, and none of them knows the others.
 struct ShadowPass;
+struct PointShadowPass;
 struct SkyPass;
 struct ScenePass;
 struct GeometryPass;
@@ -538,6 +539,61 @@ struct ShadowUniform {
     ShadowEntry lights[kMaxLights];
 };
 
+// A point light's shadow, as the six views its cube is drawn through
+// ----------------------------------------------------------------------------
+//
+// A 2D map is one direction and a point light has every direction, so its map is a cube
+// and drawing it is six passes rather than one. What is stored is the distance from the
+// light rather than a depth: the comparison at the other end is then
+// length(fragment - light) against that number, with no need to work out which face a
+// direction landed on and undo that face's projection.
+//
+// The projection is the same for all six -- 90 degrees, square -- and only the view
+// turns, which is why the two are multiplied here rather than kept apart the way the
+// camera's are.
+//
+// Contract: matches PointShadow in pointshadow.vert.
+struct PointShadowUniform {
+    // Light i uses faces 6i .. 6i+5, in Vulkan's cube order: +X -X +Y -Y +Z -Z. The same
+    // order skybake.frag reads, because both ends have to agree about which face a
+    // direction belongs to.
+    glm::mat4 faceViewProj[kMaxLights * 6];
+
+    // xyz where the light is, w how far its light carries. The fragment stage divides by
+    // that range, so what lands in the map is 0..1 and the format can be a small float.
+    glm::vec4 lightPosRange[kMaxLights];
+};
+
+// Output: the view from a point light along one of the six faces
+//
+// The up vectors are the cube convention rather than the world's: four of the faces look
+// sideways with up pointing at -y, and the two that look along y use z. Getting one wrong
+// shows as a shadow that is mirrored on that face alone.
+glm::mat4 PointShadowFaceView(const glm::vec3& position, uint32_t face) noexcept;
+
+// Output: the projection every face of a cube is drawn with
+//
+// 90 degrees and square, because six of those cover the whole sphere exactly. near is
+// small and fixed; far is the light's range, past which the light contributes nothing
+// and a shadow would have nothing to fall on.
+glm::mat4 PointShadowProjection(float range) noexcept;
+
+// Effect: fills a PointShadowUniform from the frame's lights
+//
+// A light that is not a point light leaves its six entries unwritten. Nothing reads
+// them: which lights have a cube is decided where the cubes are drawn, and the shader is
+// told through the light's own colour.a.
+void FillPointShadows(const LightState lights[], uint32_t count,
+                      PointShadowUniform* out) noexcept;
+
+// Which face of which light's cube a point shadow pass is drawing
+//
+// Contract: matches Push in pointshadow.vert -- light at offset 64, face at 68.
+struct PointShadowWhich {
+    int32_t light = 0;
+    int32_t face = 0;
+};
+
 // Which light a shadow pass is drawing the map for
 //
 // Contract: matches Which in shadow.vert. One map is drawn per casting light and this
@@ -645,6 +701,13 @@ struct FrameShadow {
     Buffer buffer;
 };
 
+// Read by the pass that draws the cubes and by the two that sample them, which is the
+// same shape FrameShadow has and the same reason it sits out here.
+struct FramePointShadow {
+    PointShadowUniform value{};
+    Buffer buffer;
+};
+
 // Effect: creates one mapped uniform buffer per frame in flight
 // The same switches as the shader reads them.
 //
@@ -694,6 +757,7 @@ struct FrameViewOptions {
 bool CreateFrameCameras(const VulkanDevice& dev, FrameCamera* out) noexcept;
 bool CreateFrameLights(const VulkanDevice& dev, FrameLight* out) noexcept;
 bool CreateFrameShadows(const VulkanDevice& dev, FrameShadow* out) noexcept;
+bool CreateFramePointShadows(const VulkanDevice& dev, FramePointShadow* out) noexcept;
 bool CreateFrameViewOptions(const VulkanDevice& dev, FrameViewOptions* out) noexcept;
 
 // Rides inside the command buffer: no pool, no set, no lifetime. The spec guarantees
@@ -810,6 +874,11 @@ inline ProgramRequirements SharedBlocks() noexcept {
         // rather than in a second list because a push block is one block per stage and
         // this is what says which members a stage may read.
         {"light",  sizeof(glm::mat4),                 sizeof(int32_t)},
+
+        // Which face of that light's cube, next to it. Only the point shadow program
+        // declares this one, and it sits where the scene's normal matrix does for the
+        // reason the light index does: the two never appear in one program.
+        {"face",   sizeof(glm::mat4) + sizeof(int32_t), sizeof(int32_t)},
         {"normal", offsetof(PushConstants, normal), sizeof(PushConstants::normal)},
         {"alpha",  offsetof(PushConstants, alpha),  sizeof(PushConstants::alpha)},
     };
@@ -1030,6 +1099,10 @@ struct FrameSetSources {
     // the mip chain by roughness, and the table that says what the BRDF does with it.
     const Texture* prefilteredCube = nullptr;      // binding 7
     const Texture* brdfLut = nullptr;              // binding 8
+
+    // The point lights' cubes, and the second member of a different kind: another pass
+    // makes it, every frame, so it is an edge the way shadowMap is.
+    PassInput pointShadowMap;                      // binding 9
 };
 
 // Effect: writes this frame's set 0, and declares in desc the pass outputs this
@@ -1110,8 +1183,8 @@ VkImageUsageFlags DepthTargetUsage() noexcept;
 //           to get this wrong, and nothing here would notice.
 void UploadFrameValues(const FrameSlot& slot,
                        const FrameCamera* cameras, const FrameLight* lights,
-                       const FrameShadow* shadows, FrameViewOptions* views,
-                       const Gui& gui) noexcept;
+                       const FrameShadow* shadows, const FramePointShadow* pointShadows,
+                       FrameViewOptions* views, const Gui& gui) noexcept;
 
 // draws is what the camera can see; shadowDraws is everything that can cast. They are
 // two lists because they are culled against different volumes -- a wall behind the camera
@@ -1127,7 +1200,7 @@ void UploadFrameValues(const FrameSlot& slot,
 // unwritten pair of a pass that did not run reads as unavailable, which the panel shows
 // as a dash.
 enum class TimedPass : uint32_t {
-    Shadow, Sky, Scene, Geometry, Lighting, Post, Gui, Count
+    Shadow, PointShadow, Sky, Scene, Geometry, Lighting, Post, Gui, Count
 };
 
 inline constexpr uint32_t kTimedPassCount = static_cast<uint32_t>(TimedPass::Count);
@@ -1178,6 +1251,8 @@ void ReadPassTimings(const GpuTimer& timer, PassTimings* out) noexcept;
 //           those buffers, and nothing in the command stream would say they are stale.
 bool RecordFrame(const FrameSlot& slot,
                  const ShadowPass& shadow, uint32_t shadowCasters,
+                 const PointShadowPass& pointShadow,
+                 const uint32_t* pointLights, uint32_t pointLightCount,
                  const SkyPass& skyForward, const SkyPass& skyDeferred,
                  const ScenePass& scene,
                  const GeometryPass& geometry, const LightingPass& lighting,

@@ -118,7 +118,7 @@ VkFormatFeatureFlags RequiredFormatFeatures(VkImageUsageFlags usage) noexcept;
 // A cube is six layers addressed by a direction, and saying so here makes a cube of
 // five faces unwriteable. Nothing here is 3D or an array yet; both are one more value
 // and a depth field on the day something wants them.
-enum class TextureKind { Texture2D, Texture2DArray, Cube };
+enum class TextureKind { Texture2D, Texture2DArray, Cube, CubeArray };
 
 struct TextureDesc {
     VkExtent2D extent{};
@@ -133,10 +133,11 @@ struct TextureDesc {
     // time -- which is what ImageViewDesc::baseMip has been waiting for.
     uint32_t mipLevels = 1;
 
-    // **Read only when the kind is Texture2DArray.** A cube is six by definition and a
-    // plain 2D is one, so for those two this is not a choice and saying it would make a
-    // cube of five faces writeable. An array's length is a choice, which is why the
-    // field exists at all and why it belongs to one kind.
+    // **Read when the kind is Texture2DArray or CubeArray.** A single cube is six by
+    // definition and a plain 2D is one, so for those two this is not a choice and saying
+    // it would make a cube of five faces writeable. For a cube array it counts cubes,
+    // not layers -- six layers each -- because a cube array of four and a half cubes is
+    // not a thing.
     uint32_t arrayLayers = 1;
 };
 
@@ -159,6 +160,8 @@ inline uint32_t MipLevelsFor(VkExtent2D extent) noexcept {
 inline uint32_t LayersOf(const TextureDesc& desc) noexcept {
     switch (desc.kind) {
         case TextureKind::Cube:           return 6u;
+        case TextureKind::CubeArray:      return 6u * (desc.arrayLayers > 0
+                                                           ? desc.arrayLayers : 1u);
         case TextureKind::Texture2DArray: return desc.arrayLayers > 0 ? desc.arrayLayers
                                                                       : 1u;
         default:                          return 1u;
@@ -203,6 +206,7 @@ inline bool SameTextureDesc(const TextureDesc& a, const TextureDesc& b) noexcept
 inline VkImageViewType ViewTypeOf(TextureKind kind) noexcept {
     switch (kind) {
         case TextureKind::Cube:           return VK_IMAGE_VIEW_TYPE_CUBE;
+        case TextureKind::CubeArray:      return VK_IMAGE_VIEW_TYPE_CUBE_ARRAY;
         case TextureKind::Texture2DArray: return VK_IMAGE_VIEW_TYPE_2D_ARRAY;
         default:                          return VK_IMAGE_VIEW_TYPE_2D;
     }

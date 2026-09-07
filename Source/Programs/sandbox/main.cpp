@@ -58,6 +58,7 @@
 #include <stb_image.h>
 
 #include <algorithm>  // stable_sort, for the draw order
+#include <memory>     // the renderer is too large for the stack
 #include <cmath>      // cos, sin
 #include <cstdio>     // fopen, for the capture's own file
 #include <cstdlib>    // getenv, for the deterministic-capture switch
@@ -155,7 +156,15 @@ int main() {
     // Everything past this line needs a VkDevice, which is the whole reason the line
     // is here. What it holds and why it is grouped that way is in Renderer.h; the
     // order inside it is a destruction contract, not a preference.
-    Renderer       renderer;
+    // **On the heap, and the reason is size rather than lifetime.** Every ShaderProgram
+    // keeps what reflection found for each of its stages, which is about 65 KB of
+    // fixed-size arrays, and twelve programs overflow the 1 MB stack a thread gets --
+    // the symptom is an exit code of 0xC00000FD before anything is created.
+    //
+    // Still a local, so it is destroyed here rather than at program exit: everything in
+    // it needs the device below to still exist, and that ordering is what this whole
+    // block is written for.
+    const std::unique_ptr<Renderer> renderer = std::make_unique<Renderer>();
 
     // Display -- a window, and a GPU that can drive it
     // ========================================================================
@@ -217,6 +226,14 @@ int main() {
 
     const TextureDesc shadowTarget = MakeShadowTarget(caps);
 
+    // A point light's shadow is a cube, so its target is one cube per light slot and the
+    // depth the six faces are drawn with. Described here for the reason every other
+    // target is: a pipeline is compiled against a face of them before any image exists.
+    const TextureDesc pointShadowTarget = MakePointShadowTarget();
+    const TextureDesc pointShadowDepth = MakePointShadowDepth(caps);
+    const TextureDesc pointShadowFace = SliceDesc(pointShadowTarget);
+    const TextureDesc pointShadowDepthFace = SliceDesc(pointShadowDepth);
+
     // One cube, and the 2D slice one of its faces is. The second is what the bake's
     // pipeline is compiled against -- a face is what that pass draws into.
     // Where the sun is. One fact, read by two things that must agree: the light the
@@ -245,7 +262,7 @@ int main() {
 
     // Here and not with the passes: the descriptor pool has to be told about this
     // one's set before it is created, and the font it points at is uploaded here.
-    if (!CreateGui(dev, commands, window, &renderer.guiPass)) { return 1; }
+    if (!CreateGui(dev, commands, window, &renderer->guiPass)) { return 1; }
 
     // Passes -- a program per pair of shaders, a pipeline per variant of one
     // ========================================================================
@@ -262,6 +279,8 @@ int main() {
     pipelineSources.meshLayout = VertexInput();
     pipelineSources.guiLayout = GuiVertexInput();
     pipelineSources.shadowDepth = &shadowTarget;
+    pipelineSources.pointShadowFace = &pointShadowFace;
+    pipelineSources.pointShadowDepth = &pointShadowDepthFace;
     pipelineSources.skyFace = &skyFaceTarget;
     pipelineSources.irradianceFace = &irradianceFaceTarget;
     pipelineSources.prefilterFace = &prefilterFaceTarget;
@@ -291,7 +310,7 @@ int main() {
     pipelineSources.blockCount = blocks.blockCount;
     pipelineSources.pushMembers = blocks.pushMembers;
     pipelineSources.pushMemberCount = blocks.pushMemberCount;
-    if (!CreatePipelines(dev, pipelineSources, &renderer.pipelines)) { return 1; }
+    if (!CreatePipelines(dev, pipelineSources, &renderer->pipelines)) { return 1; }
 
     // Scene -- the mesh and the draw list, from one file
     // ------------------------------------------------------------------------
@@ -336,7 +355,7 @@ int main() {
                             static_cast<uint32_t>(vertices.size()),
                             static_cast<uint32_t>(indices.size())};
     if (!CreateMesh(dev, commands, meshDesc, vertices.data(), indices.data(),
-                    &renderer.mesh)) {
+                    &renderer->mesh)) {
         return 1;
     }
 
@@ -353,7 +372,7 @@ int main() {
     // URIs are relative to the .gltf, per the spec.
     constexpr size_t kTexturesPerMaterial = 3;
     const uint32_t materialCount = static_cast<uint32_t>(materialSources.size());
-    renderer.textures.resize(static_cast<size_t>(materialCount) * kTexturesPerMaterial);
+    renderer->textures.resize(static_cast<size_t>(materialCount) * kTexturesPerMaterial);
 
     // One white texel, for a material that names no base colour. glTF says such a
     // material is its baseColorFactor alone, and white is the texture that multiplies
@@ -391,9 +410,9 @@ int main() {
     for (uint32_t i = 0; i < materialCount; ++i) {
         const MaterialSource& named = materialSources[i];
         const size_t first = static_cast<size_t>(i) * kTexturesPerMaterial;
-        Texture& base = renderer.textures[first];
-        Texture& normal = renderer.textures[first + 1];
-        Texture& metalRough = renderer.textures[first + 2];
+        Texture& base = renderer->textures[first];
+        Texture& normal = renderer->textures[first + 1];
+        Texture& metalRough = renderer->textures[first + 2];
 
         if (!named.baseColor.empty()) {
             const std::string path = std::string(LAMBDA_ASSET_ROOT "/Sponza/")
@@ -442,27 +461,28 @@ int main() {
     // sets, materials for the material set. How many descriptors each set holds is
     // read off the layout by CreateDescriptors, not written here.
     const SetRequest setRequests[] = {
-        {&renderer.pipelines.shadowProgram.setLayouts[kFrameSet], kFramesInFlight},
-        {&renderer.pipelines.sceneProgram.setLayouts[kFrameSet], kFramesInFlight},
-        {&renderer.pipelines.sceneProgram.setLayouts[kMaterialSet], materialCount},
+        {&renderer->pipelines.shadowProgram.setLayouts[kFrameSet], kFramesInFlight},
+        {&renderer->pipelines.pointShadowProgram.setLayouts[kFrameSet], kFramesInFlight},
+        {&renderer->pipelines.sceneProgram.setLayouts[kFrameSet], kFramesInFlight},
+        {&renderer->pipelines.sceneProgram.setLayouts[kMaterialSet], materialCount},
         // The deferred half. geometry's set 0 is two bindings with holes between them;
         // lighting's is the same five the scene's is, and its set 1 is the g-buffer
         // rather than a material -- which is why it is claimed here and the material
         // sets above are not counted twice. **geometry draws no material sets of its
         // own**: it speaks MaterialSet(), so the ones the scene pass uses fit it.
-        {&renderer.pipelines.geometryProgram.setLayouts[kFrameSet], kFramesInFlight},
-        {&renderer.pipelines.lightingProgram.setLayouts[kFrameSet], kFramesInFlight},
-        {&renderer.pipelines.lightingProgram.setLayouts[kMaterialSet], kFramesInFlight},
-        {&renderer.pipelines.irradianceProgram.setLayouts[kFrameSet], 1},
-        {&renderer.pipelines.prefilterProgram.setLayouts[kFrameSet], 1},
-        {&renderer.pipelines.skyProgram.setLayouts[kFrameSet], 2 * kFramesInFlight},
-        {&renderer.pipelines.postProgram.setLayouts[kFrameSet], kFramesInFlight},
+        {&renderer->pipelines.geometryProgram.setLayouts[kFrameSet], kFramesInFlight},
+        {&renderer->pipelines.lightingProgram.setLayouts[kFrameSet], kFramesInFlight},
+        {&renderer->pipelines.lightingProgram.setLayouts[kMaterialSet], kFramesInFlight},
+        {&renderer->pipelines.irradianceProgram.setLayouts[kFrameSet], 1},
+        {&renderer->pipelines.prefilterProgram.setLayouts[kFrameSet], 1},
+        {&renderer->pipelines.skyProgram.setLayouts[kFrameSet], 2 * kFramesInFlight},
+        {&renderer->pipelines.postProgram.setLayouts[kFrameSet], kFramesInFlight},
         // One, and counted by neither of the other two reasons: there is one font.
-        {&renderer.pipelines.guiProgram.setLayouts[0], 1},
+        {&renderer->pipelines.guiProgram.setLayouts[0], 1},
     };
     if (!CreateDescriptors(dev, setRequests,
                            static_cast<uint32_t>(std::size(setRequests)),
-                           &renderer.descriptors)) { return 1; }
+                           &renderer->descriptors)) { return 1; }
 
     // The pairs, as the two pointers a set is filled from. Built here rather than
     // stored, because textures owns them and this is only a way of reading it.
@@ -478,21 +498,21 @@ int main() {
         // The cast is for the braced init: the enum is int, the flags field is
         // unsigned, and that counts as narrowing here.
         const size_t first = static_cast<size_t>(i) * kTexturesPerMaterial;
-        sources[i] = {&renderer.textures[first],
-                      &renderer.textures[first + 1],
-                      &renderer.textures[first + 2],
+        sources[i] = {&renderer->textures[first],
+                      &renderer->textures[first + 1],
+                      &renderer->textures[first + 2],
                       params,
                       static_cast<VkCullModeFlags>(doubleSided ? VK_CULL_MODE_NONE
                                                                : VK_CULL_MODE_BACK_BIT)};
     }
 
-    if (!CreateGuiSet(renderer.descriptors, renderer.pipelines.gui, swapchainTarget,
-                      &renderer.guiPass)) { return 1; }
+    if (!CreateGuiSet(renderer->descriptors, renderer->pipelines.gui, swapchainTarget,
+                      &renderer->guiPass)) { return 1; }
 
-    renderer.materials.resize(materialCount);
-    if (!CreateMaterials(dev, renderer.descriptors,
-                         renderer.pipelines.sceneProgram.setLayouts[kMaterialSet], sources.data(),
-                         materialCount, renderer.materials.data())) { return 1; }
+    renderer->materials.resize(materialCount);
+    if (!CreateMaterials(dev, renderer->descriptors,
+                         renderer->pipelines.sceneProgram.setLayouts[kMaterialSet], sources.data(),
+                         materialCount, renderer->materials.data())) { return 1; }
 
     // Join the two halves the loader had to hand back separately. An index rather than
     // a pointer, so this survives renderer.materials moving in memory -- only its
@@ -511,7 +531,7 @@ int main() {
     //
     // Stable, so ties keep the file's order. Nothing depends on it yet -- blending is
     // off, so no draw has to come after another.
-    const std::vector<Material>& materials = renderer.materials;
+    const std::vector<Material>& materials = renderer->materials;
     std::stable_sort(items.begin(), items.end(),
                      [&materials](const DrawItem& a, const DrawItem& b) noexcept {
                          const VkCullModeFlags cullA = materials[a.material].cullMode;
@@ -525,7 +545,7 @@ int main() {
     // all because an index handed in without its array is the one way this goes wrong
     // without saying so.
     const DrawList drawList{items.data(), static_cast<uint32_t>(items.size()),
-                            renderer.materials.data(), materialCount};
+                            renderer->materials.data(), materialCount};
 
     // Frames -- per-frame values, then the passes that read them, then the slots
     // ------------------------------------------------------------------------
@@ -535,10 +555,11 @@ int main() {
     //
     // The buffers come before both passes that read them, which is also why neither
     // owns them -- the shadow pass is created first and would have to outlive itself.
-    if (!CreateFrameCameras(dev, renderer.cameras)) { return 1; }
-    if (!CreateFrameLights(dev, renderer.lights)) { return 1; }
-    if (!CreateFrameShadows(dev, renderer.shadows)) { return 1; }
-    if (!CreateFrameViewOptions(dev, renderer.viewOptions)) { return 1; }
+    if (!CreateFrameCameras(dev, renderer->cameras)) { return 1; }
+    if (!CreateFrameLights(dev, renderer->lights)) { return 1; }
+    if (!CreateFrameShadows(dev, renderer->shadows)) { return 1; }
+    if (!CreateFramePointShadows(dev, renderer->pointShadows)) { return 1; }
+    if (!CreateFrameViewOptions(dev, renderer->viewOptions)) { return 1; }
 
     // The shadow map, made here from the desc written at the top and handed to both
     // passes that touch it -- the one that draws it and the one that samples it. The
@@ -547,47 +568,68 @@ int main() {
     // &shadowMaps[0]->desc, which is one frame's copy and would make the identity
     // different every frame -- shadowTarget is what all of them were made from.
     // Made and filled before anything that reads it, and never touched again.
-    if (!CreateTexture(dev, skyTarget, &renderer.skyCube)) { return 1; }
-    if (!BakeSkyCube(dev, commands, renderer.pipelines.skyBake, kSunDirection,
-                     &renderer.skyCube)) {
+    if (!CreateTexture(dev, skyTarget, &renderer->skyCube)) { return 1; }
+    if (!BakeSkyCube(dev, commands, renderer->pipelines.skyBake, kSunDirection,
+                     &renderer->skyCube)) {
         return 1;
     }
 
     // From the sky, so after it. What every matte surface receives, worked out once
     // rather than per pixel per frame -- the integral has no other input.
-    if (!CreateTexture(dev, irradianceTarget, &renderer.irradianceCube)) { return 1; }
-    if (!BakeIrradianceCube(dev, commands, renderer.descriptors,
-                            renderer.pipelines.irradianceBake,
-                            renderer.skyCube, &renderer.irradianceCube)) {
+    if (!CreateTexture(dev, irradianceTarget, &renderer->irradianceCube)) { return 1; }
+    if (!BakeIrradianceCube(dev, commands, renderer->descriptors,
+                            renderer->pipelines.irradianceBake,
+                            renderer->skyCube, &renderer->irradianceCube)) {
         return 1;
     }
 
     // The specular half, and the table that says what a surface does with it. The first
     // is from the sky like the irradiance is; the second is from nothing at all and
     // would be the same file every run.
-    if (!CreateTexture(dev, prefilterTarget, &renderer.prefilteredCube)) { return 1; }
-    if (!BakePrefilterCube(dev, commands, renderer.descriptors,
-                           renderer.pipelines.prefilterBake,
-                           renderer.skyCube, &renderer.prefilteredCube)) {
+    if (!CreateTexture(dev, prefilterTarget, &renderer->prefilteredCube)) { return 1; }
+    if (!BakePrefilterCube(dev, commands, renderer->descriptors,
+                           renderer->pipelines.prefilterBake,
+                           renderer->skyCube, &renderer->prefilteredCube)) {
         return 1;
     }
-    if (!CreateTexture(dev, brdfLutTarget, &renderer.brdfLut)) { return 1; }
-    if (!BakeBrdfLut(dev, commands, renderer.pipelines.brdfLutBake, &renderer.brdfLut)) {
+    if (!CreateTexture(dev, brdfLutTarget, &renderer->brdfLut)) { return 1; }
+    if (!BakeBrdfLut(dev, commands, renderer->pipelines.brdfLutBake, &renderer->brdfLut)) {
         return 1;
     }
 
     const Texture* shadowMaps[kFramesInFlight]{};
     PassInput shadowMapInput{&shadowTarget, {}};
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
-        if (!CreateTexture(dev, shadowTarget, &renderer.shadowMaps[i])) { return 1; }
-        shadowMaps[i] = &renderer.shadowMaps[i];
-        shadowMapInput.frames[i] = &renderer.shadowMaps[i];
+        if (!CreateTexture(dev, shadowTarget, &renderer->shadowMaps[i])) { return 1; }
+        shadowMaps[i] = &renderer->shadowMaps[i];
+        shadowMapInput.frames[i] = &renderer->shadowMaps[i];
     }
 
-    if (!CreateShadowPass(renderer.descriptors, shadowTarget, shadowMaps,
-                          renderer.mesh,
-                          renderer.pipelines.shadow, renderer.shadows,
-                          &renderer.shadowPass)) { return 1; }
+    if (!CreateShadowPass(renderer->descriptors, shadowTarget, shadowMaps,
+                          renderer->mesh,
+                          renderer->pipelines.shadow, renderer->shadows,
+                          &renderer->shadowPass)) { return 1; }
+
+    // The cubes and the depth they are drawn with, made here for the reason the 2D maps
+    // are: one pass draws them and two sample them, so neither can own them.
+    const Texture* pointShadowCubes[kFramesInFlight]{};
+    const Texture* pointShadowDepths[kFramesInFlight]{};
+    PassInput pointShadowInput{&pointShadowTarget, {}};
+    for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+        if (!CreateTexture(dev, pointShadowTarget, &renderer->pointShadowCubes[i])
+                || !CreateTexture(dev, pointShadowDepth,
+                                  &renderer->pointShadowDepths[i])) {
+            return 1;
+        }
+        pointShadowCubes[i] = &renderer->pointShadowCubes[i];
+        pointShadowDepths[i] = &renderer->pointShadowDepths[i];
+        pointShadowInput.frames[i] = &renderer->pointShadowCubes[i];
+    }
+
+    if (!CreatePointShadowPass(renderer->descriptors, pointShadowTarget, pointShadowCubes,
+                               pointShadowDepth, pointShadowDepths, renderer->mesh,
+                               renderer->pipelines.pointShadow, renderer->pointShadows,
+                               &renderer->pointShadowPass)) { return 1; }
     // The scene's three, made here and named here. The pass draws into them, the post
     // pass samples the resolve, and the capture reads the same image -- three readers
     // and no pass in the middle of any of them.
@@ -604,36 +646,37 @@ int main() {
     // desc and both of them name it.
     PassInput sceneColorInput{&sceneTargetDescs.resolve, {}};
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
-        if (!CreateSceneTargets(dev, sceneTargetDescs, &renderer.sceneTargets[i])) {
+        if (!CreateSceneTargets(dev, sceneTargetDescs, &renderer->sceneTargets[i])) {
             return 1;
         }
-        sceneTargets[i] = &renderer.sceneTargets[i];
+        sceneTargets[i] = &renderer->sceneTargets[i];
 
         // resolve and not color: a multisample image cannot be sampled.
-        sceneColor[i] = &renderer.sceneTargets[i].resolve;
-        sceneColorInput.frames[i] = &renderer.sceneTargets[i].resolve;
-        sceneColorMs[i] = &renderer.sceneTargets[i].color;
+        sceneColor[i] = &renderer->sceneTargets[i].resolve;
+        sceneColorInput.frames[i] = &renderer->sceneTargets[i].resolve;
+        sceneColorMs[i] = &renderer->sceneTargets[i].color;
     }
 
     // What set 0 holds, said once. Each program takes the subset it declared, so the
     // geometry pass gets the same value and reflection leaves the three it does not
     // read as holes.
-    const FrameSetSources frameSet{renderer.cameras, renderer.lights, renderer.shadows,
-                                   shadowMapInput, renderer.viewOptions,
-                                   &renderer.skyCube, &renderer.irradianceCube,
-                                   &renderer.prefilteredCube, &renderer.brdfLut};
+    const FrameSetSources frameSet{renderer->cameras, renderer->lights, renderer->shadows,
+                                   shadowMapInput, renderer->viewOptions,
+                                   &renderer->skyCube, &renderer->irradianceCube,
+                                   &renderer->prefilteredCube, &renderer->brdfLut,
+                                   pointShadowInput};
 
-    if (!CreateScenePass(renderer.descriptors, sceneTargetDescs, sceneTargets,
-                         renderer.mesh, renderer.pipelines.scene,
-                         renderer.pipelines.sceneWire,
-                         frameSet, &renderer.scenePass)) { return 1; }
-    if (!CreateSkyPass(renderer.descriptors, sceneTargetDescs.color, sceneColorMs,
-                       renderer.pipelines.skyForward, frameSet,
-                       &renderer.skyForwardPass)) { return 1; }
+    if (!CreateScenePass(renderer->descriptors, sceneTargetDescs, sceneTargets,
+                         renderer->mesh, renderer->pipelines.scene,
+                         renderer->pipelines.sceneWire,
+                         frameSet, &renderer->scenePass)) { return 1; }
+    if (!CreateSkyPass(renderer->descriptors, sceneTargetDescs.color, sceneColorMs,
+                       renderer->pipelines.skyForward, frameSet,
+                       &renderer->skyForwardPass)) { return 1; }
 
-    if (!CreatePostProcessPass(renderer.descriptors, sceneColorInput, swapchainTarget,
-                               renderer.pipelines.post,
-                               &renderer.postPass)) {
+    if (!CreatePostProcessPass(renderer->descriptors, sceneColorInput, swapchainTarget,
+                               renderer->pipelines.post,
+                               &renderer->postPass)) {
         return 1;
     }
 
@@ -642,31 +685,31 @@ int main() {
     // names.
     const GBufferTargets* gbuffers[kFramesInFlight]{};
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
-        if (!CreateGBufferTargets(dev, gbufferDescs, &renderer.gbuffers[i])) {
+        if (!CreateGBufferTargets(dev, gbufferDescs, &renderer->gbuffers[i])) {
             return 1;
         }
-        gbuffers[i] = &renderer.gbuffers[i];
+        gbuffers[i] = &renderer->gbuffers[i];
     }
 
-    if (!CreateGeometryPass(renderer.descriptors, gbufferDescs, gbuffers,
-                            renderer.mesh, renderer.pipelines.geometry,
-                            renderer.pipelines.geometryWire,
-                            frameSet, &renderer.geometryPass)) { return 1; }
+    if (!CreateGeometryPass(renderer->descriptors, gbufferDescs, gbuffers,
+                            renderer->mesh, renderer->pipelines.geometry,
+                            renderer->pipelines.geometryWire,
+                            frameSet, &renderer->geometryPass)) { return 1; }
 
     // sceneColor is the scene pass's resolve, and this pass draws into it rather than
     // reading it. Only one of the two ever writes it in a frame.
-    if (!CreateLightingPass(renderer.descriptors, gbufferDescs, gbuffers,
+    if (!CreateLightingPass(renderer->descriptors, gbufferDescs, gbuffers,
                             sceneTargetDescs.resolve, sceneColor,
-                            renderer.pipelines.lighting,
-                            frameSet, &renderer.lightingPass)) { return 1; }
+                            renderer->pipelines.lighting,
+                            frameSet, &renderer->lightingPass)) { return 1; }
 
-    if (!CreateSkyPass(renderer.descriptors, sceneTargetDescs.resolve, sceneColor,
-                       renderer.pipelines.skyDeferred, frameSet,
-                       &renderer.skyDeferredPass)) { return 1; }
+    if (!CreateSkyPass(renderer->descriptors, sceneTargetDescs.resolve, sceneColor,
+                       renderer->pipelines.skyDeferred, frameSet,
+                       &renderer->skyDeferredPass)) { return 1; }
 
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
-        if (!CreateFrameSlot(dev, commands, i, &renderer.slots[i])) { return 1; }
-        if (!CreateGpuTimer(dev, commands, kTimestampsPerFrame, &renderer.timers[i])) {
+        if (!CreateFrameSlot(dev, commands, i, &renderer->slots[i])) { return 1; }
+        if (!CreateGpuTimer(dev, commands, kTimestampsPerFrame, &renderer->timers[i])) {
             return 1;
         }
     }
@@ -764,9 +807,9 @@ int main() {
             bool remade = true;
             for (uint32_t i = 0; i < kFramesInFlight && remade; ++i) {
                 remade = ResizeSceneTargets(dev, sceneTargetDescs,
-                                            &renderer.sceneTargets[i])
+                                            &renderer->sceneTargets[i])
                       && ResizeGBufferTargets(dev, gbufferDescs,
-                                              &renderer.gbuffers[i]);
+                                              &renderer->gbuffers[i]);
             }
             if (!remade) { break; }
 
@@ -774,8 +817,8 @@ int main() {
             // reads the resolve, and the lighting pass's second set names all four
             // g-buffer views. The lighting pass's first set survives -- it names
             // buffers and the shadow map, and a resize touches neither.
-            RefreshPostProcessPass(renderer.descriptors, &renderer.postPass);
-            RefreshLightingPass(renderer.descriptors, &renderer.lightingPass);
+            RefreshPostProcessPass(renderer->descriptors, &renderer->postPass);
+            RefreshLightingPass(renderer->descriptors, &renderer->lightingPass);
             LOG("[render] targets now %ux%u\n", wanted.width, wanted.height);
         }
 
@@ -885,12 +928,22 @@ int main() {
             lights[i].castsShadow = true;
             shadowCasters = i + 1;
         }
+
+        // And the point lights, which get a cube instead. Not a prefix: they are what
+        // the 2D pass stopped at, so they are named by index rather than counted.
+        uint32_t pointLights[kMaxLights]{};
+        uint32_t pointLightCount = 0;
+        for (uint32_t i = 0; i < std::size(lights) && i < kMaxLights; ++i) {
+            if (lights[i].kind != LightKind::Point) { continue; }
+            lights[i].castsShadow = true;
+            pointLights[pointLightCount++] = i;
+        }
         // Fill this frame's share of the pass
         //
         // Assignment only, so it belongs up here: what reaches the GPU, and when, is
         // RecordFrame's. Through slot.index and not slotIndex: recording picks the
         // pass's frame the same way.
-        FrameSlot& slot = renderer.slots[slotIndex];
+        FrameSlot& slot = renderer->slots[slotIndex];
 
         // State, not a matrix. viewPos below comes back out of it rather than being
         // copied beside it -- one camera, one place its position is written down.
@@ -904,7 +957,7 @@ int main() {
         // proj is rebuilt here and lightProj is not: this one answers to a target that
         // resizes and a fov the app could change, and ShadowProjectionFor takes nothing
         // that moves.
-        renderer.cameras[slot.index].value =
+        renderer->cameras[slot.index].value =
             {.view = ViewFromPose(camera.pose),
              .proj = ProjectionFor(camera.fovDegrees, sceneTargetDescs.color.extent),
              .viewPos = glm::vec4{camera.pose.position, 1.0f}};
@@ -915,7 +968,7 @@ int main() {
         // The ambient is the scene's and not any one light's, which is why it is an
         // argument here rather than a field of the first of them.
         if (!FillLights(lights, static_cast<uint32_t>(std::size(lights)),
-                        glm::vec3{0.15f}, &renderer.lights[slot.index].value)) {
+                        glm::vec3{0.15f}, &renderer->lights[slot.index].value)) {
             break;
         }
         // Both from the light itself now, because both answers differ by its kind: a
@@ -925,10 +978,16 @@ int main() {
         // The ones with no map are written anyway and never read -- writing them costs
         // a memcpy and skipping them would need a second thing saying which.
         for (uint32_t i = 0; i < std::size(lights); ++i) {
-            renderer.shadows[slot.index].value.lights[i] =
+            renderer->shadows[slot.index].value.lights[i] =
                 {ShadowView(lights[i], kSceneCenter),
                  ShadowProjectionFor(lights[i], shadowTarget.extent)};
         }
+
+        // Six views per point light, and where each of them is. The fragment stage of
+        // the cube pass reads the position out of the same buffer, so the distance it
+        // writes and the distance the shading pass compares against come from one place.
+        FillPointShadows(lights, static_cast<uint32_t>(std::size(lights)),
+                         &renderer->pointShadows[slot.index].value);
 
         // Draw it
         // --------------------------------------------------------------------
@@ -949,7 +1008,7 @@ int main() {
         // BeginFrame waited on that submit's fence, which is what makes the results
         // readable; earlier and there would be nothing to read.
         PassTimings gpuTimings;
-        ReadPassTimings(renderer.timers[slot.index], &gpuTimings);
+        ReadPassTimings(renderer->timers[slot.index], &gpuTimings);
 
         // Once, the first time there is anything to report, so the numbers reach the
         // console without the panel being opened. A capture run does not reach this: it
@@ -979,33 +1038,34 @@ int main() {
         guiInfo.gpuTimings = &gpuTimings;
         guiInfo.materialBinds = drawStats.materialBinds;
         guiInfo.cullChanges = drawStats.cullChanges;
-        guiInfo.descriptors = &renderer.descriptors;
-        guiInfo.sceneProgram = &renderer.pipelines.sceneProgram;
-        guiInfo.postProgram = &renderer.pipelines.postProgram;
-        guiInfo.guiProgram = &renderer.pipelines.guiProgram;
-        guiInfo.scenePipeline = &renderer.pipelines.scene;
-        guiInfo.postPipeline = &renderer.pipelines.post;
+        guiInfo.descriptors = &renderer->descriptors;
+        guiInfo.sceneProgram = &renderer->pipelines.sceneProgram;
+        guiInfo.postProgram = &renderer->pipelines.postProgram;
+        guiInfo.guiProgram = &renderer->pipelines.guiProgram;
+        guiInfo.scenePipeline = &renderer->pipelines.scene;
+        guiInfo.postPipeline = &renderer->pipelines.post;
         guiInfo.cameraBytes = static_cast<uint32_t>(sizeof(CameraUniform));
         guiInfo.lightBytes = static_cast<uint32_t>(sizeof(LightUniform)
                                                    + sizeof(ShadowUniform));
         guiInfo.pushBytes = static_cast<uint32_t>(sizeof(PushConstants));
-        guiInfo.vertexStride = renderer.mesh.desc.vertexLayout.stride;
-        guiInfo.vertexAttributes = renderer.mesh.desc.vertexLayout.attributeCount;
+        guiInfo.vertexStride = renderer->mesh.desc.vertexLayout.stride;
+        guiInfo.vertexAttributes = renderer->mesh.desc.vertexLayout.attributeCount;
         guiInfo.framesInFlight = kFramesInFlight;
-        guiInfo.mesh = &renderer.mesh;
-        guiInfo.guiPipeline = &renderer.pipelines.gui;
+        guiInfo.mesh = &renderer->mesh;
+        guiInfo.guiPipeline = &renderer->pipelines.gui;
         guiInfo.slotIndex = slot.index;
-        guiInfo.sceneColor = &renderer.sceneTargets[slot.index].color;
-        guiInfo.sceneResolve = &renderer.sceneTargets[slot.index].resolve;
-        guiInfo.sceneDepth = &renderer.sceneTargets[slot.index].depth;
+        guiInfo.sceneColor = &renderer->sceneTargets[slot.index].color;
+        guiInfo.sceneResolve = &renderer->sceneTargets[slot.index].resolve;
+        guiInfo.sceneDepth = &renderer->sceneTargets[slot.index].depth;
         guiInfo.frameTarget = target.texture;
-        BuildGui(&renderer.guiPass, guiInfo);
+        BuildGui(&renderer->guiPass, guiInfo);
 
 
         // The values written above, into the buffers the sets already name. Here and
         // not inside RecordFrame: it is a memcpy per value, not a command.
-        UploadFrameValues(slot, renderer.cameras, renderer.lights, renderer.shadows,
-                          renderer.viewOptions, renderer.guiPass);
+        UploadFrameValues(slot, renderer->cameras, renderer->lights, renderer->shadows,
+                          renderer->pointShadows, renderer->viewOptions,
+                          renderer->guiPass);
 
         // Only the texture: recording has no use for the rest of the target.
         //
@@ -1022,7 +1082,7 @@ int main() {
         // binds a material where two neighbours differ, and a skipped item in the middle
         // of that walk would still have to be examined. The vector keeps its capacity
         // across frames, so this allocates once.
-        const CameraUniform& sent = renderer.cameras[slot.index].value;
+        const CameraUniform& sent = renderer->cameras[slot.index].value;
         const Frustum frustum = FrustumFrom(sent.proj * sent.view);
         visibleItems.clear();
         for (const DrawItem& item : items) {
@@ -1032,15 +1092,16 @@ int main() {
 
         const DrawList visibleList{visibleItems.data(),
                                    static_cast<uint32_t>(visibleItems.size()),
-                                   renderer.materials.data(), materialCount};
+                                   renderer->materials.data(), materialCount};
 
-        if (!RecordFrame(slot, renderer.shadowPass, shadowCasters,
-                         renderer.skyForwardPass, renderer.skyDeferredPass,
-                         renderer.scenePass,
-                         renderer.geometryPass, renderer.lightingPass,
-                         renderer.postPass, renderer.guiPass,
+        if (!RecordFrame(slot, renderer->shadowPass, shadowCasters,
+                         renderer->pointShadowPass, pointLights, pointLightCount,
+                         renderer->skyForwardPass, renderer->skyDeferredPass,
+                         renderer->scenePass,
+                         renderer->geometryPass, renderer->lightingPass,
+                         renderer->postPass, renderer->guiPass,
                          *target.texture, visibleList, drawList,
-                         renderer.timers[slot.index], &drawStats)) {
+                         renderer->timers[slot.index], &drawStats)) {
             break;
         }
 

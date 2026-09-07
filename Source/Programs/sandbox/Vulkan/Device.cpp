@@ -113,6 +113,10 @@ PhysicalDeviceSelection PickPhysicalDevice(const VulkanInstance& inst,
                 && features2.features.samplerAnisotropy != VK_TRUE) {
             continue;
         }
+        if (required10.imageCubeArray == VK_TRUE
+                && features2.features.imageCubeArray != VK_TRUE) {
+            continue;
+        }
         if (features13.dynamicRendering != VK_TRUE || features13.synchronization2 != VK_TRUE) {
             continue;
         }

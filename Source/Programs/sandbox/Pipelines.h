@@ -28,6 +28,11 @@ struct PipelineSources {
     VertexLayout guiLayout;
 
     const TextureDesc* shadowDepth = nullptr;
+
+    // One face of a point light's cube, and the depth layer drawn with it. Faces rather
+    // than the array, because a pipeline is compiled against what a pass draws into.
+    const TextureDesc* pointShadowFace = nullptr;
+    const TextureDesc* pointShadowDepth = nullptr;
     const TextureDesc* sceneColor = nullptr;   // the multisample one, not the resolve
     const TextureDesc* sceneDepth = nullptr;
     const TextureDesc* swapchain = nullptr;
@@ -85,6 +90,7 @@ struct PipelineSources {
 // and every descriptor set was drawn from one of their layouts.
 struct Pipelines {
     ShaderProgram shadowProgram;
+    ShaderProgram pointShadowProgram;
     ShaderProgram sceneProgram;
     ShaderProgram geometryProgram;
     ShaderProgram lightingProgram;
@@ -97,6 +103,7 @@ struct Pipelines {
     ShaderProgram guiProgram;
 
     Pipeline shadow;
+    Pipeline pointShadow;
     Pipeline scene;
     Pipeline sceneWire;
     Pipeline geometry;

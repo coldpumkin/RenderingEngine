@@ -129,6 +129,11 @@ layout(set = 0, binding = 6) uniform samplerCube irradianceCube;
 layout(set = 0, binding = 7) uniform samplerCube prefilteredCube;
 layout(set = 0, binding = 8) uniform sampler2D brdfLut;
 
+// One cube per light, addressed by a direction and a slice. What is stored is the
+// distance from that light divided by its range, which is why the comparison below
+// multiplies it back rather than undoing a projection.
+layout(set = 0, binding = 9) uniform samplerCubeArray pointShadowMaps;
+
 // Output: what the environment reflects off this surface
 //
 // The split-sum approximation put back together: the prefiltered environment in the
@@ -207,6 +212,26 @@ vec3 WorldFromDepth(vec2 screenUv, float depth) {
     const vec4 world = inverse(camera.view) * (viewSpace / viewSpace.w);
     return world.xyz;
 }
+
+// Output: 1 where this point light reaches the fragment, 0 where its own geometry is in
+//         the way
+//
+// The direction from the light is the whole address: a cube map is a texture addressed
+// by a direction, so which of the six faces this lands on is the sampler's business and
+// not this function's.
+//
+// The bias grows as the surface turns away from the light, for the reason a 2D map's
+// does -- at a grazing angle one texel of the map covers a long stretch of surface, and
+// a fixed offset is either too small there or too large everywhere else.
+float PointShadowFactor(int index, vec3 worldPos, float ndotl) {
+    const vec3 fromLight = worldPos - light.lights[index].position.xyz;
+    const float range = max(light.lights[index].position.w, 0.0001);
+
+    const float stored = texture(pointShadowMaps, vec4(fromLight, float(index))).r * range;
+    const float bias = mix(0.35, 0.05, clamp(ndotl, 0.0, 1.0));
+    return length(fromLight) - bias > stored ? 0.0 : 1.0;
+}
+
 
 // Output: 1 where the light reaches this point, 0 where something else got there first
 //
@@ -305,8 +330,16 @@ void main() {
                              ? highlight * step(0.0001, lambert) : 0.0;
 
         // Only the lights a map was drawn for.
-        const float lit = (light.lights[i].color.a > 0.5 && view.useShadow > 0.5)
-                        ? ShadowFactor(i, worldPos, lambert) : 1.0;
+        // color.a says which kind of map this light has: 1 a layer of the 2D array,
+        // 2 a cube.
+        float lit = 1.0;
+        if (view.useShadow > 0.5) {
+            if (light.lights[i].color.a > 1.5) {
+                lit = PointShadowFactor(i, worldPos, lambert);
+            } else if (light.lights[i].color.a > 0.5) {
+                lit = ShadowFactor(i, worldPos, lambert);
+            }
+        }
 
         direct += light.lights[i].color.rgb * lambert * lit * diffuseColor
                 + light.lights[i].color.rgb * specular * lit * specularColor;

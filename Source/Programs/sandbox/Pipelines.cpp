@@ -25,6 +25,31 @@ GraphicsPipelineDesc ShadowDesc(const ShaderProgram& program,
     return desc;
 }
 
+GraphicsPipelineDesc PointShadowDesc(const ShaderProgram& program,
+                                    const PipelineSources& sources) noexcept {
+    GraphicsPipelineDesc desc;
+    desc.program = &program;
+    desc.vertexLayout = sources.meshLayout;
+
+    // Colour and depth both, unlike the 2D shadow pipeline: what this pass stores is a
+    // distance the fragment stage computes, so it has a fragment stage and an
+    // attachment to write.
+    const TextureDesc* const colour[] = {sources.pointShadowFace};
+    desc.formats = AttachmentFormatsFor(colour, 1, sources.pointShadowDepth);
+    desc.blend[0] = NoBlend();
+
+    // Down, because the six face views are built in the cube convention, which already
+    // has y running the other way. Up here would flip every face a second time.
+    desc.raster.viewportY = ViewportY::Down;
+    desc.raster.depthTest = VK_TRUE;
+    desc.raster.depthWrite = VK_TRUE;
+
+    // Nothing culled. Which way a triangle winds in a face's clip space depends on the
+    // face, and a shadow caster seen from inside still occludes.
+    desc.raster.cull = VK_CULL_MODE_NONE;
+    return desc;
+}
+
 GraphicsPipelineDesc SceneDesc(const ShaderProgram& program,
                                const PipelineSources& sources) noexcept {
     GraphicsPipelineDesc desc;
@@ -198,6 +223,11 @@ bool CreatePipelines(const VulkanDevice& dev, const PipelineSources& sources,
     // One stage. A shadow pipeline writes depth and nothing else, and depth comes from
     // the fixed-function test out of gl_Position -- so there is no fragment stage.
     const char* const shadowStages[] = {"Shaders/shadow.vert.spv"};
+
+    // Two stages, where the 2D shadow has one: a cube stores a distance rather than a
+    // depth, and a distance is something a fragment stage has to work out.
+    const char* const pointShadowStages[] = {"Shaders/pointshadow.vert.spv",
+                                             "Shaders/pointshadow.frag.spv"};
     const char* const sceneStages[] = {"Shaders/scene.vert.spv", "Shaders/scene.frag.spv"};
 
     // **scene.vert again, unchanged.** Where a surface sits does not depend on when it
@@ -256,6 +286,9 @@ bool CreatePipelines(const VulkanDevice& dev, const PipelineSources& sources,
     if (!CreateShaderProgram(dev, shadowStages,
                              static_cast<uint32_t>(std::size(shadowStages)),
                              meshProgram, &out->shadowProgram)
+            || !CreateShaderProgram(dev, pointShadowStages,
+                                    static_cast<uint32_t>(std::size(pointShadowStages)),
+                                    meshProgram, &out->pointShadowProgram)
             || !CreateShaderProgram(dev, sceneStages,
                                     static_cast<uint32_t>(std::size(sceneStages)),
                                     surfaceProgram, &out->sceneProgram)
@@ -291,6 +324,8 @@ bool CreatePipelines(const VulkanDevice& dev, const PipelineSources& sources,
 
     return CreateGraphicsPipeline(dev, ShadowDesc(out->shadowProgram, sources),
                                   &out->shadow)
+        && CreateGraphicsPipeline(dev, PointShadowDesc(out->pointShadowProgram, sources),
+                                  &out->pointShadow)
         && CreateGraphicsPipeline(dev, SceneDesc(out->sceneProgram, sources),
                                   &out->scene)
         && CreateGraphicsPipeline(dev, SceneWireDesc(out->sceneProgram, sources),

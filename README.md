@@ -46,8 +46,11 @@ the two paths are meant to compare is structure, so the edges differ and that is
 
 ## Features
 
-- **Shadows.** One 2048² depth map per light, as a layer of an array texture. Light `i`
-  reads matrices `i` and samples layer `i`; nothing translates between the two indices.
+- **Shadows.** One 2048² depth map per directional or spot light, as a layer of an array
+  texture, and a 512² cube per point light, as six layers of a cube array. Light `i` reads
+  matrices `i` and samples slice `i` either way; nothing translates between the indices.
+  The cube stores the distance from the light rather than a depth, so the test is one
+  subtraction instead of working out which face a direction landed on.
 - **Three light kinds.** `LightKind` decides what a light owns: a directional light has no
   position, the other two do. The struct the shader reads has no kind field, because a
   point light is a spot whose cone is open all the way, and `direction.w` being 0 or 1 is
@@ -158,10 +161,11 @@ shader interface and per-frame draw statistics.
   not run reads back as unavailable rather than as zero. On an RX 6800S at 1280x720 with
   three lights:
 
-  | | shadow | sky | middle | post | total |
-  |---|---|---|---|---|---|
-  | forward | 2.851 | 0.342 | scene 2.077 | 0.057 | 5.328 ms |
-  | deferred | 2.808 | 0.331 | geometry 0.849 + lighting 0.917 | 0.059 | 4.964 ms |
+  | | shadow | point shadow | sky | middle | post | total |
+  |---|---|---|---|---|---|---|
+  | forward | 3.133 | 0.674 | 0.347 | scene 2.236 | 0.057 | 6.447 ms |
+
+  The point shadow figure is six faces for one light, drawing the whole list each time.
 
 - **Frustum culling.** Six planes taken from `proj * view`, tested against each
   primitive's glTF bounds. It removes 34 of the 103 draws from this viewpoint and leaves
@@ -231,7 +235,6 @@ it refer to one image by one name.
 
 ## Not implemented
 
-- Cube shadows for point lights.
 - One mesh, no instancing.
 - Compute and transfer queues are created but nothing is submitted to them.
 - No deletion queue and no runtime shader reload.

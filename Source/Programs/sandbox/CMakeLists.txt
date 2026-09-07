@@ -49,6 +49,8 @@ add_executable(sandbox
     Vulkan/Frame.h       Vulkan/Frame.cpp       # frame slot, frame target, opening and closing
     Vulkan/Timing.h      Vulkan/Timing.cpp      # GPU timestamps, one query pool per frame
 
+    PointShadowPass.h    PointShadowPass.cpp    # a point light's shadow, six faces of a cube
+
     Gltf.h               Gltf.cpp               # an asset file, as the arrays a frame needs
     Bmp.h                Bmp.cpp                # a captured frame, as a file
     Vulkan/Shader.h      Vulkan/Shader.cpp      # reading .spv, and reflecting on it
@@ -116,7 +118,8 @@ find_program(GLSLC_EXE glslc HINTS "$ENV{VULKAN_SDK}/Bin" REQUIRED)
 set(SHADER_BUILD_DIR "${CMAKE_CURRENT_BINARY_DIR}/Shaders")
 set(SPV_FILES "")
 
-foreach(SHADER shadow.vert scene.vert scene.frag fullscreen.vert post.frag gui.vert gui.frag
+foreach(SHADER shadow.vert pointshadow.vert pointshadow.frag
+               scene.vert scene.frag fullscreen.vert post.frag gui.vert gui.frag
                geometry.frag lighting.frag skybake.frag sky.frag irradiance.frag
                prefilter.frag brdflut.frag)
     set(SRC "${CMAKE_CURRENT_SOURCE_DIR}/Shaders/${SHADER}")

@@ -60,6 +60,11 @@ constexpr bool kRenderFollowsWindow = false;
 // end up looking at it.
 constexpr uint32_t kShadowResolution = 2048;
 
+// A face of a point light's cube. Smaller than the directional map because six of them
+// cover what one 2D map covers, and because a point light here lights a room rather than
+// the whole scene.
+constexpr uint32_t kPointShadowResolution = 512;
+
 // Half-width of that box, in world units, and how far back the light sits. Sponza is
 // about 20 x 12 x 12 after its scale, so this covers it with room for the light to
 // swing around. Too large and every texel spans more world than it can resolve.

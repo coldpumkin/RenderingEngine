@@ -69,5 +69,10 @@ inline VkPhysicalDeviceFeatures RequiredFeatures10() noexcept {
     // is long in one direction and short in the other, and one level cannot be right
     // for both. Anisotropy takes several samples along the long axis instead.
     features.samplerAnisotropy = VK_TRUE;
+
+    // A cube array view, which is what a point light's shadow needs: one cube per light
+    // and a layer index chosen when it is sampled. Without it every point light would
+    // need its own binding.
+    features.imageCubeArray = VK_TRUE;
     return features;
 }
